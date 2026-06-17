@@ -1,0 +1,6 @@
+/target
+**/target
+results/*
+!results/.gitkeep
+*.log
+.DS_Store

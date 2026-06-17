@@ -1,0 +1,3 @@
+[submodule "vendor/ursula"]
+	path = vendor/ursula
+	url = https://github.com/tonbo-io/ursula
