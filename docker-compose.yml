@@ -26,6 +26,7 @@ services:
       mc alias set local http://minio:9000 minioadmin minioadmin &&
       mc mb -p local/durable-streams &&
       mc mb -p local/ursula &&
+      mc mb -p local/s2-bench &&
       echo 'buckets ready'
       "
 
@@ -72,6 +73,19 @@ services:
     command: ["--config", "/ursula.toml", "--preset", "standard"]
     ports:
       - "4437:4437"
+
+  s2lite:
+    image: ghcr.io/s2-streamstore/s2:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    command: ["lite", "--bucket", "s2-bench", "--path", "s2lite", "--port", "80"]
+    environment:
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_ENDPOINT_URL_S3: http://minio:9000
+    ports:
+      - "4439:80"
 
   bench:
     build:
