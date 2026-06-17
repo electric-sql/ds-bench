@@ -124,6 +124,24 @@ async fn catch_up_read_all(b: &Backend, base_idx: usize, stream: &str) -> anyhow
     Ok(total)
 }
 
+/// S2-native single bounded GET: GET /v1/streams/{stream}/records?seq_num=0&bytes={total_bytes}
+/// Returns total body bytes. Uses Backend::replay_request_for which attaches s2 headers.
+async fn s2_read_all(b: &Backend, base_idx: usize, stream: &str, total_bytes: u64) -> anyhow::Result<u64> {
+    use anyhow::Context;
+    let resp = b
+        .replay_request_for(base_idx, stream, total_bytes)?
+        .send()
+        .await
+        .context("s2 catch-up GET")?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("s2 catch-up status {status}: {body}");
+    }
+    let body = resp.bytes().await.context("s2 catch-up body")?;
+    Ok(body.len() as u64)
+}
+
 pub async fn run(args: CatchUpArgs) -> Result<CatchUpResult> {
     let client = build_client(args.request_timeout_secs)?;
     let backend = Backend::new(
@@ -205,7 +223,12 @@ pub async fn run(args: CatchUpArgs) -> Result<CatchUpResult> {
         handles.push(tokio::spawn(async move {
             barrier.wait().await;
             let t = Instant::now();
-            match catch_up_read_all(&backend, idx, &stream).await {
+            let result = if backend.kind == ApiStyle::S2 {
+                s2_read_all(&backend, idx, &stream, pre_bytes_total).await
+            } else {
+                catch_up_read_all(&backend, idx, &stream).await
+            };
+            match result {
                 Ok(bytes) => {
                     ok.fetch_add(1, Ordering::Relaxed);
                     bytes_total.fetch_add(bytes, Ordering::Relaxed);
