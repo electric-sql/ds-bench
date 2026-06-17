@@ -1,6 +1,6 @@
 # ds-rust-bench — Track 1: single-node comparison
 
-Reproducible single-node benchmark of **durable-streams** (Rust) vs **ursula**,
+Reproducible single-node benchmark of **durable-streams** (Rust) vs **ursula** vs **S2 Lite**,
 under matched durability, driven by `ds-bench` — a **verbatim fork of ursula's own
 `ursula-bench`**. See the design spec at
 `docs/superpowers/specs/2026-06-17-single-node-bench-design.md`.
@@ -11,13 +11,15 @@ under matched durability, driven by `ds-bench` — a **verbatim fork of ursula's
 git submodule update --init --recursive        # pulls vendor/ursula @ pinned SHA
 ./run-bench.sh durable                          # all 3 workloads vs durable-streams
 ./run-bench.sh ursula                           # then vs ursula (one server at a time)
+./run-bench.sh s2                               # then vs S2 Lite (one server at a time)
 python3 scripts/render-results.py results       # -> results/comparison.md
 ```
 
 ## What is measured
 
 `ds-bench` (a verbatim fork of `ursula-bench`, Apache-2.0 — packaging changes only)
-drives three workloads, each emitting HDR-histogram latency + throughput JSON:
+drives three workloads against all three systems, each emitting HDR-histogram latency +
+throughput JSON:
 
 - **multi-stream** — N concurrent streams, one writer each (write throughput + latency).
 - **fan-out** — one stream, many SSE subscribers (end-to-end per-event latency).
@@ -25,7 +27,7 @@ drives three workloads, each emitting HDR-histogram latency + throughput JSON:
   `Stream-Up-To-Date` (replay throughput + latency). This is our own protocol-faithful
   workload: it uses the DS-protocol offset read (not ursula's snapshot-based
   `/bootstrap`/`/snapshot/{offset}` endpoints, which have no DS-protocol equivalent),
-  and runs symmetrically against both servers via each system's native `--api-style`.
+  and runs symmetrically against all three servers via each system's native `--api-style`.
 
 Note: ursula-bench's `bootstrap` workload is **not** used here because it relies on
 ursula-specific routes absent from `PROTOCOL.md`. What remains deferred to Track 2 is
@@ -34,14 +36,30 @@ the larger scale-out comparison (multi-node, higher client counts).
 ## Fairness — what is equal, and what is not
 
 - **Equal:** single node each; **ursula's own benchmark client, unmodified** (only
-  packaging changed); identical workload parameters (see `run-bench.sh`); both servers
-  fsync to local disk; both offload sealed/cold data to the same MinIO. Only one
-  server runs during its own measurement.
-- **Matched durability:** ursula runs a single-voter Raft group with
-  `[raft.wal] backend = "disk"` (fsync per commit); durable-streams fsyncs per append.
-  **Both group-commit fsyncs** (ursula: 200µs/1024-record window; durable-streams:
-  coalesced across concurrent writers), so this is apples-to-apples for concurrent
-  writes; under serial load both approach one fsync per append.
+  packaging changed); identical workload parameters (see `run-bench.sh`); all three
+  servers point at the same single-node MinIO instance. Only one server runs during
+  its own measurement.
+- **Matched durability (durable-streams & ursula):** ursula runs a single-voter Raft
+  group with `[raft.wal] backend = "disk"` (fsync per commit); durable-streams fsyncs
+  per append. **Both group-commit fsyncs** (ursula: 200µs/1024-record window;
+  durable-streams: coalesced across concurrent writers), so this is apples-to-apples
+  for concurrent writes; under serial load both approach one fsync per append. The
+  hot-path write lands on **local disk** first; sealed/cold segments are offloaded to
+  MinIO asynchronously.
+- **Durability substrate disclosure — S2 Lite:** S2 Lite is architecturally different.
+  It writes through **SlateDB** to object storage (MinIO) on the write path with a
+  default flush interval of ~50 ms. Every acknowledged append has already made a MinIO
+  round-trip; there is no local-disk fsync hot path. This means S2 Lite's write
+  latency includes an object-store write that durable-streams and ursula defer to
+  background tiering. This is an architectural difference the benchmark surfaces, not
+  a tuned handicap — all three point at the same single-node MinIO.
+- **S2 catch-up byte counts:** S2 returns records as JSON/base64-enveloped payloads
+  over its HTTP API, so S2's catch-up `bytes_received` and `aggregate_mb_per_sec`
+  reflect more wire bytes than the raw-bytes DS-protocol used by durable-streams and
+  ursula. The replay **latency** metrics (p50/p90/p99/p999) are comparable; the
+  byte/throughput counts are not directly comparable for S2.
+- **S2 fan-out:** S2's fan-out path is expected to be slower — SSE is not
+  object-store-native and the write path already includes an object-store round-trip.
 - **Not equal / disclosed:** single-node deliberately strips ursula's Raft
   *replication*, its headline feature — we benchmark single-node only because
   durable-streams has no multi-node yet. We do **not** reuse ursula's published
@@ -52,10 +70,11 @@ the larger scale-out comparison (multi-node, higher client counts).
 
 - durable-streams: `--tier s3` → MinIO (`dockerfiles/durable-streams.Dockerfile`, `docker-compose.yml`).
 - ursula: `config/ursula.toml` (`ds-bench/ursula:dev`, built from `vendor/ursula` @ `0b2d0da`).
-- MinIO: `minioadmin`/`minioadmin`, buckets `durable-streams` and `ursula`.
+- S2 Lite: compose service `s2lite`, host port 4439, `--api-style s2 --basin benchmark`; writes through SlateDB to MinIO.
+- MinIO: `minioadmin`/`minioadmin`, buckets `durable-streams`, `ursula`, and `benchmark` (S2 Lite).
 
 ## Caveats
 
 - `io_uring` is not used (unreliable under Docker); durable-streams runs its raw
   HTTP/1 engine. A real Linux host can enable `uring` later (Track 2 / Phase 2).
-- Both servers' data directories are **container-ephemeral by design**: each measured run starts from fresh state (no cross-run contamination), while durability-to-disk / fsync is still exercised identically within a run. This is intentional, not a bug — it keeps runs reproducible.
+- All servers' data directories are **container-ephemeral by design**: each measured run starts from fresh state (no cross-run contamination), while durability (fsync for durable-streams/ursula; object-store flush for S2 Lite) is still exercised within a run. This is intentional, not a bug — it keeps runs reproducible.

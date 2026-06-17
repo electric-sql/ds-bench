@@ -3,7 +3,7 @@
 import json, sys, pathlib
 
 RESULTS = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "results")
-SYSTEMS = ["durable", "ursula"]
+SYSTEMS = ["durable", "ursula", "s2"]
 
 def load(system, workload):
     p = RESULTS / f"{system}-{workload}.json"
@@ -25,7 +25,7 @@ def lat(d):
 def row(label, fn):
     return "| " + label + " | " + " | ".join(fn(s) for s in SYSTEMS) + " |"
 
-out = ["# Single-node comparison: durable-streams vs ursula", ""]
+out = ["# Single-node comparison: durable-streams vs ursula vs S2 Lite", ""]
 hdr = "| metric | " + " | ".join(SYSTEMS) + " |"
 sep = "|" + "---|" * (len(SYSTEMS) + 1)
 

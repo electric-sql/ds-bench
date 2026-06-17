@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Usage: ./run-bench.sh <durable|ursula>
-SYS="${1:?usage: run-bench.sh <durable|ursula>}"
+# Usage: ./run-bench.sh <durable|ursula|s2>
+SYS="${1:?usage: run-bench.sh <durable|ursula|s2>}"
 case "$SYS" in
-  durable) SVC=durable-streams; TARGET=http://durable-streams:4438; STYLE=durable; HOSTPORT=4438 ;;
-  ursula)  SVC=ursula;          TARGET=http://ursula:4437;          STYLE=ursula;  HOSTPORT=4437 ;;
+  durable) SVC=durable-streams; TARGET=http://durable-streams:4438; STYLE=durable; HOSTPORT=4438; BASIN_ARG="" ;;
+  ursula)  SVC=ursula;          TARGET=http://ursula:4437;          STYLE=ursula;  HOSTPORT=4437; BASIN_ARG="" ;;
+  s2)      SVC=s2lite;          TARGET=http://s2lite:80;            STYLE=s2;      HOSTPORT=4439; BASIN_ARG="--basin benchmark" ;;
   *) echo "unknown system: $SYS" >&2; exit 2 ;;
 esac
 
@@ -36,17 +37,17 @@ fi
 run() { docker compose run --rm -T bench "$@"; }
 
 echo "== multi-stream =="
-run multi-stream --target "$TARGET" --api-style "$STYLE" \
+run multi-stream --target "$TARGET" --api-style "$STYLE" $BASIN_ARG \
   --streams "$STREAMS" --duration-secs "$DURATION" --payload-bytes "$PAYLOAD" \
   > "results/${SYS}-multi-stream.json"
 
 echo "== fan-out =="
-run fan-out --target "$TARGET" --api-style "$STYLE" \
+run fan-out --target "$TARGET" --api-style "$STYLE" $BASIN_ARG \
   --subscribers "$SUBSCRIBERS" --writer-rate "$WRITER_RATE" --duration-secs "$DURATION" \
   --payload-bytes "$PAYLOAD" > "results/${SYS}-fanout.json"
 
 echo "== catch-up =="
-run catch-up --target "$TARGET" --api-style "$STYLE" \
+run catch-up --target "$TARGET" --api-style "$STYLE" $BASIN_ARG \
   --clients "$CU_CLIENTS" --pre-events "$CU_PRE_EVENTS" --event-bytes "$CU_EVENT_BYTES" \
   > "results/${SYS}-catch-up.json"
 
