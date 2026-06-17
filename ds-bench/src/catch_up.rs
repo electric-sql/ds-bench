@@ -145,6 +145,7 @@ pub async fn run(args: CatchUpArgs) -> Result<CatchUpResult> {
     let payload = Arc::new(fill_payload(args.event_bytes, 0xBEEF));
     let pending = Arc::new(tokio::sync::Semaphore::new(args.setup_concurrency.max(1)));
     let pre_bytes_total = (args.pre_events as u64) * (args.event_bytes as u64);
+    let setup_ok = Arc::new(AtomicU64::new(0));
 
     let mut joins = Vec::with_capacity(args.pre_events);
     for _seq in 0..args.pre_events {
@@ -152,21 +153,36 @@ pub async fn run(args: CatchUpArgs) -> Result<CatchUpResult> {
         let backend = backend.clone();
         let stream = args.stream.clone();
         let payload = payload.clone();
+        let setup_ok = setup_ok.clone();
         joins.push(tokio::spawn(async move {
             let _permit = permit;
             // Use None producer: concurrent setup appends are incompatible with
             // producer-seq (server enforces strict ordering and returns 409 on gaps).
             // Matches bootstrap.rs pattern.
-            let _ = backend
+            if backend
                 .append_request(0, &stream, &payload, None, "application/octet-stream")
                 .send()
-                .await;
+                .await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false)
+            {
+                setup_ok.fetch_add(1, Ordering::Relaxed);
+            }
         }));
     }
     for j in joins {
         let _ = j.await;
     }
     let setup_elapsed = setup_start.elapsed();
+
+    let landed = setup_ok.load(Ordering::Relaxed);
+    if landed < args.pre_events as u64 {
+        anyhow::bail!(
+            "setup failed: only {landed}/{} appends succeeded — \
+             check that the target is reachable and the stream was created",
+            args.pre_events
+        );
+    }
 
     // STAMPEDE: clients all read from the start simultaneously
     let barrier = Arc::new(Barrier::new(args.clients));
