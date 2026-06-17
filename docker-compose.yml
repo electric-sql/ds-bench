@@ -28,3 +28,48 @@ services:
       mc mb -p local/ursula &&
       echo 'buckets ready'
       "
+
+  durable-streams:
+    build:
+      context: ../durable-streams
+      dockerfile: ../ds-rust-bench/dockerfiles/durable-streams.Dockerfile
+    image: ds-bench/durable-streams:dev
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      DS_S3_ACCESS_KEY_ID: minioadmin
+      DS_S3_SECRET_ACCESS_KEY: minioadmin
+    command:
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "4438"
+      - --data-dir
+      - /data
+      - --http-engine
+      - raw
+      - --tier
+      - s3
+      - --tier-endpoint
+      - http://minio:9000
+      - --tier-region
+      - us-east-1
+      - --tier-bucket
+      - durable-streams
+      - --tier-allow-http
+      - --tier-segment-bytes
+      - "1048576"
+    ports:
+      - "4438:4438"
+
+  ursula:
+    image: ds-bench/ursula:dev
+    depends_on:
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./config/ursula.toml:/ursula.toml:ro
+    command: ["--config", "/ursula.toml", "--preset", "standard"]
+    ports:
+      - "4437:4437"
