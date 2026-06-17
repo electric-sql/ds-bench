@@ -7,7 +7,7 @@ PORT=4470
 BASE="http://127.0.0.1:${PORT}"
 DATA="$(mktemp -d)"
 
-"$DS_BIN" --host 127.0.0.1 --port "$PORT" --http-engine hyper --data-dir "$DATA" --tier off &
+"$DS_BIN" --host 127.0.0.1 --port "$PORT" --data-dir "$DATA" --tier off &
 SRV=$!
 trap 'kill $SRV 2>/dev/null || true; rm -rf "$DATA"' EXIT
 sleep 1
