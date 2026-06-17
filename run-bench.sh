@@ -11,6 +11,7 @@ esac
 # Identical workload parameters across systems (fairness).
 STREAMS=200; DURATION=30; PAYLOAD=256
 SUBSCRIBERS=500; WRITER_RATE=50
+CU_CLIENTS=200; CU_PRE_EVENTS=2000; CU_EVENT_BYTES=1024
 
 mkdir -p results
 docker compose up -d minio
@@ -30,6 +31,11 @@ echo "== fan-out =="
 run fan-out --target "$TARGET" --api-style "$STYLE" \
   --subscribers "$SUBSCRIBERS" --writer-rate "$WRITER_RATE" --duration-secs "$DURATION" \
   --payload-bytes "$PAYLOAD" > "results/${SYS}-fanout.json"
+
+echo "== catch-up =="
+run catch-up --target "$TARGET" --api-style "$STYLE" \
+  --clients "$CU_CLIENTS" --pre-events "$CU_PRE_EVENTS" --event-bytes "$CU_EVENT_BYTES" \
+  > "results/${SYS}-catch-up.json"
 
 echo "== stopping $SVC =="
 docker compose stop "$SVC"

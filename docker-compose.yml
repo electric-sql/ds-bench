@@ -47,8 +47,6 @@ services:
       - "4438"
       - --data-dir
       - /data
-      - --http-engine
-      - raw
       - --tier
       - s3
       - --tier-endpoint

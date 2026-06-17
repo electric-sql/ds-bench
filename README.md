@@ -9,7 +9,7 @@ under matched durability, driven by `ds-bench` — a **verbatim fork of ursula's
 
 ```bash
 git submodule update --init --recursive        # pulls vendor/ursula @ pinned SHA
-./run-bench.sh durable                          # both workloads vs durable-streams
+./run-bench.sh durable                          # all 3 workloads vs durable-streams
 ./run-bench.sh ursula                           # then vs ursula (one server at a time)
 python3 scripts/render-results.py results       # -> results/comparison.md
 ```
@@ -17,15 +17,19 @@ python3 scripts/render-results.py results       # -> results/comparison.md
 ## What is measured
 
 `ds-bench` (a verbatim fork of `ursula-bench`, Apache-2.0 — packaging changes only)
-drives two workloads, each emitting HDR-histogram latency + ops/s JSON:
+drives three workloads, each emitting HDR-histogram latency + throughput JSON:
 
 - **multi-stream** — N concurrent streams, one writer each (write throughput + latency).
 - **fan-out** — one stream, many SSE subscribers (end-to-end per-event latency).
+- **catch-up** — N clients simultaneously replay a pre-loaded stream from offset 0 until
+  `Stream-Up-To-Date` (replay throughput + latency). This is our own protocol-faithful
+  workload: it uses the DS-protocol offset read (not ursula's snapshot-based
+  `/bootstrap`/`/snapshot/{offset}` endpoints, which have no DS-protocol equivalent),
+  and runs symmetrically against both servers via each system's native `--api-style`.
 
-Catch-up/replay is intentionally **not** included: ursula-bench's `bootstrap` workload
-is built on ursula's `/bootstrap` and `/snapshot/{offset}` endpoints, which are **not
-part of the Durable Streams protocol** (no such routes in `PROTOCOL.md` or the DS
-server). A protocol-faithful catch-up-read workload is planned for Track 2.
+Note: ursula-bench's `bootstrap` workload is **not** used here because it relies on
+ursula-specific routes absent from `PROTOCOL.md`. What remains deferred to Track 2 is
+the larger scale-out comparison (multi-node, higher client counts).
 
 ## Fairness — what is equal, and what is not
 
@@ -46,11 +50,11 @@ server). A protocol-faithful catch-up-read workload is planned for Track 2.
 
 ## Configuration
 
-- durable-streams: `--http-engine raw`, `--tier s3` → MinIO (`dockerfiles/durable-streams.Dockerfile`, `docker-compose.yml`).
+- durable-streams: `--tier s3` → MinIO (`dockerfiles/durable-streams.Dockerfile`, `docker-compose.yml`).
 - ursula: `config/ursula.toml` (`ds-bench/ursula:dev`, built from `vendor/ursula` @ `0b2d0da`).
 - MinIO: `minioadmin`/`minioadmin`, buckets `durable-streams` and `ursula`.
 
 ## Caveats
 
-- `io_uring` is not used (unreliable under Docker); durable-streams runs the `raw`
-  engine. A real Linux host can enable `uring` later (Track 2 / Phase 2).
+- `io_uring` is not used (unreliable under Docker); durable-streams runs its raw
+  HTTP/1 engine. A real Linux host can enable `uring` later (Track 2 / Phase 2).

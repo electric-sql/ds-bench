@@ -46,5 +46,16 @@ out += ["## fan-out (SSE end-to-end latency)", "", _fo_params, "", hdr, sep,
         row("events received", lambda s: f"{(fo[s] or {}).get('events_received',0)}"),
         row("p50/p90/p99/p999 ms", lambda s: " / ".join(lat(fo[s]))), ""]
 
+cu = {s: load(s, "catch-up") for s in SYSTEMS}
+_cu = cu.get("durable") or {}
+_cu_params = (f"_params: clients={_cu.get('clients','?')}, "
+              f"pre_events={_cu.get('pre_events','?')}, "
+              f"event_bytes={_cu.get('event_bytes','?')}B_")
+out += ["## catch-up (replay throughput)", "", _cu_params, "", hdr, sep,
+        row("aggregate MB/s", lambda s: f"{(cu[s] or {}).get('aggregate_mb_per_sec',0):.2f}"),
+        row("bytes received", lambda s: f"{(cu[s] or {}).get('bytes_received_total',0)}"),
+        row("stampede secs", lambda s: f"{(cu[s] or {}).get('stampede_elapsed_secs',0):.2f}"),
+        row("p50/p90/p99/p999 ms", lambda s: " / ".join(lat(cu[s]))), ""]
+
 (RESULTS / "comparison.md").write_text("\n".join(out))
 print("\n".join(out))
