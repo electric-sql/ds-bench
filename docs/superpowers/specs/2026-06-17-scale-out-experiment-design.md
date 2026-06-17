@@ -54,6 +54,12 @@ tail latency.
   `hdrhistogram` crate's serialized form) to a shared sink; merge is associative
   and lossless, giving authoritative cross-fleet percentiles.
 - **New workloads:**
+  - **catch-up-read** — our own **protocol-faithful** replay workload: N clients
+    simultaneously catch-up read a stream from offset 0 until `Stream-Up-To-Date`,
+    hot (tail) vs cold (object store). This **replaces** ursula-bench's `bootstrap`,
+    which is built on ursula's `/bootstrap` + `/snapshot` endpoints that are **not in
+    the Durable Streams protocol** (see Track 1). Run symmetrically against all
+    backends via plain catch-up reads.
   - **mixed** — concurrent writers + catch-up readers + live SSE subscribers on
     shared streams (recreates ursula's unpublished `mixed` phase). Most realistic.
   - (catalog extras — stream-cardinality, resume/resilience — deferred unless the

@@ -41,8 +41,8 @@ gains multi-node, a 3-node ↔ 3-node comparison becomes the fair next step.
 | Goal | Competitive positioning (strict fairness + reproducibility) |
 | Durability alignment | Both fsync to local disk + offload sealed data to MinIO (local S3), single node |
 | Runtime | docker-compose, Linux containers (io_uring deferred to a real Linux host) |
-| Workloads | All three: `multi-stream`, `fanout`, `bootstrap` |
-| Benchmark client | **`ds-bench`** — our own HTTP client, multi-backend. v0 ports ursula-bench's 3 workloads; shared with [Track 2](2026-06-17-scale-out-experiment-design.md) |
+| Workloads | Two: `multi-stream` (write throughput) + `fan-out` (SSE latency). Catch-up/replay deferred — see note below. |
+| Benchmark client | **`ds-bench`** — a **verbatim fork** of ursula-bench (packaging changes only); multi-backend; shared with [Track 2](2026-06-17-scale-out-experiment-design.md) |
 | ds-bench provenance | Workloads + HDR methodology derived from `ursula-bench` (Apache-2.0); ursula kept as a pinned submodule for reference + license attribution |
 | ursula pinned commit | `0b2d0dabf0a6544b909823e0d1d1149b98274e25` (`v0.1.5-3-g0b2d0da`) |
 
@@ -53,7 +53,7 @@ ds-rust-bench/
 ├── docker-compose.yml         # minio, durable-streams, ursula, bench
 ├── ds-bench/                  # our own Rust workload client (shared with Track 2)
 │   ├── Cargo.toml
-│   └── src/                   # backends + workloads (v0: multi-stream, fanout, bootstrap)
+│   └── src/                   # verbatim fork; only multi-stream + fan-out run in Track 1
 ├── dockerfiles/
 │   ├── durable-streams.Dockerfile
 │   ├── ursula.Dockerfile      # reuses ursula's own Dockerfile pattern
@@ -100,36 +100,48 @@ ds-rust-bench/
 
 ## ds-bench v0 (shared client)
 
-`ds-bench` is our own Rust HTTP client, built in this track and **shared with
-Track 2** (the scale-out experiment extends it). Rationale: we want a workload
-suite we own and can extend (mixed/cardinality/resume workloads, cross-pod HDR
-merge) rather than patching an upstream binary. v0 scope:
+`ds-bench` is a **verbatim fork** of ursula-bench (Apache-2.0), built in this track
+and **shared with Track 2** (the scale-out experiment extends it). For competitive
+positioning the strongest stance is "we ran ursula's own benchmark, unmodified" — so
+v0 makes **packaging changes only** (standalone crate, pinned deps, the one
+`ursula-observability::init` call swapped for `tracing-subscriber`). No workload
+logic, measurement methodology, or HDR math is changed. Owning the fork is what lets
+Track 2 add new workloads (mixed/cardinality/resume) and cross-pod HDR merge later.
 
-- A pure HTTP client (reqwest, no server-crate linkage) with a pluggable backend
-  abstraction `--api-style {ursula | durable | s2}`, **derived from** ursula-bench's
-  `backend.rs` (Apache-2.0). The pinned ursula submodule stays for reference and
-  license attribution.
-- The three workloads below, ported from ursula-bench with its HDR latency math
-  and JSON output preserved.
-- A `durable-streams` backend mapping (see open item 1): start from the `durable`
-  api-style (`/v1/stream/{stream}`); durable-streams treats arbitrary paths as
-  stream URLs, so it likely works as-is. If headers/paths differ, the backend trait
-  makes adding a variant a local change in our own code (no upstream patch).
+- A pure HTTP client (reqwest, no server-crate linkage) with the upstream pluggable
+  backend `--api-style {ursula | durable | s2}`, copied verbatim. The pinned ursula
+  submodule stays for reference and Apache-2.0 attribution.
+- The `durable` api-style (`/v1/stream/{stream}`) maps cleanly onto durable-streams
+  for the two workloads below — create/append/SSE are byte-identical; durable-streams
+  treats arbitrary paths as stream URLs. Confirmed: no api-style change needed (was
+  open item 1).
+- All three upstream workload modules are forked verbatim and compiled into the
+  binary, but **only `multi-stream` and `fan-out` run** in Track 1 (see note).
 
 Forward-looking (built in Track 2, noted so v0's structure anticipates it):
 serialized-HDR output for cross-node merge, and a backend/workload layout that
 admits new workloads without touching existing ones.
 
-### Workloads
+### Workloads (Track 1)
 
 - **multi-stream** — N concurrent streams, one writer each. Aggregate + per-stream
   ops/sec and a write-latency HDR summary. Primary throughput story; stand up first
   as the smoke test.
-- **fanout** — one stream, many SSE subscribers, one writer. End-to-end per-event
+- **fan-out** — one stream, many SSE subscribers, one writer. End-to-end per-event
   fan-out latency (writer embeds a send timestamp; subscriber records `now - sent`).
-- **bootstrap** — many clients replay a stream after a snapshot. Catch-up/replay
-  throughput; durable-streams' sendfile/io_uring zero-copy read path is expected to
-  shine here.
+
+### Why catch-up/replay is deferred (not `bootstrap`)
+
+ursula-bench's third workload, `bootstrap`, is built around ursula's `/bootstrap`
+(multipart snapshot+tail) and `/snapshot/{offset}` endpoints. **Neither is part of
+the Durable Streams protocol** — `PROTOCOL.md` has no `/bootstrap` route and exactly
+one passing mention of "snapshot" (no endpoint), and the DS server has no such
+handlers. The DS equivalent of replay is a plain catch-up read (`GET ?offset=-1`
+looped until `Stream-Up-To-Date`). So running `bootstrap` against DS would 404 on the
+snapshot-publish step and isn't a faithful comparison. Catch-up/replay read
+throughput (a DS strength via sendfile/io_uring) is worth measuring, but as a
+**protocol-faithful workload of our own**, designed around catch-up reads and run
+symmetrically — added in Track 2, not by bending ursula's snapshot-based stampede.
 
 ## Resolved: ursula single-node durable config (was open item 1)
 
@@ -180,12 +192,15 @@ point) and reopens the file per append, so we do not use it.
 
 ## Open items (resolved during planning/implementation, not blocking)
 
-1. **`--api-style durable` fit** vs needing a new `ApiStyle` variant.
-2. **durable-streams MinIO flags** — exact `--tier-endpoint`, `--tier-bucket`,
-   `--tier-region`, `--tier-path-style true`, `--tier-allow-http true`,
-   `--tier-segment-bytes`, and credential env (`DS_S3_ACCESS_KEY_ID` /
-   `DS_S3_SECRET_ACCESS_KEY`).
-3. **CPU/memory pinning** values for stable, fair runs.
+1. **durable-streams MinIO flags** — confirmed in the plan: `--tier s3
+   --tier-endpoint http://minio:9000 --tier-region us-east-1 --tier-bucket … 
+   --tier-allow-http` (path-style is the default); creds via env
+   `DS_S3_ACCESS_KEY_ID` / `DS_S3_SECRET_ACCESS_KEY`.
+2. **CPU/memory pinning** values for stable, fair runs (add compose
+   `deploy.resources` / `--cpus` if runs prove noisy).
+
+(`--api-style durable` fit is **resolved**: it maps cleanly onto durable-streams for
+the two Track-1 workloads — no new `ApiStyle` variant needed.)
 
 ## Deployment evolution (designed later)
 
@@ -197,9 +212,9 @@ point) and reopens the file per append, so we do not use it.
 
 ## Success criteria (phase 1)
 
-- `docker-compose` brings up MinIO + a chosen server; `ds-bench` runs all three
-  workloads against it and writes JSON results.
+- `docker-compose` brings up MinIO + a chosen server; `ds-bench` runs both
+  workloads (multi-stream, fan-out) against it and writes JSON results.
 - Both servers verified to actually offload sealed data to MinIO (objects appear in
   the bucket).
-- A rendered markdown table compares the two servers across the three workloads.
+- A rendered markdown table compares the two servers across both workloads.
 - README documents exact configs and the single-node fairness disclosure.
