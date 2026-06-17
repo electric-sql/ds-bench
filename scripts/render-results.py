@@ -61,10 +61,10 @@ _cu_params = (f"_params: clients={_cu.get('clients','?')}, "
 out += ["## catch-up (replay throughput)", "",
         "_S2 Lite excluded from catch-up — see README (paginated, JSON-enveloped read, not comparable)._",
         "", _cu_params, "", hdr, sep,
-        row("aggregate MB/s", lambda s: f"{(cu[s] or {}).get('aggregate_mb_per_sec',0):.2f}"),
-        row("bytes received", lambda s: f"{(cu[s] or {}).get('bytes_received_total',0)}"),
-        row("stampede secs", lambda s: f"{(cu[s] or {}).get('stampede_elapsed_secs',0):.2f}"),
-        row("p50/p90/p99/p999 ms", lambda s: " / ".join(lat(cu[s]))), ""]
+        row("aggregate MB/s", lambda s: f"{cu[s]['aggregate_mb_per_sec']:.2f}" if cu[s] else "-"),
+        row("bytes received", lambda s: f"{cu[s]['bytes_received_total']}" if cu[s] else "-"),
+        row("stampede secs", lambda s: f"{cu[s]['stampede_elapsed_secs']:.2f}" if cu[s] else "-"),
+        row("p50/p90/p99/p999 ms", lambda s: " / ".join(lat(cu[s])) if cu[s] else "-"), ""]
 
 (RESULTS / "comparison.md").write_text("\n".join(out))
 print("\n".join(out))
