@@ -1,5 +1,6 @@
 mod backend;
 mod bootstrap;
+mod catch_up;
 mod common;
 mod fanout;
 mod multi_stream;
@@ -27,6 +28,8 @@ enum Cmd {
     FanOut(fanout::FanOutArgs),
     /// Bootstrap stampede - N clients hit /bootstrap simultaneously after a snapshot.
     Bootstrap(bootstrap::BootstrapArgs),
+    /// Catch-up stampede - N clients replay a pre-populated stream from offset -1 simultaneously.
+    CatchUp(catch_up::CatchUpArgs),
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -45,6 +48,7 @@ async fn main() -> Result<()> {
         Cmd::MultiStream(args) => serde_json::to_string_pretty(&multi_stream::run(args).await?)?,
         Cmd::FanOut(args) => serde_json::to_string_pretty(&fanout::run(args).await?)?,
         Cmd::Bootstrap(args) => serde_json::to_string_pretty(&bootstrap::run(args).await?)?,
+        Cmd::CatchUp(a) => serde_json::to_string_pretty(&catch_up::run(a).await?)?,
     };
     println!("{json}");
     Ok(())
