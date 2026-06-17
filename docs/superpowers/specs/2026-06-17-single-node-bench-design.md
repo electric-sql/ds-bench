@@ -3,6 +3,9 @@
 **Date:** 2026-06-17
 **Status:** Approved design, pending implementation plan
 **Repo:** `ds-rust-bench`
+**Track:** 1 of 2 — single-node comparison. Ships first; de-risks
+[Track 2: scale-out experiment](2026-06-17-scale-out-experiment-design.md).
+Builds `ds-bench` v0, the shared workload client both tracks use.
 
 ## Purpose
 
@@ -39,8 +42,8 @@ gains multi-node, a 3-node ↔ 3-node comparison becomes the fair next step.
 | Durability alignment | Both fsync to local disk + offload sealed data to MinIO (local S3), single node |
 | Runtime | docker-compose, Linux containers (io_uring deferred to a real Linux host) |
 | Workloads | All three: `multi-stream`, `fanout`, `bootstrap` |
-| Benchmark client | Reuse ursula's `ursula-bench` (HTTP-only, multi-backend) |
-| ursula-bench sourcing | Git submodule pinned to a SHA + small patch if a new `ApiStyle` is needed |
+| Benchmark client | **`ds-bench`** — our own HTTP client, multi-backend. v0 ports ursula-bench's 3 workloads; shared with [Track 2](2026-06-17-scale-out-experiment-design.md) |
+| ds-bench provenance | Workloads + HDR methodology derived from `ursula-bench` (Apache-2.0); ursula kept as a pinned submodule for reference + license attribution |
 | ursula pinned commit | `0b2d0dabf0a6544b909823e0d1d1149b98274e25` (`v0.1.5-3-g0b2d0da`) |
 
 ## Components (this repo)
@@ -48,14 +51,17 @@ gains multi-node, a 3-node ↔ 3-node comparison becomes the fair next step.
 ```
 ds-rust-bench/
 ├── docker-compose.yml         # minio, durable-streams, ursula, bench
+├── ds-bench/                  # our own Rust workload client (shared with Track 2)
+│   ├── Cargo.toml
+│   └── src/                   # backends + workloads (v0: multi-stream, fanout, bootstrap)
 ├── dockerfiles/
 │   ├── durable-streams.Dockerfile
-│   ├── ursula.Dockerfile
-│   └── bench.Dockerfile
+│   ├── ursula.Dockerfile      # reuses ursula's own Dockerfile pattern
+│   └── ds-bench.Dockerfile
 ├── config/
 │   ├── ursula.toml            # single-node persistent + s3 cold tier
 │   └── durable-streams.env    # --tier-* flags / env for MinIO offload
-├── vendor/ursula/             # git submodule, pinned SHA (source of ursula + ursula-bench)
+├── vendor/ursula/             # git submodule, pinned SHA (reference + Apache-2.0 attribution)
 ├── run.sh (or justfile)       # boot minio + one server, run 3 workloads, collect JSON
 ├── scripts/render-results.*   # JSON -> markdown comparison tables
 ├── results/                   # JSON outputs + rendered tables
@@ -73,7 +79,7 @@ ds-rust-bench/
   config: `[raft.wal] backend = "disk"` + empty `[raft.peers]` (a single-voter
   Raft group whose openraft log `fdatasync`s before acking each commit), S3 cold
   tier pointed at MinIO. See resolved open item 1.
-- **bench** — `ursula-bench`, run on demand against one target at a time.
+- **bench** — `ds-bench`, run on demand against one target at a time.
 
 ## Fairness controls
 
@@ -82,7 +88,7 @@ ds-rust-bench/
 - Servers run **one at a time** — never co-located during a measured run, to avoid
   resource contention.
 - Both fsync to local disk; both offload sealed segments to the **same** MinIO bucket.
-- Identical `ursula-bench` parameters across targets: stream count, duration,
+- Identical `ds-bench` parameters across targets: stream count, duration,
   payload bytes, concurrency, warmup.
 - **Group-commit symmetry (matched durability):** both servers coalesce fsyncs —
   ursula's durable Raft log group-commits within a 200µs / 1024-record window
@@ -92,20 +98,27 @@ ds-rust-bench/
   workloads; under a serial workload both collapse to ~one fsync per append. The
   README must report the concurrency used and this group-commit equivalence.
 
-## Reusing ursula-bench
+## ds-bench v0 (shared client)
 
-`ursula-bench` is a pure HTTP client (reqwest, no server-crate linkage) with a
-pluggable `--api-style {ursula | durable | s2}`. Plan:
+`ds-bench` is our own Rust HTTP client, built in this track and **shared with
+Track 2** (the scale-out experiment extends it). Rationale: we want a workload
+suite we own and can extend (mixed/cardinality/resume workloads, cross-pod HDR
+merge) rather than patching an upstream binary. v0 scope:
 
-1. Build `ursula-bench` from the pinned ursula submodule.
-2. **Verify** whether `--api-style durable` (URL shape `/v1/stream/{stream}`) maps
-   cleanly onto durable-streams' request/response. durable-streams treats arbitrary
-   paths as stream URLs, so it likely works as-is.
-3. If headers/paths differ, add a small `durable-streams` `ApiStyle` variant in
-   `backend.rs`, maintained as an auditable patch on the pinned SHA.
+- A pure HTTP client (reqwest, no server-crate linkage) with a pluggable backend
+  abstraction `--api-style {ursula | durable | s2}`, **derived from** ursula-bench's
+  `backend.rs` (Apache-2.0). The pinned ursula submodule stays for reference and
+  license attribution.
+- The three workloads below, ported from ursula-bench with its HDR latency math
+  and JSON output preserved.
+- A `durable-streams` backend mapping (see open item 1): start from the `durable`
+  api-style (`/v1/stream/{stream}`); durable-streams treats arbitrary paths as
+  stream URLs, so it likely works as-is. If headers/paths differ, the backend trait
+  makes adding a variant a local change in our own code (no upstream patch).
 
-The three workloads, latency math (hdrhistogram), and JSON output are all
-system-agnostic and reused unchanged.
+Forward-looking (built in Track 2, noted so v0's structure anticipates it):
+serialized-HDR output for cross-node merge, and a backend/workload layout that
+admits new workloads without touching existing ones.
 
 ### Workloads
 
@@ -184,7 +197,7 @@ point) and reopens the file per append, so we do not use it.
 
 ## Success criteria (phase 1)
 
-- `docker-compose` brings up MinIO + a chosen server; `ursula-bench` runs all three
+- `docker-compose` brings up MinIO + a chosen server; `ds-bench` runs all three
   workloads against it and writes JSON results.
 - Both servers verified to actually offload sealed data to MinIO (objects appear in
   the bucket).
