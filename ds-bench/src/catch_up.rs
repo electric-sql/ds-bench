@@ -76,15 +76,15 @@ fn catch_up_url(b: &Backend, base_idx: usize, stream: &str, offset: &str) -> Str
     match b.kind {
         ApiStyle::Durable => format!("{base}/v1/stream/{stream}?offset={offset}"),
         ApiStyle::Ursula => format!("{base}/{}/{stream}?offset={offset}", b.bucket),
-        ApiStyle::S2 => format!("{base}/v1/streams/{stream}/records?seq_num={offset}"),
+        ApiStyle::S2 => unreachable!("S2 is excluded from catch-up workload"),
     }
 }
 
 fn catch_up_start(b: &Backend) -> &'static str {
-    // durable & ursula (DS-protocol) accept -1 = start; VERIFY ursula in Task 2.
+    // durable & ursula (DS-protocol) accept -1 = start
     match b.kind {
-        ApiStyle::S2 => "0",
-        _ => "-1",
+        ApiStyle::Durable | ApiStyle::Ursula => "-1",
+        ApiStyle::S2 => unreachable!("S2 is excluded from catch-up workload"),
     }
 }
 
@@ -124,25 +124,14 @@ async fn catch_up_read_all(b: &Backend, base_idx: usize, stream: &str) -> anyhow
     Ok(total)
 }
 
-/// S2-native single bounded GET: GET /v1/streams/{stream}/records?seq_num=0&bytes={total_bytes}
-/// Returns total body bytes. Uses Backend::replay_request_for which attaches s2 headers.
-async fn s2_read_all(b: &Backend, base_idx: usize, stream: &str, total_bytes: u64) -> anyhow::Result<u64> {
-    use anyhow::Context;
-    let resp = b
-        .replay_request_for(base_idx, stream, total_bytes)?
-        .send()
-        .await
-        .context("s2 catch-up GET")?;
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("s2 catch-up status {status}: {body}");
-    }
-    let body = resp.bytes().await.context("s2 catch-up body")?;
-    Ok(body.len() as u64)
-}
-
 pub async fn run(args: CatchUpArgs) -> Result<CatchUpResult> {
+    if args.api_style == ApiStyle::S2 {
+        anyhow::bail!(
+            "catch-up workload is not supported for S2 Lite: its paginated, \
+             JSON-enveloped seq_num read is not comparable to the Durable Streams \
+             full-replay loop"
+        );
+    }
     let client = build_client(args.request_timeout_secs)?;
     let backend = Backend::new(
         args.api_style,
@@ -223,11 +212,7 @@ pub async fn run(args: CatchUpArgs) -> Result<CatchUpResult> {
         handles.push(tokio::spawn(async move {
             barrier.wait().await;
             let t = Instant::now();
-            let result = if backend.kind == ApiStyle::S2 {
-                s2_read_all(&backend, idx, &stream, pre_bytes_total).await
-            } else {
-                catch_up_read_all(&backend, idx, &stream).await
-            };
+            let result = catch_up_read_all(&backend, idx, &stream).await;
             match result {
                 Ok(bytes) => {
                     ok.fetch_add(1, Ordering::Relaxed);

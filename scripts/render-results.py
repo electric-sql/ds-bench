@@ -58,7 +58,9 @@ _cu = first_present(cu)
 _cu_params = (f"_params: clients={_cu.get('clients','?')}, "
               f"pre_events={_cu.get('pre_events','?')}, "
               f"event_bytes={_cu.get('event_bytes','?')}B_")
-out += ["## catch-up (replay throughput)", "", _cu_params, "", hdr, sep,
+out += ["## catch-up (replay throughput)", "",
+        "_S2 Lite excluded from catch-up — see README (paginated, JSON-enveloped read, not comparable)._",
+        "", _cu_params, "", hdr, sep,
         row("aggregate MB/s", lambda s: f"{(cu[s] or {}).get('aggregate_mb_per_sec',0):.2f}"),
         row("bytes received", lambda s: f"{(cu[s] or {}).get('bytes_received_total',0)}"),
         row("stampede secs", lambda s: f"{(cu[s] or {}).get('stampede_elapsed_secs',0):.2f}"),

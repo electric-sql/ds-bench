@@ -46,10 +46,14 @@ run fan-out --target "$TARGET" --api-style "$STYLE" $BASIN_ARG \
   --subscribers "$SUBSCRIBERS" --writer-rate "$WRITER_RATE" --duration-secs "$DURATION" \
   --payload-bytes "$PAYLOAD" > "results/${SYS}-fanout.json"
 
-echo "== catch-up =="
-run catch-up --target "$TARGET" --api-style "$STYLE" $BASIN_ARG \
-  --clients "$CU_CLIENTS" --pre-events "$CU_PRE_EVENTS" --event-bytes "$CU_EVENT_BYTES" \
-  > "results/${SYS}-catch-up.json"
+if [ "$SYS" != "s2" ]; then
+  echo "== catch-up =="
+  run catch-up --target "$TARGET" --api-style "$STYLE" $BASIN_ARG \
+    --clients "$CU_CLIENTS" --pre-events "$CU_PRE_EVENTS" --event-bytes "$CU_EVENT_BYTES" \
+    > "results/${SYS}-catch-up.json"
+else
+  echo "== catch-up: SKIPPED for s2 (paginated, JSON-enveloped read — not comparable) =="
+fi
 
 echo "== stopping $SVC =="
 docker compose stop "$SVC"

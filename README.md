@@ -27,7 +27,11 @@ throughput JSON:
   `Stream-Up-To-Date` (replay throughput + latency). This is our own protocol-faithful
   workload: it uses the DS-protocol offset read (not ursula's snapshot-based
   `/bootstrap`/`/snapshot/{offset}` endpoints, which have no DS-protocol equivalent),
-  and runs symmetrically against all three servers via each system's native `--api-style`.
+  and runs symmetrically against durable-streams and ursula. **S2 Lite is excluded from
+  the catch-up comparison** because its native replay (`GET ?seq_num=0&bytes=N`) is a
+  paginated, JSON/base64-enveloped read that is not directly comparable to the Durable
+  Streams servers' full-replay loop; S2 is compared on multi-stream (writes) and
+  fan-out (SSE latency).
 
 Note: ursula-bench's `bootstrap` workload is **not** used here because it relies on
 ursula-specific routes absent from `PROTOCOL.md`. What remains deferred to Track 2 is
