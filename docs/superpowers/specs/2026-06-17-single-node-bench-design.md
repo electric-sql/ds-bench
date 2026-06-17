@@ -41,6 +41,7 @@ gains multi-node, a 3-node ↔ 3-node comparison becomes the fair next step.
 | Workloads | All three: `multi-stream`, `fanout`, `bootstrap` |
 | Benchmark client | Reuse ursula's `ursula-bench` (HTTP-only, multi-backend) |
 | ursula-bench sourcing | Git submodule pinned to a SHA + small patch if a new `ApiStyle` is needed |
+| ursula pinned commit | `0b2d0dabf0a6544b909823e0d1d1149b98274e25` (`v0.1.5-3-g0b2d0da`) |
 
 ## Components (this repo)
 
@@ -69,7 +70,9 @@ ds-rust-bench/
   `--features tier`, `raw` HTTP engine (Linux), per-append fsync durability,
   `--tier s3` pointed at MinIO.
 - **ursula** — built from the pinned ursula checkout, single-node **persistent**
-  config (fsync to disk, see open item 1), S3 cold tier pointed at MinIO.
+  config: `[raft.wal] backend = "disk"` + empty `[raft.peers]` (a single-voter
+  Raft group whose openraft log `fdatasync`s before acking each commit), S3 cold
+  tier pointed at MinIO. See resolved open item 1.
 - **bench** — `ursula-bench`, run on demand against one target at a time.
 
 ## Fairness controls
@@ -81,6 +84,13 @@ ds-rust-bench/
 - Both fsync to local disk; both offload sealed segments to the **same** MinIO bucket.
 - Identical `ursula-bench` parameters across targets: stream count, duration,
   payload bytes, concurrency, warmup.
+- **Group-commit symmetry (matched durability):** both servers coalesce fsyncs —
+  ursula's durable Raft log group-commits within a 200µs / 1024-record window
+  (`CORE_LOG_GROUP_COMMIT_*`); durable-streams group-commits fsyncs across
+  concurrent writers. Each individual append is crash-durable on disk before its
+  ack on both sides. So matched-disk is apples-to-apples for concurrent write
+  workloads; under a serial workload both collapse to ~one fsync per append. The
+  README must report the concurrency used and this group-commit equivalence.
 
 ## Reusing ursula-bench
 
@@ -108,18 +118,61 @@ system-agnostic and reused unchanged.
   throughput; durable-streams' sendfile/io_uring zero-copy read path is expected to
   shine here.
 
+## Resolved: ursula single-node durable config (was open item 1)
+
+Confirmed against ursula `0b2d0da`: single-node ursula persists durably to local
+disk with fsync, **no multi-node cluster required**. Mechanism: a single-voter
+Raft group whose on-disk openraft log `fdatasync`s (`sync_data`) before each commit
+is acked. Enabled via `[raft.wal] backend = "disk"` + `path`, an empty
+`[raft.peers]` (→ `Topology::SingleNode`), `node_id = 1`, on any non-`default`
+preset. The in-memory `default` preset is explicitly **not** used.
+
+`Persistence` and `Topology` are orthogonal (`crates/ursula/src/bootstrap/topology.rs`):
+`SingleNode` + `Persistence::Raft { log_dir: Some(dir) }` is supported and exercised
+by ursula's own tests. Cold S3 is the data tier and is **not** on the write-ack hot
+path — per-append durability is entirely the local on-disk Raft log.
+
+Minimal `config/ursula.toml`:
+
+```toml
+[server]
+listen = "0.0.0.0:4437"
+
+[raft]
+node_id = 1                 # must be non-zero; peers omitted -> SingleNode
+
+[raft.wal]
+backend = "disk"            # durable, fsynced openraft log
+path = "/var/lib/ursula/data"   # log dir becomes <path>/raft-log
+
+[storage.cold]
+backend = "s3"
+
+[storage.cold.s3]
+bucket = "ursula-bench"
+endpoint = "http://minio:9000"
+region = "us-east-1"
+access_key_id = "minioadmin"
+secret_access_key = "minioadmin"
+```
+
+Run: `ursula --config ursula.toml --preset standard` (consider lowering
+`raft.group_count` from the preset default of 256 for a focused bench).
+
+Caveat folded into the fairness controls above: the durable log group-commits
+fsyncs (200µs / 1024-record window). durable-streams also group-commits, so this is
+matched. There is a strict per-call-fsync `Persistence::Wal` engine in ursula, but
+it is **not reachable via the shipped binary** (would need a custom library entry
+point) and reopens the file per append, so we do not use it.
+
 ## Open items (resolved during planning/implementation, not blocking)
 
-1. **Ursula single-node persistent config** — confirm ursula can fsync to disk
-   without a full multi-node Raft cluster (e.g. a 1-node Raft group that still
-   writes its log to disk, or a disk WAL persistence mode). This determines the
-   exact `ursula.toml`. The in-memory `default` preset is explicitly **not** used.
-2. **`--api-style durable` fit** vs needing a new `ApiStyle` variant.
-3. **durable-streams MinIO flags** — exact `--tier-endpoint`, `--tier-bucket`,
+1. **`--api-style durable` fit** vs needing a new `ApiStyle` variant.
+2. **durable-streams MinIO flags** — exact `--tier-endpoint`, `--tier-bucket`,
    `--tier-region`, `--tier-path-style true`, `--tier-allow-http true`,
    `--tier-segment-bytes`, and credential env (`DS_S3_ACCESS_KEY_ID` /
    `DS_S3_SECRET_ACCESS_KEY`).
-4. **CPU/memory pinning** values for stable, fair runs.
+3. **CPU/memory pinning** values for stable, fair runs.
 
 ## Deployment evolution (designed later)
 
