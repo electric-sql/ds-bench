@@ -73,3 +73,13 @@ services:
     command: ["--config", "/ursula.toml", "--preset", "standard"]
     ports:
       - "4437:4437"
+
+  bench:
+    build:
+      context: ./ds-bench
+      dockerfile: ../dockerfiles/ds-bench.Dockerfile
+    image: ds-bench/ds-bench:dev
+    profiles: ["bench"]   # only runs when explicitly invoked
+    volumes:
+      - ./results:/results
+    # command is supplied at run time by run-bench.sh
