@@ -23,7 +23,12 @@ hdr = "| metric | " + " | ".join(SYSTEMS) + " |"
 sep = "|" + "---|" * (len(SYSTEMS) + 1)
 
 ms = {s: load(s, "multi-stream") for s in SYSTEMS}
-out += ["## multi-stream (write throughput)", "", hdr, sep,
+_ms = ms.get("durable") or {}
+_ms_params = (f"_params: streams={_ms.get('streams','?')}, "
+              f"duration={_ms.get('duration_secs','?')}s, "
+              f"payload={_ms.get('payload_bytes','?')}B, "
+              f"rate_per_stream={_ms.get('rate_per_stream','?')} (max)_")
+out += ["## multi-stream (write throughput)", "", _ms_params, "", hdr, sep,
         row("aggregate ops/s", lambda s: f"{(ms[s] or {}).get('aggregate_ops_per_sec',0):.0f}"),
         row("p50/p90/p99/p999 ms", lambda s: " / ".join(lat(ms[s]))),
         row("ok / backpressure / err",
@@ -32,7 +37,12 @@ out += ["## multi-stream (write throughput)", "", hdr, sep,
                       f"{(ms[s] or {}).get('counts',{}).get('other_err',0)}"), ""]
 
 fo = {s: load(s, "fanout") for s in SYSTEMS}
-out += ["## fan-out (SSE end-to-end latency)", "", hdr, sep,
+_fo = fo.get("durable") or {}
+_fo_params = (f"_params: subscribers={_fo.get('subscribers','?')}, "
+              f"writer_rate={_fo.get('writer_rate','?')}, "
+              f"duration={_fo.get('duration_secs','?')}s, "
+              f"payload={_fo.get('payload_bytes','?')}B_")
+out += ["## fan-out (SSE end-to-end latency)", "", _fo_params, "", hdr, sep,
         row("events received", lambda s: f"{(fo[s] or {}).get('events_received',0)}"),
         row("p50/p90/p99/p999 ms", lambda s: " / ".join(lat(fo[s]))), ""]
 

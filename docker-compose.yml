@@ -58,12 +58,13 @@ services:
       - --tier-bucket
       - durable-streams
       - --tier-allow-http
-      - --tier-segment-bytes
-      - "1048576"
     ports:
       - "4438:4438"
 
   ursula:
+    build:
+      context: vendor/ursula
+      dockerfile: Dockerfile
     image: ds-bench/ursula:dev
     depends_on:
       minio:
