@@ -57,11 +57,11 @@ the larger scale-out comparison (multi-node, higher client counts).
   latency includes an object-store write that durable-streams and ursula defer to
   background tiering. This is an architectural difference the benchmark surfaces, not
   a tuned handicap — all three point at the same single-node MinIO.
-- **S2 catch-up byte counts:** S2 returns records as JSON/base64-enveloped payloads
-  over its HTTP API, so S2's catch-up `bytes_received` and `aggregate_mb_per_sec`
-  reflect more wire bytes than the raw-bytes DS-protocol used by durable-streams and
-  ursula. The replay **latency** metrics (p50/p90/p99/p999) are comparable; the
-  byte/throughput counts are not directly comparable for S2.
+- **S2 catch-up is excluded** (not just caveated): S2's native replay
+  (`GET ?seq_num=0&bytes=N`) is a paginated, JSON/base64-enveloped read that is neither
+  a full single-pass replay nor byte-comparable to the DS-protocol full-replay loop, so
+  the catch-up section reports `-` for S2 and `ds-bench catch-up --api-style s2` fails
+  fast by design. S2 is compared on multi-stream and fan-out only.
 - **S2 fan-out:** S2's fan-out path is expected to be slower — SSE is not
   object-store-native and the write path already includes an object-store round-trip.
 - **Not equal / disclosed:** single-node deliberately strips ursula's Raft
@@ -75,7 +75,7 @@ the larger scale-out comparison (multi-node, higher client counts).
 - durable-streams: `--tier s3` → MinIO (`dockerfiles/durable-streams.Dockerfile`, `docker-compose.yml`).
 - ursula: `config/ursula.toml` (`ds-bench/ursula:dev`, built from `vendor/ursula` @ `0b2d0da`).
 - S2 Lite: compose service `s2lite`, host port 4439, `--api-style s2 --basin benchmark`; writes through SlateDB to MinIO.
-- MinIO: `minioadmin`/`minioadmin`, buckets `durable-streams`, `ursula`, and `benchmark` (S2 Lite).
+- MinIO: `minioadmin`/`minioadmin`, buckets `durable-streams`, `ursula`, and `s2-bench` (S2 Lite; `benchmark` is its basin, not a bucket).
 
 ## Caveats
 
