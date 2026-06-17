@@ -58,3 +58,4 @@ the larger scale-out comparison (multi-node, higher client counts).
 
 - `io_uring` is not used (unreliable under Docker); durable-streams runs its raw
   HTTP/1 engine. A real Linux host can enable `uring` later (Track 2 / Phase 2).
+- Both servers' data directories are **container-ephemeral by design**: each measured run starts from fresh state (no cross-run contamination), while durability-to-disk / fsync is still exercised identically within a run. This is intentional, not a bug — it keeps runs reproducible.

@@ -9,6 +9,13 @@ def load(system, workload):
     p = RESULTS / f"{system}-{workload}.json"
     return json.loads(p.read_text()) if p.exists() else None
 
+def first_present(results_dict):
+    """Return the first non-None result across SYSTEMS (durable preferred, then others)."""
+    for s in SYSTEMS:
+        if results_dict.get(s):
+            return results_dict[s]
+    return {}
+
 def lat(d):
     if not d: return ("-",) * 4
     l = d.get("latency_ms") or d.get("fan_out_latency_ms") or {}
@@ -23,7 +30,7 @@ hdr = "| metric | " + " | ".join(SYSTEMS) + " |"
 sep = "|" + "---|" * (len(SYSTEMS) + 1)
 
 ms = {s: load(s, "multi-stream") for s in SYSTEMS}
-_ms = ms.get("durable") or {}
+_ms = first_present(ms)
 _ms_params = (f"_params: streams={_ms.get('streams','?')}, "
               f"duration={_ms.get('duration_secs','?')}s, "
               f"payload={_ms.get('payload_bytes','?')}B, "
@@ -37,7 +44,7 @@ out += ["## multi-stream (write throughput)", "", _ms_params, "", hdr, sep,
                       f"{(ms[s] or {}).get('counts',{}).get('other_err',0)}"), ""]
 
 fo = {s: load(s, "fanout") for s in SYSTEMS}
-_fo = fo.get("durable") or {}
+_fo = first_present(fo)
 _fo_params = (f"_params: subscribers={_fo.get('subscribers','?')}, "
               f"writer_rate={_fo.get('writer_rate','?')}, "
               f"duration={_fo.get('duration_secs','?')}s, "
@@ -47,7 +54,7 @@ out += ["## fan-out (SSE end-to-end latency)", "", _fo_params, "", hdr, sep,
         row("p50/p90/p99/p999 ms", lambda s: " / ".join(lat(fo[s]))), ""]
 
 cu = {s: load(s, "catch-up") for s in SYSTEMS}
-_cu = cu.get("durable") or {}
+_cu = first_present(cu)
 _cu_params = (f"_params: clients={_cu.get('clients','?')}, "
               f"pre_events={_cu.get('pre_events','?')}, "
               f"event_bytes={_cu.get('event_bytes','?')}B_")

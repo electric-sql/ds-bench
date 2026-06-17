@@ -3,8 +3,8 @@ set -euo pipefail
 # Usage: ./run-bench.sh <durable|ursula>
 SYS="${1:?usage: run-bench.sh <durable|ursula>}"
 case "$SYS" in
-  durable) SVC=durable-streams; TARGET=http://durable-streams:4438; STYLE=durable ;;
-  ursula)  SVC=ursula;          TARGET=http://ursula:4437;          STYLE=ursula  ;;
+  durable) SVC=durable-streams; TARGET=http://durable-streams:4438; STYLE=durable; HOSTPORT=4438 ;;
+  ursula)  SVC=ursula;          TARGET=http://ursula:4437;          STYLE=ursula;  HOSTPORT=4437 ;;
   *) echo "unknown system: $SYS" >&2; exit 2 ;;
 esac
 
@@ -18,7 +18,20 @@ docker compose up -d minio
 docker compose run --rm minio-init
 echo "== starting $SVC (only server running) =="
 docker compose up -d --build "$SVC"
-sleep 5
+echo "== waiting for $SVC to be ready on port $HOSTPORT =="
+_ready=0
+for _i in $(seq 1 60); do
+  _code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${HOSTPORT}/" || true)
+  if [ "$_code" != "000" ]; then
+    echo "  $SVC ready after ${_i}s (HTTP ${_code})"
+    _ready=1
+    break
+  fi
+  sleep 1
+done
+if [ "$_ready" -eq 0 ]; then
+  echo "WARNING: $SVC did not respond on port $HOSTPORT after 60s — proceeding anyway" >&2
+fi
 
 run() { docker compose run --rm -T bench "$@"; }
 
