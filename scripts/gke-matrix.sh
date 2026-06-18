@@ -63,10 +63,15 @@ ensure_only() {
       *) K scale deploy/$d --replicas=0 >/dev/null 2>&1 || true ;;
     esac
   done
+  # `rollout status` (NOT `wait --for=condition=available`) — the latter races
+  # with the async `rollout restart` and can observe the still-available OLD
+  # generation and return before the NEW pod is up. `rollout status` blocks
+  # until the restart's new replica is rolled out + Ready (the readiness probe
+  # makes Ready == serving).
   case "$keep" in
-    durable) K wait --for=condition=available deploy/durable-streams --timeout=300s ;;
-    ursula)  K wait --for=condition=available deploy/ursula --timeout=300s ;;
-    s2)      K wait --for=condition=available deploy/s2lite --timeout=300s ;;
+    durable) K rollout status deploy/durable-streams --timeout=300s ;;
+    ursula)  K rollout status deploy/ursula --timeout=300s ;;
+    s2)      K rollout status deploy/s2lite --timeout=300s ;;
   esac
 }
 
