@@ -2,6 +2,7 @@ mod backend;
 mod common;
 mod multi_fanout;
 mod multi_stream;
+pub mod reads;
 mod sse_util;
 pub mod dist;
 pub mod sustained;

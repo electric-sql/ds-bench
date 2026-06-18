@@ -7,6 +7,7 @@ mod fanout;
 mod mixed;
 mod multi_fanout;
 mod multi_stream;
+mod reads;
 mod sse_util;
 mod sustained;
 
@@ -41,6 +42,8 @@ enum Cmd {
     Sustained(sustained::SustainedArgs),
     /// Multi-stream fan-out — M streams × S subscribers each, measures aggregate delivery latency.
     MultiFanout(multi_fanout::MultiFanoutArgs),
+    /// Sustained hot catch-up reads of a resident stream — sweeps read-size × connections.
+    Reads(reads::ReadsArgs),
     /// Merge per-pod HDR histograms into exact fleet-wide percentiles.
     HdrMerge(dist::HdrMergeArgs),
 }
@@ -65,6 +68,7 @@ async fn main() -> Result<()> {
         Cmd::Mixed(a) => serde_json::to_string_pretty(&mixed::run(a).await?)?,
         Cmd::Sustained(a) => serde_json::to_string_pretty(&sustained::run(a).await?)?,
         Cmd::MultiFanout(a) => serde_json::to_string_pretty(&multi_fanout::run(a).await?)?,
+        Cmd::Reads(a) => serde_json::to_string_pretty(&reads::run(a).await?)?,
         Cmd::HdrMerge(a) => dist::run_merge(a)?,
     };
     println!("{json}");
