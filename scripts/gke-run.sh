@@ -120,6 +120,18 @@ if [ "${GKE_RUN_SKIP_SERVER:-0}" != "1" ]; then
   esac
 fi
 
+# --- active in-cluster readiness probe of the server target ---
+# Deployment-level readiness + rollout-status still leave a brief window after a
+# restart where the Service endpoint hasn't fully propagated (kube-proxy) and a
+# fresh connection gets refused. Poll the target from inside the cluster until it
+# answers (any HTTP response — even 4xx — means it's serving) before launching
+# the fleet. This is what stops ursula's first-run "connection refused".
+PROBE_HOSTPORT="${TARGET#http://}"   # e.g. ursula:4437
+echo "  probing server ${PROBE_HOSTPORT} until it answers..."
+K run server-probe-$$ --rm -i --restart=Never --image=curlimages/curl:latest --command -- \
+  /bin/sh -c "for i in \$(seq 1 60); do code=\$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://${PROBE_HOSTPORT}/ 2>/dev/null || echo 000); if [ \"\$code\" != \"000\" ]; then echo \"server up (HTTP \$code)\"; exit 0; fi; sleep 2; done; echo 'server never answered'; exit 1" \
+  >/dev/null 2>&1 || { echo "  WARN: server probe did not confirm readiness; proceeding anyway"; }
+
 # --- clean prior jobs ---
 K delete job bench-fleet bench-coordinator --ignore-not-found >/dev/null 2>&1 || true
 # wait for old pods to clear
