@@ -5,7 +5,9 @@ PROC_NAME="${SERVER_PROC:-durable-streams-server}"
 INTERVAL="${METRICS_INTERVAL_S:-1}"
 echo "ts_ms,rss_bytes,cpu_ticks" > "$OUT"
 while true; do
-  pid="$(pgrep -x "$PROC_NAME" | head -1 || true)"
+  # -f matches the full cmdline (not the 15-char-truncated comm that -x checks),
+  # so a long binary name like "durable-streams-server" still matches; exclude self.
+  pid="$(pgrep -f "$PROC_NAME" | grep -vx "$$" | head -1 || true)"
   if [ -n "$pid" ] && [ -r "/proc/$pid/stat" ]; then
     rss_pages=$(awk '{print $24}' "/proc/$pid/stat" 2>/dev/null || echo 0)   # field 24 = rss in pages
     rss=$(( rss_pages * $(getconf PAGE_SIZE) ))
