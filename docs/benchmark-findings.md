@@ -140,34 +140,65 @@ single-node has shown everywhere).
 
 ## 7. Scalability question — can ursula's in-memory hot-ring design hold millions of streams?
 
-> _Being verified against ursula's source (investigation in flight — this section
-> will be updated with file:line citations). Preliminary architectural read below._
-
 ursula's pitch is "millions of streams" on an **in-memory hot Raft ring** + offload
 to S3. The obvious question: **what happens when the streams don't fit in memory?**
+Verified against ursula's source (commit pinned in `vendor/ursula`):
 
-Preliminary understanding (to confirm in code):
-- ursula bounds **hot data per Raft group** (`max_hot_size_per_group`) and a
-  background flusher moves older committed chunks to the **S3 cold tier**, evicting
-  them from RAM; cold reads come back from S3 through a bounded cache. So *hot data*
-  is offloaded — that part appears implemented and is **ursula's own** tiering logic
-  (over `opendal`→S3), **not** delegated to a self-tiering engine (contrast S2 Lite,
-  which leans on SlateDB's LSM to manage tiering).
-- **The real risk is per-stream STATE, not hot data.** Even with hot bytes flushed,
-  each stream needs metadata (offsets, producer-dedup state, snapshot pointers, its
-  entry in the group state machine). If that per-stream state lives in memory per
-  group and grows with stream count, then "millions of streams" is bounded by
-  **state** memory regardless of data flushing. **This is the crux to verify:** is
-  per-stream state itself evicted/snapshotted, or held resident?
-- Secondary risks: cold-read latency for evicted streams (S3 round-trip + cache
-  thrash), and Raft-log growth / snapshot-compaction cadence at scale.
-- **Their published benchmark never exercises this** — 500–2k streams, ~675 MiB
-  uploaded, all hot-path. The millions-of-streams + eviction + cold-read path is an
-  **architectural claim, not a benchmarked result**. A fair blog point: ask whether
-  the eviction/cold-read path has been load-tested, and whether per-stream state is
-  bounded.
+**Hot DATA tiering is real and ursula-owned (not delegated).** Each Raft group caps
+hot payload at `max_hot_size_per_group`, default **64 MiB, enabled**
+(`ursula-config/src/config.rs:279,316`). ursula's *own* planner picks what to flush
+(`StreamStateMachine::plan_next_cold_flush_batch`, `state_machine.rs:709-792`); a
+background timer (default **1 s**, `config.rs:311`) flushes ≥8 MiB chunks to S3 and a
+flushed chunk's bytes are **evicted** from the per-stream `HotBuffer`
+(`HotBuffer::flush_prefix`, `state_machine.rs:385-401`; write `cold_store.rs:420`).
+`opendal` is just the S3 byte-transport — the when/what is ursula's, **unlike** S2
+Lite which leans on SlateDB's LSM to self-tier.
 
-_(Code-level answer with citations to be folded in from the source investigation.)_
+**BUT three things break the "millions of streams" claim:**
+
+1. **Cold storage is OFF by default.** `ColdBackend` defaults to `None`
+   (`config.rs:307`) and **no preset (tiny/small/standard/large) enables it** — you
+   must hand-configure `[storage.cold]`. Out of the box there is *no* offload: the
+   64 MiB cap is a **write-rejecting admission gate** (503 `ColdBackpressure`,
+   `engine/in_memory.rs:790-813`), not elastic eviction. Crossing the limit
+   **rejects the write**; it does not trigger a flush.
+
+2. **⭐ Per-stream STATE is unbounded in RAM and grows with stream COUNT — the
+   load-bearing risk.** The state machine holds **eight per-stream maps** (metadata,
+   attrs, hot_buffers, message_records, integrities, visible_snapshots, producers,
+   cold-index frontier; `state_machine.rs:46-59`), evicted **only on stream delete**
+   (`remove_stream_state`, `state_machine.rs:2432`) — **never on flush**. A
+   fully-flushed idle stream still costs metadata + an empty HotBuffer + integrity +
+   a producers sub-map. **Producer dedup state has no cap/TTL** — every producer-id
+   that ever wrote keeps a `ProducerState` (with `last_items: Vec<…>`) forever. There
+   is **no `max_streams_per_group`, no producer cap, no retention** anywhere in
+   config. The 64 MiB cap counts only hot *payload* bytes — **not** this map
+   overhead. So flushing hot DATA frees payload bytes but the per-stream STATE stays
+   resident. (It also makes flush O(n log n) in stream count *per group per second* —
+   `state_machine.rs:719`.)
+
+3. **Raft log + snapshots scale with stream count too.** `SnapshotPolicy::Never`
+   (`engine/factory.rs:632`), **no automatic log purge** (manual admin endpoint only,
+   `lib.rs:1209`), and snapshots are **full, non-incremental JSON of the entire
+   group** — all streams + their hot payloads — on a 60 s timer
+   (`ursula-raft/src/state_machine.rs:564`; `bootstrap/snapshot.rs`). Both log size
+   and per-snapshot cost grow O(streams-per-group).
+
+**Cold-read latency** (when enabled): a read of evicted data can take **two
+sequential S3 GETs** (cold index page miss → data block miss), each with timeout +
+retries; the read cache (256 MiB LRU) and index-page cache (1024 pages) are bounded —
+but the read cache also **defaults to `None`** (`config.rs:309`).
+
+**And their published benchmark never exercises any of this** — 500–2k streams,
+~675 MiB, all hot-path, almost certainly cold-disabled. The millions-of-streams +
+eviction + cold-read story is an **architectural claim, not a benchmarked result**.
+
+**Bottom line:** "millions of streams that exceed memory" holds **only for stream
+payload DATA** (and only when cold storage is explicitly enabled, which no preset
+does). For stream **count**, ursula keeps unbounded per-stream state + producer state
+in RAM per group with no eviction or count caps, and an unpurged Raft log — so stream
+*cardinality*, not data volume, is the real memory ceiling. Sharding across more
+groups spreads it but doesn't change the per-stream-state-in-memory fundamental.
 
 ---
 
