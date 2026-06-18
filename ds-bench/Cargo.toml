@@ -27,5 +27,8 @@ tokio = { version = "1.39", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[dev-dependencies]
+tokio = { version = "1.39", features = ["full", "test-util"] }
+
 [lints.clippy]
 wildcard_imports = "deny"
