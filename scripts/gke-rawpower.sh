@@ -33,6 +33,11 @@ K() { kubectl --context "$CTX" -n ds-bench "$@"; }
 
 # ── run identity ───────────────────────────────────────────────────────────────
 RUN_ID="rawpower-${PROFILE}-$(date +%s)-$$"
+# Stable base for STREAM names. RUN_ID is re-set per cell/rep/pods deep in the
+# headroom loop (used only as the MinIO results prefix), so stream names must NOT
+# use it — otherwise each cell's bench_cmd, built before that re-set, embeds the
+# PREVIOUS cell's RUN_ID and produces malformed concatenated stream names.
+SWEEP_RUN_ID="$RUN_ID"
 RESULTS_ROOT="results/rawpower/${RUN_ID}"
 mkdir -p "$RESULTS_ROOT"
 
@@ -358,7 +363,7 @@ for SERVER_CPU in $SERVER_CPUS; do
     READ_SIZES="1024"
     READ_CONNS="256"
   else
-    READ_SIZES="1024 16384 1048576"
+    READ_SIZES="1024 16384"
     READ_CONNS="16 64 256 1024"
   fi
 
@@ -370,7 +375,7 @@ for SERVER_CPU in $SERVER_CPUS; do
       # read size: seed the stream to exactly read_size (matches BENCHMARKS.md, where
       # a "1 KB / 16 KB / 1 MB read" reads a stream of that size). Seeding 256 MiB made
       # every GET return 256 MiB → at conn 256 that is ~64 GiB in flight → timeout/OOM.
-      bench_cmd="reads --target ${TARGET} --api-style ${API_STYLE} --stream ${cell}-${RUN_ID} --read-size-bytes ${read_size} --connections ${read_conn} --duration-secs ${DURATION} --seed-bytes ${read_size}"
+      bench_cmd="reads --target ${TARGET} --api-style ${API_STYLE} --stream ${cell}-${SWEEP_RUN_ID} --read-size-bytes ${read_size} --connections ${read_conn} --duration-secs ${DURATION} --seed-bytes ${read_size}"
       out_prefix="reads"
       merge_cmd="ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix reads-"
       run_cell "$cell" "$bench_cmd" "$out_prefix" "$merge_cmd" "$SERVER_CPU"
@@ -381,24 +386,28 @@ for SERVER_CPU in $SERVER_CPUS; do
   if [ "$PROFILE" = "fast" ]; then
     APPEND_CONNS="256"
     APPEND_BODIES="binary"
+    APPEND_PAYLOADS="1024"
   else
     APPEND_CONNS="64 256"
     APPEND_BODIES="binary json-single json-array"
+    APPEND_PAYLOADS="1024 16384"   # 1 KB / 16 KB writes (per user guidance)
   fi
 
-  for append_conn in $APPEND_CONNS; do
+  for append_payload in $APPEND_PAYLOADS; do
+   for append_conn in $APPEND_CONNS; do
     for body_mode in $APPEND_BODIES; do
       # array-records flag only for json-array
       extra_bench_flags=""
       if [ "$body_mode" = "json-array" ]; then
         extra_bench_flags="--array-records 10"
       fi
-      cell="append-cpu${SERVER_CPU}-conn${append_conn}-${body_mode}"
-      bench_cmd="append --target ${TARGET} --api-style ${API_STYLE} --stream ${cell}-${RUN_ID} --connections ${append_conn} --payload-bytes 256 --duration-secs ${DURATION} --body-mode ${body_mode}${extra_bench_flags:+ $extra_bench_flags}"
+      cell="append-cpu${SERVER_CPU}-conn${append_conn}-${body_mode}-p${append_payload}"
+      bench_cmd="append --target ${TARGET} --api-style ${API_STYLE} --stream ${cell}-${SWEEP_RUN_ID} --connections ${append_conn} --payload-bytes ${append_payload} --duration-secs ${DURATION} --body-mode ${body_mode}${extra_bench_flags:+ $extra_bench_flags}"
       out_prefix="append"
       merge_cmd="ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix append-"
       run_cell "$cell" "$bench_cmd" "$out_prefix" "$merge_cmd" "$SERVER_CPU"
     done
+   done
   done
 
   # ── append splice variant (slow only): 1MB binary with --splice-appends ─────
@@ -408,7 +417,7 @@ for SERVER_CPU in $SERVER_CPUS; do
     deploy_server "$SERVER_CPU" "--splice-appends"
 
     cell="append-splice-cpu${SERVER_CPU}-conn256-binary-1m"
-    bench_cmd="append --target ${TARGET} --api-style ${API_STYLE} --stream ${cell}-${RUN_ID} --connections 256 --payload-bytes 1048576 --duration-secs ${DURATION} --body-mode binary"
+    bench_cmd="append --target ${TARGET} --api-style ${API_STYLE} --stream ${cell}-${SWEEP_RUN_ID} --connections 256 --payload-bytes 1048576 --duration-secs ${DURATION} --body-mode binary"
     out_prefix="append-splice"
     merge_cmd="ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix append-splice-"
     run_cell "$cell" "$bench_cmd" "$out_prefix" "$merge_cmd" "$SERVER_CPU"
@@ -427,7 +436,7 @@ for SERVER_CPU in $SERVER_CPUS; do
 
   for subs in $FO_SUBS_LIST; do
     cell="fanout-cpu${SERVER_CPU}-subs${subs}"
-    bench_cmd="fan-out --target ${TARGET} --api-style ${API_STYLE} --stream ${cell}-${RUN_ID} --subscribers ${subs} --writer-rate 50 --duration-secs ${DURATION} --payload-bytes 256"
+    bench_cmd="fan-out --target ${TARGET} --api-style ${API_STYLE} --stream ${cell}-${SWEEP_RUN_ID} --subscribers ${subs} --writer-rate 50 --duration-secs ${DURATION} --payload-bytes 1024"
     out_prefix="fan-out"
     merge_cmd="ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix fanout-"
     run_cell "$cell" "$bench_cmd" "$out_prefix" "$merge_cmd" "$SERVER_CPU"
@@ -444,7 +453,7 @@ for SERVER_CPU in $SERVER_CPUS; do
     # seed-bytes = 32 MiB = 32× the tier-segment-bytes (1 MiB) so multiple segments
     # seal + offload to cold storage and reads actually exercise the cold-tier path.
     cell="reads-cold-cpu${SERVER_CPU}-size1m-conn64"
-    bench_cmd="reads --target ${TARGET} --api-style ${API_STYLE} --stream ${cell}-${RUN_ID} --read-size-bytes 1048576 --connections 64 --duration-secs ${DURATION} --seed-bytes 33554432"
+    bench_cmd="reads --target ${TARGET} --api-style ${API_STYLE} --stream ${cell}-${SWEEP_RUN_ID} --read-size-bytes 1048576 --connections 64 --duration-secs ${DURATION} --seed-bytes 33554432"
     out_prefix="reads-cold"
     merge_cmd="ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix reads-cold-"
     run_cell "$cell" "$bench_cmd" "$out_prefix" "$merge_cmd" "$SERVER_CPU"
