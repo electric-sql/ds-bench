@@ -1,0 +1,31 @@
+apiVersion: batch/v1
+kind: Job
+metadata: { name: micro, namespace: ds-bench }
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      nodeSelector: { role: server }
+      containers:
+      - name: micro
+        image: europe-west1-docker.pkg.dev/vaxine/ds-bench/micro:dev
+        imagePullPolicy: Always
+        securityContext: { privileged: true }   # needed for drop_caches in the cold study
+        env:
+        - { name: PROFILE, value: "fast" }
+        - { name: SERVER_CPUS, value: "0-5" }
+        - { name: CLIENT_CPUS, value: "6-7" }
+        - { name: RUN_ID, value: "REPLACE_RUN_ID" }
+        command: ["bash","-lc"]
+        args:
+        - |
+          bash run.sh
+          mc alias set local http://minio:9000 minioadmin minioadmin
+          mc cp --recursive /micro/out/ "local/bench-results/micro-${RUN_ID}/"
+        resources:
+          requests: { cpu: "7", memory: "24Gi" }
+        volumeMounts:
+        - { name: data, mountPath: /data }
+      volumes:
+      - { name: data, emptyDir: {} }
