@@ -27,6 +27,14 @@ mkdir -p "$OUT_DIR"
 
 # Baseline fleet pods for the head-to-head (identical across systems for fairness).
 BASE_PODS="${BASE_PODS:-4}"
+# catch-up + mixed run at a SMALLER pod count: they have a strict setup gate (all
+# pre-events must land) and concurrent multi-pod pre-loading of one shared stream
+# trips it. They measure single-node replay/mixed semantics, not fleet saturation
+# (multi-stream + the sweep cover saturation), so 1 pod is the right, robust knob.
+CU_MX_PODS="${CU_MX_PODS:-1}"
+# Set RESUME=1 to skip any run whose result JSON already exists (so a re-run after
+# a mid-matrix failure doesn't repeat the costly runs that already succeeded).
+RESUME="${RESUME:-1}"
 
 # --- deploy helpers: bring ONE server up, scale the others to 0 ---
 ensure_only() {
@@ -70,6 +78,15 @@ run_and_save() {
   local system="$1" workload="$2" pods="$3" tag="$4"
   echo ""
   echo "########## RUN: system=$system workload=$workload pods=$pods tag=$tag ##########"
+  # Resume: skip if we already have this result (non-mixed: <tag>.json;
+  # mixed: <tag>-write.json as the sentinel).
+  if [ "$RESUME" = "1" ]; then
+    if [ "$workload" = "mixed" ] && [ -s "$OUT_DIR/$tag-write.json" ]; then
+      echo "  RESUME: $tag already has results — skipping"; return 0
+    elif [ "$workload" != "mixed" ] && [ -s "$OUT_DIR/$tag.json" ]; then
+      echo "  RESUME: $tag.json already exists — skipping"; return 0
+    fi
+  fi
   local log="$OUT_DIR/$tag.log"
   # gke-run.sh ensures the server itself is up (we already scaled it); the run
   # script's ensure step is idempotent and cheap.
@@ -108,8 +125,8 @@ echo "############################################################"
 ensure_only durable
 run_and_save durable multi-stream "$BASE_PODS" "durable-multi-stream"
 run_and_save durable fan-out      "$BASE_PODS" "durable-fan-out"
-run_and_save durable catch-up     "$BASE_PODS" "durable-catch-up"
-run_and_save durable mixed        "$BASE_PODS" "durable-mixed"
+run_and_save durable catch-up     "$CU_MX_PODS" "durable-catch-up"
+run_and_save durable mixed        "$CU_MX_PODS" "durable-mixed"
 
 # ------------------------------------------------------------
 # 1b) SATURATION SWEEP — durable multi-stream, client parallelism 2->4->8.
@@ -127,8 +144,8 @@ done
 ensure_only ursula
 run_and_save ursula multi-stream "$BASE_PODS" "ursula-multi-stream"
 run_and_save ursula fan-out      "$BASE_PODS" "ursula-fan-out"
-run_and_save ursula catch-up     "$BASE_PODS" "ursula-catch-up"
-run_and_save ursula mixed        "$BASE_PODS" "ursula-mixed"
+run_and_save ursula catch-up     "$CU_MX_PODS" "ursula-catch-up"
+run_and_save ursula mixed        "$CU_MX_PODS" "ursula-mixed"
 
 # ============================================================
 # 3) S2 Lite — multi-stream + fan-out only (excluded from catch-up/mixed)
