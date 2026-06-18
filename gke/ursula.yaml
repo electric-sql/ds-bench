@@ -58,7 +58,7 @@ spec:
           image: europe-west1-docker.pkg.dev/${PROJECT}/ds-bench/ursula:dev
           imagePullPolicy: Always
           command: ["/usr/local/bin/ursula"]
-          args: ["--config", "/etc/ursula/ursula.toml", "--node-id", "1", "--preset", "small"]
+          args: ["--config", "/etc/ursula/ursula.toml", "--node-id", "1", "--preset", "standard"]
           ports:
             - containerPort: 4437
           # readinessProbe so `kubectl wait --for=condition=available` (and the
