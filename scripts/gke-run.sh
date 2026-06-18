@@ -143,7 +143,9 @@ K delete job bench-fleet bench-coordinator --ignore-not-found --wait=true >/dev/
 for _ in $(seq 1 45); do
   j=$(K get jobs bench-fleet bench-coordinator --no-headers 2>/dev/null | wc -l | tr -d ' ')
   p=$(K get pods -l 'job-name in (bench-fleet,bench-coordinator)' --no-headers 2>/dev/null | wc -l | tr -d ' ')
-  [ "$j" = "0" ] && [ "$p" = "0" ] && break
+  # NB: explicit if (not `cond && break`) — a failing `&&` chain returns non-zero
+  # and would trip `set -e`, silently exiting the script before the fleet launch.
+  if [ "$j" = "0" ] && [ "$p" = "0" ]; then break; fi
   sleep 2
 done
 
