@@ -1,0 +1,37 @@
+# Cross-node merge coordinator (Phase 2b). Downloads every fleet pod's
+# .hdr/.json from s3://bench-results/${RUN_ID}/ into a local emptyDir, then
+# runs `ds-bench hdr-merge` over the lot — the exact cross-node HDR merge that
+# the Phase-2a single-node ReadWriteOnce PVC could not do.
+#
+# Substituted by the run scripts before apply:
+#   ${PROJECT}     registry project
+#   ${RUN_ID}      run prefix to pull from MinIO
+#   ${MERGE_CMD}   the hdr-merge invocation (plain, or per-class for mixed)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bench-coordinator
+  namespace: ds-bench
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      nodeSelector: { role: client }
+      containers:
+        - name: coordinator
+          image: europe-west1-docker.pkg.dev/${PROJECT}/ds-bench/ds-bench:dev
+          imagePullPolicy: Always
+          env:
+            - { name: RUN_ID, value: "${RUN_ID}" }
+          command: ["/bin/sh", "-c"]
+          args:
+            - >
+              mc alias set local http://minio:9000 minioadmin minioadmin &&
+              mc cp --recursive "local/bench-results/${RUN_ID}/" /merge/ &&
+              ${MERGE_CMD}
+          volumeMounts:
+            - { name: merge, mountPath: /merge }
+      volumes:
+        - name: merge
+          emptyDir: {}
