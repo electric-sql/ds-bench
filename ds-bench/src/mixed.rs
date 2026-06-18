@@ -234,9 +234,8 @@ pub async fn run(args: MixedArgs) -> Result<MixedResult> {
     }
 
     // --- Catch-up reader tasks (no barrier needed — they replay from offset -1) ---
-    // Readers need a deadline too; derive it from the same duration.
-    // They use a simple local deadline since they don't depend on the barrier.
-    let reader_deadline = Instant::now() + Duration::from_secs(args.duration_secs + 5);
+    // Readers share the same deadline_cell as writers/subscribers so all three
+    // groups run over an identical wall-clock window.
     for reader_idx in 0..args.readers {
         let backend = backend.clone();
         let stream_idx = reader_idx % args.streams;
@@ -245,12 +244,14 @@ pub async fn run(args: MixedArgs) -> Result<MixedResult> {
         let read_bp = read_bp.clone();
         let read_err = read_err.clone();
         let read_hist = read_hist.clone();
+        let deadline_cell = deadline_cell.clone();
         handles.push(tokio::spawn(async move {
             run_reader_task(
                 backend,
                 reader_idx,
                 stream,
-                reader_deadline,
+                deadline_cell,
+                idle,
                 read_ok,
                 read_bp,
                 read_err,
@@ -502,14 +503,33 @@ async fn run_reader_task(
     backend: Backend,
     base_idx: usize,
     stream: String,
-    deadline: Instant,
+    deadline_cell: Arc<tokio::sync::OnceCell<Instant>>,
+    idle: Duration,
     ok: Arc<AtomicU64>,
     bp: Arc<AtomicU64>,
     err: Arc<AtomicU64>,
     hist: Arc<Mutex<Histogram<u64>>>,
 ) {
+    // Mirror run_subscriber_task: while the deadline hasn't been set (writers
+    // haven't crossed the barrier yet) keep running but honour an idle
+    // fallback so we never spin forever.  Once the shared deadline is set we
+    // stop at exactly the same wall-clock instant as writers/subscribers.
+    let started_at = Instant::now();
     let mut local = new_histogram();
-    while Instant::now() < deadline {
+    loop {
+        let dl = deadline_cell.get().copied();
+        if let Some(end) = dl {
+            if Instant::now() >= end {
+                break;
+            }
+        } else {
+            // Writers haven't started yet; bail out if we've been running
+            // longer than the idle fallback (prevents spinning forever if
+            // something goes wrong before the barrier fires).
+            if started_at.elapsed() > idle {
+                break;
+            }
+        }
         let t = Instant::now();
         match crate::catch_up::catch_up_read_all(&backend, base_idx, &stream).await {
             Ok(_bytes) => {
