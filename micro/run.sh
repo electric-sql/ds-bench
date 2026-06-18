@@ -46,9 +46,6 @@ fi
 # Smoke profile: tiny matrix to validate the full pipeline fast.
 if [ "${PROFILE:-}" = smoke ]; then
   DUR=3; REPEATS=1
-  # Honor ENGINES/ENGINE_SPECS env overrides (e.g. a single-engine raw build that
-  # has no --http-engine flag); fall back to the multi-engine default otherwise.
-  ENGINES="${ENGINES:-hyper raw uring}"; ENGINE_SPECS="${ENGINE_SPECS:-hyper:- raw:tail uring:-}"
   READ_SIZES="1024 1048576"; CONNS_SWEEP="64 256"; SWEEP_SIZE=1024; SIZE_CONN=64
   SCALE_CPUSETS="0-1 0-7"; COLD_MEMS="infinity 512M"; COLD_STREAM_GIB=2
   SPLICE_SIZES="1048576"; TIER_SEG_BYTES=262144
@@ -62,11 +59,10 @@ fi
 # offload mode, splice 1M only.
 if [ "${PROFILE:-}" = fast ]; then
   DUR=8; REPEATS=2   # bare assign: config.env already set the defaults, so :- no-ops
-  ENGINES="${ENGINES:-hyper raw uring}"; ENGINE_SPECS="${ENGINE_SPECS:-hyper:- raw:tail uring:-}"
   READ_SIZES="1024 16384 1048576"; CONNS_SWEEP="64 256"; SWEEP_SIZE=1024; SIZE_CONN=256
   SCALE_CPUSETS="0-1 0-3 0-7"
   COLD_MEMS="infinity 512M"; COLD_STREAM_GIB=2
-  ENGINE_SPECS_COLD="${ENGINE_SPECS_COLD:-hyper:- raw:inline raw:tail uring:-}"
+  COLD_MODES="inline tail"
   SPLICE_SIZES="1048576"
   STUDIES="${STUDIES:-engines cpu_scaling memory_cold splice tiering}"
 fi
@@ -79,7 +75,8 @@ exec > >(tee -a "$OUT/run.log") 2>&1
 
 export SR_DIR="${SR_DIR:-}" DUR REPEATS PORT="${PORT:-4700}" DATA="${DATA:-/data}" UNIT="${UNIT:-dsbench}"
 export SERVER_CPUS CLIENT_CPUS SWEEP_SIZE SIZE_CONN READ_SIZES CONNS_SWEEP APPEND_MSG
-export ENGINE_SPECS="${ENGINE_SPECS:-hyper:- raw:tail uring:-}"
+export MODES="${MODES:-inline tail always}"
+export COLD_MODES="${COLD_MODES:-inline tail always}"
 export SCALE_CPUSETS COLD_MEMS COLD_STREAM_GIB SPLICE_SIZES TIER_SEG_BYTES TIER_S3
 export SERVER_CPUS_DEFAULT="$SERVER_CPUS"
 export SERVER_MEM=infinity

@@ -18,12 +18,6 @@ spec:
         - { name: CLIENT_CPUS, value: "6-7" }
         - { name: BENCH_ALLOWED_CPUS, value: "0-6" }
         - { name: RUN_ID, value: "REPLACE_RUN_ID" }
-        # The current durable-streams server is a SINGLE-ENGINE raw build: it has
-        # no --http-engine selector (only --read-offload inline|tail|always). Tell
-        # the suite to skip --http-engine and sweep raw read-offload modes instead.
-        - { name: NO_HTTP_ENGINE_FLAG, value: "1" }
-        - { name: ENGINES, value: "raw" }
-        - { name: ENGINE_SPECS, value: "raw:tail raw:inline" }
         # Core studies don't need the object store; tiering deferred (no tier binary
         # in this image + GCS S3-compat tier unverified). Override via STUDIES env.
         - { name: STUDIES, value: "engines cpu_scaling splice" }

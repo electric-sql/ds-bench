@@ -11,7 +11,6 @@
 #   json_value    — application/json, one ~JSON_MSG-byte JSON object per POST
 #   json_array    — application/json, a JSON array of JSON_ARRAY_K values (flattening)
 #
-# Single-engine (raw-only) server: run with NO_HTTP_ENGINE_FLAG=1.
 # Emits: study=json scenario in {append,read} with a `mode` dimension.
 
 JSON_CONNS="${JSON_CONNS:-64 256}"
@@ -53,7 +52,7 @@ EOF
     bytes=$(wc -c < "$body")
     for conn in $JSON_CONNS; do
       for rep in $(seq 1 "$REPEATS"); do
-        start_server raw tail "$@" || continue
+        start_server tail "$@" || continue
         curl -s -X PUT "$URL" -H "Content-Type: $ct" >/dev/null
         # sanity: one append must succeed (2xx/204) and be readable back
         if curl -s -o /dev/null -w '%{http_code}' -X POST "$URL" -H "Content-Type: $ct" --data-binary @"$body" | grep -q '^2'; then ck=ok; else ck=BADAPPEND; fi
@@ -73,7 +72,7 @@ EOF
       json_value) ct=application/json;         body=/tmp/jb_jsonval ;;
     esac
     for rep in $(seq 1 "$REPEATS"); do
-      start_server raw tail || continue
+      start_server tail || continue
       curl -s -X PUT "$URL" -H "Content-Type: $ct" >/dev/null
       # append ~64 KiB worth so the catch-up GET has a real body to stream
       local n; for n in $(seq 1 200); do curl -s -o /dev/null -X POST "$URL" -H "Content-Type: $ct" --data-binary @"$body"; done

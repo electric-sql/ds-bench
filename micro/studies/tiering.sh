@@ -31,17 +31,17 @@ EOF
 
     # 1) append with tiering active
     for rep in $(seq 1 "$REPEATS"); do
-      start_server raw tail "${tierargs[@]}" || continue
+      start_server tail "${tierargs[@]}" || continue
       curl -s -X PUT "$URL" -H 'Content-Type: application/octet-stream' >/dev/null
       read -r rps p50 p99 mx cpu <<<"$(measure 256 "$URL" -s /tmp/post.lua)"
-      ab_emit study=tiering scenario=append_tiered backend="$be" engine=raw seg_bytes="$TIER_SEG_BYTES" conn=256 rep="$rep" rps="$rps" p50_ms="$p50" p99_ms="$p99" max_ms="$mx" cpu_pct="$cpu"
+      ab_emit study=tiering scenario=append_tiered backend="$be" seg_bytes="$TIER_SEG_BYTES" conn=256 rep="$rep" rps="$rps" p50_ms="$p50" p99_ms="$p99" max_ms="$mx" cpu_pct="$cpu"
       ab_log "  append_tiered $be r$rep -> $rps/s cpu${cpu}%"
       stop_server
     done
 
     # 2) cold-tier full-stream read (prefix sealed+offloaded)
     for rep in $(seq 1 "$REPEATS"); do
-      start_server raw tail "${tierargs[@]}" || continue
+      start_server tail "${tierargs[@]}" || continue
       # seed 8 segments worth so a multi-segment prefix seals + offloads
       local total=$(( TIER_SEG_BYTES * 8 ))
       curl -s -X PUT "$URL" -H 'Content-Type: application/octet-stream' >/dev/null
@@ -54,7 +54,7 @@ EOF
       local got; got=$(curl -s "$URL" | wc -c)
       read -r rps p50 p99 mx cpu <<<"$(measure 64 "$URL")"
       mbps=$(awk -v r="$rps" -v s="$got" 'BEGIN{printf "%.1f", r*s/1048576}')
-      ab_emit study=tiering scenario=read_tiered_cold backend="$be" engine=raw seg_bytes="$TIER_SEG_BYTES" stream_bytes="$got" objects="$objs" conn=64 rep="$rep" rps="$rps" mbps="$mbps" p50_ms="$p50" p99_ms="$p99" max_ms="$mx" cpu_pct="$cpu"
+      ab_emit study=tiering scenario=read_tiered_cold backend="$be" seg_bytes="$TIER_SEG_BYTES" stream_bytes="$got" objects="$objs" conn=64 rep="$rep" rps="$rps" mbps="$mbps" p50_ms="$p50" p99_ms="$p99" max_ms="$mx" cpu_pct="$cpu"
       ab_log "  read_tiered_cold $be r$rep -> $rps/s ${mbps}MB/s objs=$objs cpu${cpu}%"
       stop_server
     done

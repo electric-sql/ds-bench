@@ -85,20 +85,19 @@ ab_capture_env() {
 }
 
 # ---- server lifecycle (taskset background process, no systemd) ----
-# start_server <engine> <mode> [extra server args...]
+# start_server <mode> [extra server args...]
 #   SERVER_CPUS is read from the environment per-cell.
 #   SERVER_MEM: if a delegated cgroup at /sys/fs/cgroup/dsbench is available,
 #   apply a MemoryMax-equivalent constraint; otherwise skip (with a notice).
+#   The server is always the raw (single-engine) build; no --http-engine flag.
 SERVER_PID=""
 
 start_server() {
-  local eng="$1" mode="$2"; shift 2
+  local mode="$1"; shift
   ab_reap
   rm -rf "$DATA"; mkdir -p "$DATA"
   local args=(--host 127.0.0.1 --port "$PORT" --data-dir "$DATA" --long-poll-timeout-ms 30000)
-  # NO_HTTP_ENGINE_FLAG=1 for a single-engine build that dropped --http-engine.
-  [ "${NO_HTTP_ENGINE_FLAG:-0}" = 1 ] || args+=(--http-engine "$eng")
-  { [ "$eng" = raw ] || [ "${NO_HTTP_ENGINE_FLAG:-0}" = 1 ]; } && args+=(--read-offload "$mode")
+  [ "$mode" != "-" ] && args+=(--read-offload "$mode")
   args+=("$@")
   # Launch under taskset (no systemd); capture PID for clean stop.
   taskset -c "${SERVER_CPUS:-0-7}" "$BIN" "${args[@]}" &
@@ -111,7 +110,7 @@ start_server() {
   done
   # Verify server is still running
   if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-    ab_log "server FAILED to start ($eng/$mode)"; SERVER_PID=""; return 1
+    ab_log "server FAILED to start (mode=$mode)"; SERVER_PID=""; return 1
   fi
   SRV_MAIN_PID="$SERVER_PID"
 }

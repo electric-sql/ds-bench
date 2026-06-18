@@ -1,4 +1,4 @@
-# cpu_scaling study — how each engine scales with server core count. The server
+# cpu_scaling study — how the raw server scales with core count. The server
 # auto-derives its worker/thread count from the cgroup cpuset (Rust's
 # available_parallelism honours sched affinity), so varying AllowedCPUs varies
 # effective threads. Client stays pinned to CLIENT_CPUS throughout.
@@ -12,32 +12,28 @@ wrk.method = "POST"
 wrk.body = string.rep("x", ${APPEND_MSG})
 wrk.headers["Content-Type"] = "application/octet-stream"
 EOF
-  local cset eng mode spec rep rps p50 p99 mx cpu ncpu
-  local specs="${ENGINE_SPECS:-hyper:- raw:tail uring:-}"
+  local cset rep rps p50 p99 mx cpu ncpu
   for cset in $SCALE_CPUSETS; do
     ncpu=$(cpu_count "$cset")
     SERVER_CPUS="$cset"     # consumed by start_server/measure via env
-    for spec in $specs; do
-      eng="${spec%%:*}"; mode="${spec#*:}"
-      # read at SWEEP_SIZE
-      for rep in $(seq 1 "$REPEATS"); do
-        start_server "$eng" "$mode" || continue
-        if seed "$SWEEP_SIZE"; then
-          read -r rps p50 p99 mx cpu <<<"$(measure "$SIZE_CONN" "$URL")"
-          ab_emit study=cpu_scaling scenario=read engine="$eng" mode="$mode" size="$SWEEP_SIZE" conn="$SIZE_CONN" ncpu="$ncpu" server_cpus="$cset" rep="$rep" rps="$rps" p50_ms="$p50" p99_ms="$p99" max_ms="$mx" cpu_pct="$cpu"
-          ab_log "  read $eng ncpu=$ncpu r$rep -> $rps/s cpu${cpu}%"
-        fi
-        stop_server
-      done
-      # append
-      for rep in $(seq 1 "$REPEATS"); do
-        start_server "$eng" "$mode" || continue
-        curl -s -X PUT "$URL" -H 'Content-Type: application/octet-stream' >/dev/null
-        read -r rps p50 p99 mx cpu <<<"$(measure "$SIZE_CONN" "$URL" -s /tmp/post.lua)"
-        ab_emit study=cpu_scaling scenario=append engine="$eng" mode="$mode" size="$APPEND_MSG" conn="$SIZE_CONN" ncpu="$ncpu" server_cpus="$cset" rep="$rep" rps="$rps" p50_ms="$p50" p99_ms="$p99" max_ms="$mx" cpu_pct="$cpu"
-        ab_log "  append $eng ncpu=$ncpu r$rep -> $rps/s cpu${cpu}%"
-        stop_server
-      done
+    # read at SWEEP_SIZE (tail mode)
+    for rep in $(seq 1 "$REPEATS"); do
+      start_server tail || continue
+      if seed "$SWEEP_SIZE"; then
+        read -r rps p50 p99 mx cpu <<<"$(measure "$SIZE_CONN" "$URL")"
+        ab_emit study=cpu_scaling scenario=read mode=tail size="$SWEEP_SIZE" conn="$SIZE_CONN" ncpu="$ncpu" server_cpus="$cset" rep="$rep" rps="$rps" p50_ms="$p50" p99_ms="$p99" max_ms="$mx" cpu_pct="$cpu"
+        ab_log "  read ncpu=$ncpu r$rep -> $rps/s cpu${cpu}%"
+      fi
+      stop_server
+    done
+    # append
+    for rep in $(seq 1 "$REPEATS"); do
+      start_server tail || continue
+      curl -s -X PUT "$URL" -H 'Content-Type: application/octet-stream' >/dev/null
+      read -r rps p50 p99 mx cpu <<<"$(measure "$SIZE_CONN" "$URL" -s /tmp/post.lua)"
+      ab_emit study=cpu_scaling scenario=append mode=tail size="$APPEND_MSG" conn="$SIZE_CONN" ncpu="$ncpu" server_cpus="$cset" rep="$rep" rps="$rps" p50_ms="$p50" p99_ms="$p99" max_ms="$mx" cpu_pct="$cpu"
+      ab_log "  append ncpu=$ncpu r$rep -> $rps/s cpu${cpu}%"
+      stop_server
     done
   done
   SERVER_CPUS="${SERVER_CPUS_DEFAULT}"  # restore

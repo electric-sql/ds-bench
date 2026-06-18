@@ -3,7 +3,7 @@
 # that cap forces real disk I/O. We then measure hot 4 KB read latency while
 # background readers churn the cold stream, sweeping the memory cap.
 # read-offload modes MATTER here: inline stalls the async worker on a fault,
-# tail/always offload it, uring reads async in-kernel.
+# tail/always offload it.
 #
 # Container note: capped cells (mem != infinity) require a delegated cgroup at
 # /sys/fs/cgroup/dsbench (or equivalent). If unavailable, capped cells are
@@ -29,12 +29,12 @@ _apply_mem_cap() {
 
 study_memory_cold() {
   ab_log "STUDY memory_cold (mems: $COLD_MEMS, cold=${COLD_STREAM_GIB}GiB)"
-  local specs="${ENGINE_SPECS_COLD:-hyper:- raw:inline raw:tail raw:always uring:-}"
+  local COLD_MODES="${COLD_MODES:-inline tail always}"
   local BURL="http://127.0.0.1:${PORT}/big"
   local chunk=/tmp/chunk64.bin
   head -c 67108864 /dev/zero | tr '\0' y > "$chunk"      # 64 MiB filler
   local nchunks=$(( COLD_STREAM_GIB * 16 ))               # 64MiB * 16 = 1 GiB
-  local mem spec eng mode rep p50 p99 mx cpu COLDPIDS
+  local mem mode rep p50 p99 mx cpu COLDPIDS
   for mem in $COLD_MEMS; do
     SERVER_MEM="$mem"
     # Guard: capped cells require cgroup delegation; skip if unavailable.
@@ -45,10 +45,9 @@ study_memory_cold() {
         continue
       fi
     fi
-    for spec in $specs; do
-      eng="${spec%%:*}"; mode="${spec#*:}"
+    for mode in $COLD_MODES; do
       for rep in $(seq 1 "$REPEATS"); do
-        start_server "$eng" "$mode" || continue
+        start_server "$mode" || continue
         # Apply memory cap after server starts (move server PID into cgroup).
         # VERIFY the move succeeded — a silent failure would leave the server
         # uncapped while recording data labelled as capped (wrong cold numbers).
@@ -57,7 +56,7 @@ study_memory_cold() {
           echo "$SERVER_PID" > "$cg/cgroup.procs" 2>/dev/null || true
           if ! grep -q "^${SERVER_PID}$" "$cg/cgroup.procs" 2>/dev/null; then
             echo "SKIP memory_cold cap=$mem (cgroup move failed)"
-            ab_log "SKIP memory_cold cap=$mem eng=$eng mode=$mode — server PID $SERVER_PID not in $cg/cgroup.procs; skipping to avoid uncapped result"
+            ab_log "SKIP memory_cold cap=$mem mode=$mode — server PID $SERVER_PID not in $cg/cgroup.procs; skipping to avoid uncapped result"
             stop_server
             continue
           fi
@@ -76,8 +75,8 @@ study_memory_cold() {
         read -r _ p50 p99 mx cpu <<<"$(measure 16 "$URL")"
         for r in "${COLDPIDS[@]}"; do kill "$r" 2>/dev/null; done
         pkill -f "curl -s $BURL" 2>/dev/null
-        ab_emit study=memory_cold scenario=hot_under_cold engine="$eng" mode="$mode" mem="$mem" cold_gib="$COLD_STREAM_GIB" conn=16 rep="$rep" p50_ms="$p50" p99_ms="$p99" max_ms="$mx" cpu_pct="$cpu" server_cpus="$SERVER_CPUS"
-        ab_log "  cold $eng/$mode mem=$mem r$rep -> hot p50=$p50 p99=$p99 max=$mx ms"
+        ab_emit study=memory_cold scenario=hot_under_cold mode="$mode" mem="$mem" cold_gib="$COLD_STREAM_GIB" conn=16 rep="$rep" p50_ms="$p50" p99_ms="$p99" max_ms="$mx" cpu_pct="$cpu" server_cpus="$SERVER_CPUS"
+        ab_log "  cold mode=$mode mem=$mem r$rep -> hot p50=$p50 p99=$p99 max=$mx ms"
         stop_server
       done
     done
