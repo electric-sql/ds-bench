@@ -186,6 +186,44 @@ fn merge_summary_reports_per_workload_headline() {
 }
 
 #[test]
+fn merge_summary_multi_fanout_headline() {
+    use serde_json::json;
+    let dir = std::env::temp_dir().join("ds-bench-headline-multi-fanout");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut h = Histogram::<u64>::new_with_bounds(1, 60_000_000, 3).unwrap();
+    for v in [1000u64, 2000, 3000] { h.record(v).unwrap(); }
+    {
+        let mut buf = Vec::new();
+        V2Serializer::new().serialize(&h, &mut buf).unwrap();
+        std::fs::write(dir.join("multi-fanout-0.hdr"), &buf).unwrap();
+    }
+    // Two multi-fanout pods each report aggregate_events_per_sec.
+    std::fs::write(
+        dir.join("pod-0.json"),
+        serde_json::to_string(&json!({
+            "scenario": "multi-fanout", "aggregate_events_per_sec": 1234.0
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("pod-1.json"),
+        serde_json::to_string(&json!({
+            "scenario": "multi-fanout", "aggregate_events_per_sec": 766.0
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let s = ds_bench::dist::merge_summary(&dir, Some(&dir)).unwrap();
+    assert_eq!(s.aggregate_ops_per_sec, None, "multi-fanout must not set ops/s");
+    assert_eq!(s.events_per_sec, None, "multi-fanout must not set fanout events_per_sec");
+    let aeps = s.aggregate_events_per_sec.expect("multi-fanout must set aggregate_events_per_sec");
+    assert!((aeps - 2000.0).abs() < 1e-9, "aggregate_events_per_sec should be 2000.0, got {aeps}");
+    assert!(s.merged_count > 0);
+}
+
+#[test]
 fn hdr_merge_summary_matches_merged_histogram() {
     let dir = std::env::temp_dir().join("ds-bench-hdr-merge-test");
     let _ = std::fs::remove_dir_all(&dir);

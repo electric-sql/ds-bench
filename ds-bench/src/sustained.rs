@@ -176,12 +176,6 @@ pub async fn run(args: SustainedArgs) -> Result<SustainedResult> {
         loop {
             interval.tick().await;
             let elapsed = snapshot_start.elapsed();
-            if elapsed >= Duration::from_secs(
-                // stop just after the deadline to ensure we don't print after workers finish
-                snapshot_interval.max(1) * 1000,
-            ) {
-                break;
-            }
             let elapsed_s = elapsed.as_secs_f64();
             let ops = snapshot_ok.load(Ordering::Relaxed);
             let h = snapshot_hist.lock().await;

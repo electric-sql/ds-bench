@@ -93,6 +93,9 @@ pub struct MergeSummary {
     /// Events/sec (events_received_total / max per-pod duration) — fan-out only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub events_per_sec: Option<f64>,
+    /// Summed aggregate_events_per_sec — multi-fanout only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aggregate_events_per_sec: Option<f64>,
 }
 
 /// Accumulators built from scanning the per-pod JSONs in the results dir.
@@ -106,6 +109,8 @@ struct HeadlineAcc {
     saw_fanout: bool,
     events_received: u64,
     max_duration_secs: f64,
+    saw_multi_fanout: bool,
+    multi_fanout_events_per_sec: f64,
 }
 
 fn scan_headlines(results_dir: Option<&Path>) -> HeadlineAcc {
@@ -133,6 +138,12 @@ fn scan_headlines(results_dir: Option<&Path>) -> HeadlineAcc {
             if d > acc.max_duration_secs {
                 acc.max_duration_secs = d;
             }
+        } else if scenario == "multi-fanout" {
+            acc.saw_multi_fanout = true;
+            acc.multi_fanout_events_per_sec += v
+                .get("aggregate_events_per_sec")
+                .and_then(|x| x.as_f64())
+                .unwrap_or(0.0);
         } else {
             // multi-stream-write / mixed (and any future ops/s workload).
             if let Some(ops) = v.get("aggregate_ops_per_sec").and_then(|x| x.as_f64()) {
@@ -160,20 +171,22 @@ pub fn merge_summary_filtered(
     // catch-up and fan-out take precedence (they never carry ops/s); ops/s is
     // multi-stream/mixed. A results dir holds one workload's pods at a time.
     let (aggregate_ops_per_sec, aggregate_mb_per_sec, bytes_received_total,
-         events_received_total, events_per_sec) = if acc.saw_catchup {
-        (None, Some(acc.mb_per_sec), Some(acc.bytes_received), None, None)
+         events_received_total, events_per_sec, aggregate_events_per_sec) = if acc.saw_catchup {
+        (None, Some(acc.mb_per_sec), Some(acc.bytes_received), None, None, None)
     } else if acc.saw_fanout {
         let eps = if acc.max_duration_secs > 0.0 {
             Some(acc.events_received as f64 / acc.max_duration_secs)
         } else {
             None
         };
-        (None, None, None, Some(acc.events_received), eps)
+        (None, None, None, Some(acc.events_received), eps, None)
+    } else if acc.saw_multi_fanout {
+        (None, None, None, None, None, Some(acc.multi_fanout_events_per_sec))
     } else if acc.saw_ops {
-        (Some(acc.ops), None, None, None, None)
+        (Some(acc.ops), None, None, None, None, None)
     } else {
         // No per-pod JSON (e.g. tests merging raw .hdr only): omit all headlines.
-        (None, None, None, None, None)
+        (None, None, None, None, None, None)
     };
     Ok(MergeSummary {
         merged_count: h.len(),
@@ -187,6 +200,7 @@ pub fn merge_summary_filtered(
         bytes_received_total,
         events_received_total,
         events_per_sec,
+        aggregate_events_per_sec,
     })
 }
 

@@ -138,9 +138,22 @@ if [ "$WORKLOAD" = "sustained" ]; then
     echo ""
     echo "=== sustained N=${N} run_id=${RUN_ID} ==="
 
+    # Truncate the per-N samples.csv so this N's window only contains its own data.
+    case "$SYSTEM" in
+      durable) _RESET_LABEL="app=durable-streams" ;;
+      ursula)  _RESET_LABEL="app=ursula" ;;
+      s2)      _RESET_LABEL="app=s2lite" ;;
+    esac
+    _RESET_POD="$( { K get pod -l "$_RESET_LABEL" -o name 2>/dev/null || true; } | head -1 | sed 's|pod/||')"
+    if [ -n "$_RESET_POD" ] && [ "$SYSTEM" = "durable" ]; then
+      echo "    resetting samples.csv on pod ${_RESET_POD} before N=${N}..."
+      K exec "$_RESET_POD" -c metrics -- sh -c 'echo "ts_ms,rss_bytes,cpu_ticks" > /metrics/samples.csv' \
+        || true  # transient exec failure must not abort the sweep
+    fi
+
     BENCH_CMD="sustained --target ${TARGET} --api-style ${API_STYLE} --streams ${N} --rate-per-stream ${RATE} --duration-secs ${DURATION} --snapshot-secs 5"
     OUT_PREFIX="sustained"
-    MERGE_CMD="ds-bench hdr-merge --hdr-dir /merge --label-prefix sustained-"
+    MERGE_CMD="ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix sustained-"
 
     run_fleet_and_coordinator
 
@@ -180,7 +193,7 @@ elif [ "$WORKLOAD" = "multi-fanout" ]; then
 
   BENCH_CMD="multi-fanout --target ${TARGET} --api-style ${API_STYLE} --streams ${M} --subscribers-per-stream ${S} --writer-rate ${RATE} --duration-secs ${DURATION}"
   OUT_PREFIX="multi-fanout"
-  MERGE_CMD="ds-bench hdr-merge --hdr-dir /merge --label-prefix multi-fanout-"
+  MERGE_CMD="ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix multi-fanout-"
 
   run_fleet_and_coordinator
 

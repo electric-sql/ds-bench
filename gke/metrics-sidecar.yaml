@@ -31,8 +31,8 @@
 #
 # CPU field note: /proc/<pid>/stat fields 14+15 (1-indexed) are utime+stime.
 # The awk expression strips everything up to and including the closing ')' of
-# the comm field, then counts space-separated tokens — this handles process
-# names that contain spaces or parentheses.
+# the comm field, then counts space-separated tokens — this handles spaces in
+# comm; assumes no literal ') ' inside the process name.
 
 # ── pod-level (under spec.template.spec) ─────────────────────────────────────
 #
