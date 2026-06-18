@@ -33,14 +33,20 @@ ensure_only() {
   # $1 = system to keep up (durable|ursula|s2)
   local keep="$1"
   echo "=== server topology: keeping '$keep' up, scaling others to 0 ==="
-  # ensure the wanted server exists + scaled to 1
+  # ensure the wanted server exists + scaled to 1, with FRESH state. A rollout
+  # restart wipes the server's ephemeral data-dir (emptyDir) so no stale stream
+  # (e.g. one created earlier with a different content-type) can 409 every
+  # append. Keeps each system-under-test starting clean.
   case "$keep" in
     durable) envsubst '${PROJECT}' < gke/durable-streams.yaml | K apply -f - >/dev/null
-             K scale deploy/durable-streams --replicas=1 ;;
+             K scale deploy/durable-streams --replicas=1 >/dev/null
+             K rollout restart deploy/durable-streams >/dev/null ;;
     ursula)  envsubst '${PROJECT}' < gke/ursula.yaml | K apply -f - >/dev/null
-             K scale deploy/ursula --replicas=1 ;;
+             K scale deploy/ursula --replicas=1 >/dev/null
+             K rollout restart deploy/ursula >/dev/null ;;
     s2)      K apply -f gke/s2lite.yaml >/dev/null
-             K scale deploy/s2lite --replicas=1 ;;
+             K scale deploy/s2lite --replicas=1 >/dev/null
+             K rollout restart deploy/s2lite >/dev/null ;;
   esac
   # scale the others down (ignore if absent)
   for d in durable-streams ursula s2lite; do
@@ -77,7 +83,7 @@ run_and_save() {
     # three labeled blocks: "== merged (mixed / write) ==" { ... } etc.
     for class in write fanout read; do
       awk -v c="$class" '
-        $0 ~ "== merged \\(mixed / " c " \\) ==" {grab=1; next}
+        $0 ~ ("== merged \\(mixed / " c "\\) ==") {grab=1; next}
         grab && /^\{/ {inj=1}
         inj {print}
         inj && /^\}/ {exit}

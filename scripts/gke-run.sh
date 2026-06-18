@@ -67,11 +67,15 @@ case "$WORKLOAD" in
     OUT_PREFIX="ms"
     ;;
   fan-out)
-    BENCH_CMD="fan-out --target ${TARGET} --api-style ${API_STYLE} --subscribers ${FO_SUBSCRIBERS} --writer-rate ${FO_RATE} --duration-secs ${FO_DURATION} --payload-bytes ${FO_PAYLOAD}"
+    # Unique stream per run so a stale stream (created earlier with a different
+    # content-type) cannot 409 "content-type mismatch" every append. fanout.rs
+    # defaults --stream to a fixed "doc"; we override it. (Keeps fanout.rs
+    # verbatim — the fix lives in the harness, not the forked file.)
+    BENCH_CMD="fan-out --target ${TARGET} --api-style ${API_STYLE} --stream fo-${RUN_ID} --subscribers ${FO_SUBSCRIBERS} --writer-rate ${FO_RATE} --duration-secs ${FO_DURATION} --payload-bytes ${FO_PAYLOAD}"
     OUT_PREFIX="fan-out"
     ;;
   catch-up)
-    BENCH_CMD="catch-up --target ${TARGET} --api-style ${API_STYLE} --clients ${CU_CLIENTS} --pre-events ${CU_PRE_EVENTS} --event-bytes ${CU_EVENT_BYTES}"
+    BENCH_CMD="catch-up --target ${TARGET} --api-style ${API_STYLE} --stream cu-${RUN_ID} --clients ${CU_CLIENTS} --pre-events ${CU_PRE_EVENTS} --event-bytes ${CU_EVENT_BYTES}"
     OUT_PREFIX="catch-up"
     ;;
   mixed)
