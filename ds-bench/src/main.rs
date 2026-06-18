@@ -6,6 +6,7 @@ mod dist;
 mod fanout;
 mod mixed;
 mod multi_stream;
+mod sse_util;
 
 use anyhow::Result;
 use clap::Parser;
