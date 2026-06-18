@@ -202,6 +202,37 @@ groups spreads it but doesn't change the per-stream-state-in-memory fundamental.
 
 ---
 
+## 7a. The architectural takeaway (positioning thesis)
+
+The scalability finding generalizes into the core positioning point:
+
+> **To serve datasets beyond memory, disk must be the system of record and memory
+> must stay bounded — not grow with stream count.** A design that holds per-stream
+> *state* in RAM is bounded by stream *cardinality*, no matter how well it offloads
+> stream *data*.
+
+- **ursula** keeps the hot ring + **per-stream state + producer dedup state in
+  memory per Raft group**, evicted only on delete (§7). Offloading hot *data* to S3
+  doesn't lower that floor. So its memory ceiling is the number of streams, and the
+  "millions of streams" claim is unproven against that ceiling.
+- **durable-streams is disk-first by construction**: each stream is an append-only
+  segment log on disk (the read path is zero-copy `sendfile` range reads straight
+  from those files — which is exactly why its catch-up p99 is 7.5 ms, §4), sealed
+  segments tier to object storage, and the working set in memory is bounded rather
+  than scaling with the number of streams. That's what lets it carry **millions of
+  streams**: the disk (and cold tier) is the dataset; memory is a bounded cache.
+
+⚠️ **Honesty guard (to keep this defensible):** the durable-streams half of this
+claim is being **verified in source the same way we audited ursula** — confirming
+that per-stream state is disk-backed/bounded (not an in-memory map that grows with
+stream count), the segment-per-stream on-disk layout, and the memory behaviour at
+high cardinality. We will not publish "built for millions of streams" as a bare
+assertion; it gets the same file:line scrutiny ursula got, and a cardinality
+benchmark (many-streams, exceeding RAM) is the experiment that would actually prove
+it — neither benchmark here has run that yet.
+
+---
+
 ## 8. Disclosures we MUST carry in any public writeup
 
 1. **Single-node only.** ursula is built for 3-node quorum (no hot-path fsync);
