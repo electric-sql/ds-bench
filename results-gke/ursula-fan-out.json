@@ -1,0 +1,10 @@
+{
+  "merged_count": 1343736,
+  "p50_ms": 79.615,
+  "p90_ms": 95.103,
+  "p99_ms": 916.479,
+  "p999_ms": 1208.319,
+  "max_ms": 1255.423,
+  "events_received_total": 1343736,
+  "events_per_sec": 44791.2
+}

@@ -1,0 +1,10 @@
+{
+  "merged_count": 100,
+  "p50_ms": 37.087,
+  "p90_ms": 57.151,
+  "p99_ms": 59.231,
+  "p999_ms": 59.263,
+  "max_ms": 59.263,
+  "aggregate_mb_per_sec": 988.0093348093823,
+  "bytes_received_total": 47897600
+}
