@@ -173,14 +173,15 @@ def _median(vals):
 
 
 def _cv_pct(vals):
-    """Coefficient of variation as percentage (stddev/mean*100)."""
+    """Coefficient of variation as percentage (sample_stddev/mean*100).
+    Uses sample stddev (÷ N-1) for REPEATS ≥ 2; returns None for N < 2."""
     s = [v for v in vals if v is not None]
     if len(s) < 2:
         return None
     mean = sum(s) / len(s)
     if mean == 0:
         return None
-    variance = sum((v - mean) ** 2 for v in s) / len(s)
+    variance = sum((v - mean) ** 2 for v in s) / (len(s) - 1)
     return math.sqrt(variance) / mean * 100.0
 
 
@@ -210,9 +211,11 @@ def aggregate_cell(cell_dir: pathlib.Path):
     cpu_med,    cpu_cv    = agg("cpu_pct")
     rss_med,    _         = agg("rss_max_mib")
 
-    # Pessimistic verdict: if any rep is client_capped, flag the cell
+    # Pessimistic verdict: client_capped or server_headroom both mean a capped cell.
+    # server_headroom appears in artifacts collected before the shell fix; treat it
+    # identically to client_capped so old runs are handled correctly.
     verdicts = [r.get("verdict") for r in reps if r.get("verdict")]
-    if "client_capped" in verdicts:
+    if any(v in ("client_capped", "server_headroom") for v in verdicts):
         verdict = "client_capped"
     elif "server_bound" in verdicts:
         verdict = "server_bound"
@@ -285,8 +288,9 @@ def cpu_with_cv(v, cv):
 
 
 def verdict_annotation(verdict):
-    """Return annotation string for the verdict column."""
-    if verdict == "client_capped":
+    """Return annotation string for the verdict column.
+    Both client_capped and server_headroom are capped (lower-bound) verdicts."""
+    if verdict in ("client_capped", "server_headroom"):
         return "⚠️ client_capped"
     if verdict == "server_bound":
         return "server_bound ✓"
@@ -435,7 +439,7 @@ if all_resource_cells:
 # Headroom honesty summary
 # ============================================================================
 
-capped      = [(n, c) for n, c in cells.items() if c.get("verdict") == "client_capped"]
+capped      = [(n, c) for n, c in cells.items() if c.get("verdict") in ("client_capped", "server_headroom")]
 server_bound = [(n, c) for n, c in cells.items() if c.get("verdict") == "server_bound"]
 
 out += [
@@ -484,7 +488,7 @@ out += [
     "until server CPU ≥ 90 % of its allocation. Only `server_bound ✓` cells reflect DS's "
     "true scale-out ceiling. `⚠️ client_capped` cells are lower bounds.",
     "- **Median + CV% for slow profile (REPEATS ≥ 3)** — per-cell median across repeats; "
-    "CV% = stddev/mean × 100. High CV% (> 10 %) may indicate run-to-run instability.",
+    "CV% = sample_stddev/mean × 100 (÷ N-1). High CV% (> 10 %) may indicate run-to-run instability.",
     "- **CLK_TCK = 100** assumed (standard Linux kernel default).",
     "",
 ]

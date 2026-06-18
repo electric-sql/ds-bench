@@ -238,29 +238,16 @@ run_cell() {
       echo "    saved merged.json → ${cell_dir}/merged.json"
       collect_sidecar "$cell_dir"
 
-      # Headroom guard
+      # Headroom guard — v is iteration-local; verdict is the final loop outcome
       local v="server_bound"
       if [ -f "${cell_dir}/samples.csv" ]; then
         local cpu_pct
         cpu_pct="$(compute_server_cpu_pct "${cell_dir}/samples.csv")"
         v="$(headroom_verdict "${cell_dir}/samples.csv" "$cpu_cores")"
-        echo "    server CPU%=${cpu_pct}  verdict=${v}  (threshold=$(awk -v c="$cpu_cores" 'BEGIN{printf "%.0f", c*100*0.9}')%)"
+        echo "    server CPU%=${cpu_pct}  iter_verdict=${v}  (threshold=$(awk -v c="$cpu_cores" 'BEGIN{printf "%.0f", c*100*0.9}')%)"
       else
         echo "    WARN: no samples.csv — assuming server_bound (cannot verify headroom)"
       fi
-
-      # Write verdict
-      {
-        echo "cell=${cell_name}"
-        echo "repeat=${repeat}"
-        echo "parallelism=${pods}"
-        echo "server_cpu_cores=${cpu_cores}"
-        if [ -f "${cell_dir}/samples.csv" ]; then
-          echo "server_cpu_pct=$(compute_server_cpu_pct "${cell_dir}/samples.csv")"
-        fi
-        echo "verdict=${v}"
-      } > "${cell_dir}/verdict.txt"
-      echo "    written verdict.txt: ${v}"
 
       if [ "$v" = "server_bound" ]; then
         verdict="server_bound"
@@ -285,6 +272,20 @@ run_cell() {
       bumps=$((bumps + 1))
       pods="$new_pods"
     done
+
+    # Write verdict AFTER the loop so we persist the FINAL outcome (server_bound or
+    # client_capped), not the intermediate per-iteration headroom check (server_headroom).
+    {
+      echo "cell=${cell_name}"
+      echo "repeat=${repeat}"
+      echo "parallelism=${pods}"
+      echo "server_cpu_cores=${cpu_cores}"
+      if [ -f "${cell_dir}/samples.csv" ]; then
+        echo "server_cpu_pct=$(compute_server_cpu_pct "${cell_dir}/samples.csv")"
+      fi
+      echo "verdict=${verdict}"
+    } > "${cell_dir}/verdict.txt"
+    echo "    written verdict.txt: ${verdict}"
 
     echo "  rep ${repeat}/${REPEATS} final verdict: ${verdict}  parallelism=${pods}"
   done
