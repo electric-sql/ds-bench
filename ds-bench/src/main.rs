@@ -1,3 +1,4 @@
+mod append;
 mod backend;
 mod bootstrap;
 mod catch_up;
@@ -28,6 +29,8 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
+    /// Single-stream concurrent appenders — group-commit study with binary/JSON body modes.
+    Append(append::AppendArgs),
     /// Multi-stream concurrent write - proves multi-Raft sharding scales with stream count.
     MultiStream(multi_stream::MultiStreamArgs),
     /// SSE fan-out - single stream, many subscribers, measure per-event end-to-end latency.
@@ -61,6 +64,7 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     let json = match cli.cmd {
+        Cmd::Append(args) => serde_json::to_string_pretty(&append::run(args).await?)?,
         Cmd::MultiStream(args) => serde_json::to_string_pretty(&multi_stream::run(args).await?)?,
         Cmd::FanOut(args) => serde_json::to_string_pretty(&fanout::run(args).await?)?,
         Cmd::Bootstrap(args) => serde_json::to_string_pretty(&bootstrap::run(args).await?)?,
