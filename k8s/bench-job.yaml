@@ -19,6 +19,7 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - >
+              DS_BENCH_INSTANCE="$JOB_COMPLETION_INDEX"
               ds-bench multi-stream --target http://durable-streams:4438 --api-style durable
               --streams 20 --duration-secs 15 --payload-bytes 256
               > /results/ms-${JOB_COMPLETION_INDEX}.json

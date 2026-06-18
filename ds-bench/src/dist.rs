@@ -5,11 +5,18 @@ use serde::Serialize;
 use std::path::Path;
 
 /// If DS_BENCH_HDR_OUT is set, serialize `hist` (HdrHistogram V2) to
-/// `{DS_BENCH_HDR_OUT}/{label}.hdr`. Additive: callers ignore failures so a
-/// missing/unwritable sink never affects the measured run.
+/// `{DS_BENCH_HDR_OUT}/{label}.hdr`. When DS_BENCH_INSTANCE is also set and
+/// non-empty the file is `{DS_BENCH_HDR_OUT}/{label}-{instance}.hdr` so that
+/// multiple fleet pods writing to a shared PVC each produce a distinct file.
+/// Additive: callers ignore failures so a missing/unwritable sink never affects
+/// the measured run.
 pub fn emit_hdr(hist: &Histogram<u64>, label: &str) {
     let Ok(dir) = std::env::var("DS_BENCH_HDR_OUT") else { return };
-    let path = Path::new(&dir).join(format!("{label}.hdr"));
+    let filename = match std::env::var("DS_BENCH_INSTANCE").ok().filter(|s| !s.is_empty()) {
+        Some(instance) => format!("{label}-{instance}.hdr"),
+        None => format!("{label}.hdr"),
+    };
+    let path = Path::new(&dir).join(filename);
     let mut buf = Vec::new();
     if V2Serializer::new().serialize(hist, &mut buf).is_ok() {
         let _ = std::fs::create_dir_all(&dir);
