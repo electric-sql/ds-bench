@@ -21,6 +21,11 @@ spec:
         app: durable-streams
     spec:
       nodeSelector: { role: server }
+      # Required so the metrics sidecar can read /proc/<pid>/stat of the server.
+      # ConfigMap must be created before apply:
+      #   kubectl -n ds-bench create configmap metrics-poller \
+      #     --from-file=poller.sh=deploy/metrics/poller.sh
+      shareProcessNamespace: true
       containers:
         - name: durable-streams
           image: europe-west1-docker.pkg.dev/${PROJECT}/ds-bench/durable-streams:dev
@@ -63,9 +68,46 @@ spec:
               cpu: "2"
             limits:
               memory: "6Gi"
+        # ── metrics sidecar ─────────────────────────────────────────────────────
+        # Samples the server's RSS + CPU from /proc/<pid>/stat every second and
+        # appends rows to /metrics/samples.csv (shared emptyDir).
+        # Runs at nice -n 19 so it does not perturb latency measurements.
+        # See gke/metrics-sidecar.yaml for full usage notes.
+        - name: metrics
+          image: europe-west1-docker.pkg.dev/${PROJECT}/ds-bench/micro:dev
+          imagePullPolicy: Always
+          command:
+            - nice
+            - "-n"
+            - "19"
+            - bash
+            - /deploy/metrics/poller.sh
+          env:
+            - name: SERVER_PROC
+              value: durable-streams-server
+            - name: METRICS_INTERVAL_S
+              value: "1"
+            - name: METRICS_OUT
+              value: /metrics/samples.csv
+          volumeMounts:
+            - { name: metrics, mountPath: /metrics }
+            - { name: metrics-poller, mountPath: /deploy/metrics }
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: "50m"
+              memory: "64Mi"
       volumes:
         - name: data
           emptyDir: { medium: "" }
+        - name: metrics
+          emptyDir: {}
+        - name: metrics-poller
+          configMap:
+            name: metrics-poller
+            defaultMode: 0755
 ---
 apiVersion: v1
 kind: Service
