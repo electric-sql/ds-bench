@@ -18,12 +18,21 @@ spec:
         - { name: CLIENT_CPUS, value: "6-7" }
         - { name: BENCH_ALLOWED_CPUS, value: "0-6" }
         - { name: RUN_ID, value: "REPLACE_RUN_ID" }
+        # Core studies don't need the object store; tiering deferred (no tier binary
+        # in this image + GCS S3-compat tier unverified). Override via STUDIES env.
+        - { name: STUDIES, value: "engines cpu_scaling splice" }
+        # GCS object store (S3-compatible HMAC creds) — see Secret gcs-hmac.
+        - { name: GCS_BUCKET, value: "vaxine-ds-bench-tier" }
+        - name: GCS_HMAC_KEY
+          valueFrom: { secretKeyRef: { name: gcs-hmac, key: access_id } }
+        - name: GCS_HMAC_SECRET
+          valueFrom: { secretKeyRef: { name: gcs-hmac, key: secret } }
         command: ["bash","-lc"]
         args:
         - |
           bash run.sh
-          mc alias set local http://minio:9000 minioadmin minioadmin
-          mc cp --recursive /micro/out/ "local/bench-results/micro-${RUN_ID}/"
+          mc alias set gcs https://storage.googleapis.com "${GCS_HMAC_KEY}" "${GCS_HMAC_SECRET}"
+          mc cp --recursive /micro/out/ "gcs/${GCS_BUCKET}/micro-${RUN_ID}/"
         resources:
           requests: { cpu: "7", memory: "24Gi" }
         volumeMounts:

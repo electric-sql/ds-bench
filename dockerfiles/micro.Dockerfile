@@ -23,6 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         libssl-dev \
         git \
+        unzip \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 RUN git clone --depth 1 https://github.com/wg/wrk /tmp/wrk \
@@ -50,8 +51,11 @@ RUN curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc \
 # wrk binary from the wrk-builder stage (no build-essential in runtime)
 COPY --from=wrk-builder /usr/local/bin/wrk /usr/local/bin/wrk
 
-# durable-streams server binary from the builder stage
-COPY --from=builder /src/target/release/durable-streams-server \
+# durable-streams server binary from the builder stage.
+# server-rust is NOT a workspace member (no root Cargo.toml), so `cargo build
+# --manifest-path packages/server-rust/Cargo.toml` writes to that crate's own
+# target/, i.e. packages/server-rust/target/release/ — not /src/target/.
+COPY --from=builder /src/packages/server-rust/target/release/durable-streams-server \
         /usr/local/bin/durable-streams-server
 
 # micro benchmark suite (present in build context assembled by gke-micro.sh)

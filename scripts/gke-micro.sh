@@ -29,6 +29,13 @@ REG="europe-west1-docker.pkg.dev/$PROJECT/ds-bench"
 
 K() { kubectl --context "$CTX" -n ds-bench "$@"; }
 
+# GCS object store (S3-compatible HMAC creds). The Job uploads results here via
+# `mc`; the local pull below uses user-authed `gcloud storage` (no HMAC needed
+# locally). Override via env. Secret `gcs-hmac` is (re)created before the Job.
+GCS_BUCKET="${GCS_BUCKET:-vaxine-ds-bench-tier}"
+: "${GCS_HMAC_KEY:?set GCS_HMAC_KEY (GCS HMAC access id)}"
+: "${GCS_HMAC_SECRET:?set GCS_HMAC_SECRET (GCS HMAC secret)}"
+
 # ---------------------------------------------------------------------------
 # 1.  Build + push micro:dev via Cloud Build
 # ---------------------------------------------------------------------------
@@ -74,6 +81,12 @@ sed \
   -e "s/value: \"fast\"/value: \"${PROFILE}\"/" \
   "$REPO_ROOT/gke/micro-job.yaml" > "$MICRO_MANIFEST"
 
+# (Re)create the GCS HMAC secret the Job mounts for the `mc` results upload.
+K delete secret gcs-hmac --ignore-not-found >/dev/null 2>&1 || true
+K create secret generic gcs-hmac \
+  --from-literal=access_id="$GCS_HMAC_KEY" \
+  --from-literal=secret="$GCS_HMAC_SECRET"
+
 K apply -f "$MICRO_MANIFEST"
 
 # ---------------------------------------------------------------------------
@@ -98,64 +111,23 @@ echo "=== gke-micro: job/micro complete ==="
 OUT_DIR="$REPO_ROOT/results/micro/$RUN_ID"
 mkdir -p "$OUT_DIR"
 
-echo "=== gke-micro: pulling results from MinIO into $OUT_DIR ==="
+echo "=== gke-micro: pulling results from GCS into $OUT_DIR ==="
 
-# Run a short-lived helper pod using the micro:dev image (which already has mc)
-# to copy the results out of MinIO.  We exec the copy and capture stdout/stderr
-# redirected to local files via kubectl logs after the pod completes.
-#
-# MinIO path written by the Job:  local/bench-results/micro-<RUN_ID>/
-# We download results.jsonl, RESULTS.md, meta.txt (whatever is present).
+# GCS path written by the Job:  gs://<bucket>/micro-<RUN_ID>/
+# The local gcloud is user-authed (no HMAC needed here). Strip the inner
+# timestamp dir the suite writes (out/<STAMP>/...) into $OUT_DIR.
+gcloud storage cp --recursive \
+  "gs://${GCS_BUCKET}/micro-${RUN_ID}/*" "$OUT_DIR/" 2>&1 || \
+  echo "WARN: gcloud storage pull failed — check gs://${GCS_BUCKET}/micro-${RUN_ID}/"
 
-K run "micro-pull-$$" \
-  --rm \
-  --restart=Never \
-  --image="$REG/micro:dev" \
-  --overrides='{"spec":{"nodeSelector":{"role":"server"}}}' \
-  --command -- \
-  bash -lc "
-    mc alias set local http://minio:9000 minioadmin minioadmin 2>&1
-    mc cp --recursive \"local/bench-results/micro-${RUN_ID}/\" /tmp/out/ 2>&1 && echo '__FILES_OK__'
-    if [ -f /tmp/out/results.jsonl ]; then echo '---results.jsonl---'; cat /tmp/out/results.jsonl; fi
-    if [ -f /tmp/out/RESULTS.md ];    then echo '---RESULTS.md---';    cat /tmp/out/RESULTS.md;    fi
-    if [ -f /tmp/out/meta.txt ];      then echo '---meta.txt---';      cat /tmp/out/meta.txt;      fi
-  " </dev/null > "$OUT_DIR/_raw_pull.txt" 2>&1 || true
-
-# Parse the captured output into individual files
-python3 - "$OUT_DIR/_raw_pull.txt" "$OUT_DIR" <<'PYEOF'
-import sys, os, re
-
-raw_file  = sys.argv[1]
-out_dir   = sys.argv[2]
-
-with open(raw_file) as f:
-    content = f.read()
-
-if '__FILES_OK__' not in content:
-    print("WARN: mc copy may have failed — check " + raw_file, file=sys.stderr)
-
-for marker, fname in [
-    ('---results.jsonl---', 'results.jsonl'),
-    ('---RESULTS.md---',    'RESULTS.md'),
-    ('---meta.txt---',      'meta.txt'),
-]:
-    start = content.find(marker)
-    if start == -1:
-        continue
-    start += len(marker) + 1          # skip the newline after marker
-    # find next marker or end of string
-    end_markers = [m for m, _ in [
-        ('---results.jsonl---', ''), ('---RESULTS.md---', ''), ('---meta.txt---', ''),
-    ] if m != marker]
-    end = len(content)
-    for em in end_markers:
-        pos = content.find(em, start)
-        if pos != -1 and pos < end:
-            end = pos
-    with open(os.path.join(out_dir, fname), 'w') as fout:
-        fout.write(content[start:end].rstrip('\n') + '\n')
-    print("  wrote " + fname)
-PYEOF
+# The suite uploads /micro/out/ which contains a <STAMP>/ subdir; flatten the
+# key files (RESULTS.md, results.jsonl, meta.txt) up to $OUT_DIR if nested.
+for f in RESULTS.md results.jsonl meta.txt run.log; do
+  if [ ! -f "$OUT_DIR/$f" ]; then
+    found="$(find "$OUT_DIR" -name "$f" -type f 2>/dev/null | head -1)"
+    [ -n "$found" ] && cp "$found" "$OUT_DIR/$f"
+  fi
+done
 
 echo "=== gke-micro: results written to $OUT_DIR ==="
 if [ -f "$OUT_DIR/RESULTS.md" ]; then
