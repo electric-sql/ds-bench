@@ -365,10 +365,12 @@ for SERVER_CPU in $SERVER_CPUS; do
   for read_size in $READ_SIZES; do
     for read_conn in $READ_CONNS; do
       cell="reads-cpu${SERVER_CPU}-size${read_size}-conn${read_conn}"
-      # seed-bytes is fixed at 256 MiB so there is a large resident stream to
-      # read repeatedly — using only read_size here would leave a single record
-      # and measure request overhead rather than the sendfile/throughput path.
-      bench_cmd="reads --target ${TARGET} --api-style ${API_STYLE} --stream ${cell}-${RUN_ID} --read-size-bytes ${read_size} --connections ${read_conn} --duration-secs ${DURATION} --seed-bytes 268435456"
+      # The Durable server returns the WHOLE stream per GET (no per-read size param),
+      # and reads.rs does a full catch-up read each pass. So the stream size IS the
+      # read size: seed the stream to exactly read_size (matches BENCHMARKS.md, where
+      # a "1 KB / 16 KB / 1 MB read" reads a stream of that size). Seeding 256 MiB made
+      # every GET return 256 MiB → at conn 256 that is ~64 GiB in flight → timeout/OOM.
+      bench_cmd="reads --target ${TARGET} --api-style ${API_STYLE} --stream ${cell}-${RUN_ID} --read-size-bytes ${read_size} --connections ${read_conn} --duration-secs ${DURATION} --seed-bytes ${read_size}"
       out_prefix="reads"
       merge_cmd="ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix reads-"
       run_cell "$cell" "$bench_cmd" "$out_prefix" "$merge_cmd" "$SERVER_CPU"
