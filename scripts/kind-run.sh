@@ -89,6 +89,43 @@ echo "=== waiting for durable-streams deployment ==="
 kubectl --context "${CTX}" wait --for=condition=available deploy/durable-streams --timeout=300s
 
 # ---------------------------------------------------------------------------
+# Helper: generate per-workload coordinator Job manifest (stdout).
+# For mixed, runs three label-scoped hdr-merge calls; for all others runs
+# one unfiltered merge (original behaviour).
+# ---------------------------------------------------------------------------
+make_coordinator_job() {
+  local wl="$1"
+  local cmd
+  if [ "$wl" = "mixed" ]; then
+    cmd='echo "== merged (mixed / write) ==" && ds-bench hdr-merge --hdr-dir /results --label-prefix mixed-write && echo "== merged (mixed / fanout) ==" && ds-bench hdr-merge --hdr-dir /results --label-prefix mixed-fanout && echo "== merged (mixed / read) ==" && ds-bench hdr-merge --hdr-dir /results --label-prefix mixed-read'
+  else
+    cmd='ds-bench hdr-merge --hdr-dir /results --results-dir /results'
+  fi
+  printf '%s\n' "apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bench-coordinator
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: coordinator
+          image: ds-bench/ds-bench:dev
+          imagePullPolicy: Never
+          command: [\"/bin/sh\", \"-c\"]
+          args:
+            - \"${cmd}\"
+          volumeMounts:
+            - { name: results, mountPath: /results }
+      volumes:
+        - name: results
+          persistentVolumeClaim:
+            claimName: bench-results"
+}
+
+# ---------------------------------------------------------------------------
 # Helper: generate per-workload bench Job manifest (stdout)
 # ---------------------------------------------------------------------------
 make_bench_job() {
@@ -232,9 +269,9 @@ for WL in $WORKLOADS; do
     continue
   fi
 
-  # Apply coordinator
-  echo "  applying bench-coordinator job..."
-  kubectl --context "${CTX}" apply -f k8s/coordinator-job.yaml
+  # Apply per-workload coordinator Job
+  echo "  applying bench-coordinator job for ${WL}..."
+  make_coordinator_job "${WL}" | kubectl --context "${CTX}" apply -f -
 
   echo "  waiting for bench-coordinator to complete (timeout=180s)..."
   if ! kubectl --context "${CTX}" wait --for=condition=complete job/bench-coordinator --timeout=180s; then
@@ -249,8 +286,13 @@ for WL in $WORKLOADS; do
   PASSED_WLS="${PASSED_WLS} ${WL}"
 
   echo ""
-  echo "== merged (${WL}) =="
-  echo "${MERGED}"
+  if [ "$WL" = "mixed" ]; then
+    # mixed coordinator already prints labeled sections (write/fanout/read)
+    echo "${MERGED}"
+  else
+    echo "== merged (${WL}) =="
+    echo "${MERGED}"
+  fi
 done
 
 # ---------------------------------------------------------------------------

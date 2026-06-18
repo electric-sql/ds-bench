@@ -419,19 +419,33 @@ async fn run_subscriber_task(
     idle: Duration,
 ) -> Result<()> {
     let (url, headers) = backend.sse_url_for(idx, stream);
-    let resp = backend
+
+    // Attempt the SSE connect — capture the outcome but do NOT return yet.
+    // The barrier MUST be crossed exactly once on BOTH success and failure paths
+    // so that a failed subscriber does not under-count the barrier and leave
+    // all writers (and surviving subscribers) waiting forever.
+    let connect_result = backend
         .client
         .get(&url)
         .headers(headers)
         .send()
         .await
-        .with_context(|| format!("GET {url}"))?;
-    if !resp.status().is_success() {
-        anyhow::bail!("SSE open: {} {}", resp.status(), url);
-    }
+        .with_context(|| format!("GET {url}"))
+        .and_then(|resp| {
+            if resp.status().is_success() {
+                Ok(resp)
+            } else {
+                anyhow::bail!("SSE open: {} {}", resp.status(), url)
+            }
+        });
 
-    // SSE connection is established — signal barrier so writers can start.
+    // SSE connection attempted — cross the barrier regardless of outcome so
+    // writers are never left hanging.  Successful subscribers are listening
+    // before the barrier releases; failed subscribers simply won't record events.
     barrier.wait().await;
+
+    // Now unwrap the connect result; on failure we can return cleanly.
+    let resp = connect_result?;
 
     let mut local = new_histogram();
     let result: Result<()> = async {
