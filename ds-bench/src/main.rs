@@ -2,6 +2,7 @@ mod backend;
 mod bootstrap;
 mod catch_up;
 mod common;
+mod dist;
 mod fanout;
 mod multi_stream;
 

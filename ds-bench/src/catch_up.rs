@@ -240,6 +240,7 @@ pub async fn run(args: CatchUpArgs) -> Result<CatchUpResult> {
 
     let h = hist.lock().await;
     let latency = summarize(&h);
+    crate::dist::emit_hdr(&h, &format!("catch-up-{}", std::process::id()));
 
     let bytes_received_total = bytes_total.load(Ordering::Relaxed);
     let stampede_elapsed_secs = stampede_elapsed.as_secs_f64();

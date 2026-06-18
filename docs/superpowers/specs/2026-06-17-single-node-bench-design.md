@@ -42,7 +42,7 @@ gains multi-node, a 3-node ↔ 3-node comparison becomes the fair next step.
 | Durability alignment | Both fsync to local disk + offload sealed data to MinIO (local S3), single node |
 | Runtime | docker-compose, Linux containers (io_uring deferred to a real Linux host) |
 | Workloads | Two: `multi-stream` (write throughput) + `fan-out` (SSE latency). Catch-up/replay deferred — see note below. |
-| Benchmark client | **`ds-bench`** — a **verbatim fork** of ursula-bench (packaging changes only); multi-backend; shared with [Track 2](2026-06-17-scale-out-experiment-design.md) |
+| Benchmark client | **`ds-bench`** — **derived from** ursula-bench (Apache-2.0); measurement logic unchanged; additive HDR-file output added for Track 2 cross-fleet merge; multi-backend; shared with [Track 2](2026-06-17-scale-out-experiment-design.md) |
 | ds-bench provenance | Workloads + HDR methodology derived from `ursula-bench` (Apache-2.0); ursula kept as a pinned submodule for reference + license attribution |
 | ursula pinned commit | `0b2d0dabf0a6544b909823e0d1d1149b98274e25` (`v0.1.5-3-g0b2d0da`) |
 
@@ -53,7 +53,7 @@ ds-rust-bench/
 ├── docker-compose.yml         # minio, durable-streams, ursula, bench
 ├── ds-bench/                  # our own Rust workload client (shared with Track 2)
 │   ├── Cargo.toml
-│   └── src/                   # verbatim fork; only multi-stream + fan-out run in Track 1
+│   └── src/                   # derived from ursula-bench; measurement logic unchanged; only multi-stream + fan-out run in Track 1
 ├── dockerfiles/
 │   ├── durable-streams.Dockerfile
 │   ├── ursula.Dockerfile      # reuses ursula's own Dockerfile pattern
@@ -100,13 +100,16 @@ ds-rust-bench/
 
 ## ds-bench v0 (shared client)
 
-`ds-bench` is a **verbatim fork** of ursula-bench (Apache-2.0), built in this track
-and **shared with Track 2** (the scale-out experiment extends it). For competitive
-positioning the strongest stance is "we ran ursula's own benchmark, unmodified" — so
-v0 makes **packaging changes only** (standalone crate, pinned deps, the one
-`ursula-observability::init` call swapped for `tracing-subscriber`). No workload
-logic, measurement methodology, or HDR math is changed. Owning the fork is what lets
-Track 2 add new workloads (mixed/cardinality/resume) and cross-pod HDR merge later.
+`ds-bench` is **derived from ursula-bench** (Apache-2.0). The per-client **measurement
+logic is ursula's, unchanged**; our only edits to the upstream workloads are **additive
+output** — each workload also serializes its HDR histogram to a file (for exact
+cross-fleet merge in Track 2) when `DS_BENCH_HDR_OUT` is set. Verifiable as a small
+additive diff that touches no measurement code. `catch_up.rs` and `mixed.rs` are our own.
+
+Built in this track and **shared with Track 2** (the scale-out experiment extends it).
+Packaging changes from upstream: standalone crate, pinned deps, the one
+`ursula-observability::init` call swapped for `tracing-subscriber`. Owning the fork is
+what lets Track 2 add new workloads (mixed/cardinality/resume) and cross-pod HDR merge.
 
 - A pure HTTP client (reqwest, no server-crate linkage) with the upstream pluggable
   backend `--api-style {ursula | durable | s2}`, copied verbatim. The pinned ursula
@@ -115,8 +118,9 @@ Track 2 add new workloads (mixed/cardinality/resume) and cross-pod HDR merge lat
   for the two workloads below — create/append/SSE are byte-identical; durable-streams
   treats arbitrary paths as stream URLs. Confirmed: no api-style change needed (was
   open item 1).
-- All three upstream workload modules are forked verbatim and compiled into the
-  binary, but **only `multi-stream` and `fan-out` run** in Track 1 (see note).
+- All three upstream workload modules are compiled into the binary (measurement logic
+  unchanged; additive HDR-file output only), but **only `multi-stream` and `fan-out`
+  run** in Track 1 (see note).
 
 Forward-looking (built in Track 2, noted so v0's structure anticipates it):
 serialized-HDR output for cross-node merge, and a backend/workload layout that

@@ -3,7 +3,11 @@ name = "ds-bench"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-description = "Workload benchmark client for Durable Streams servers (durable-streams, ursula). Verbatim fork of ursula-bench."
+description = "Workload benchmark client for Durable Streams servers (durable-streams, ursula). Derived from ursula-bench (Apache-2.0); measurement logic unchanged; additive HDR-file output added."
+
+[lib]
+name = "ds_bench"
+path = "src/lib.rs"
 
 [[bin]]
 name = "ds-bench"

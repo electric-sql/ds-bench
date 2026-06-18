@@ -1,8 +1,8 @@
 # ds-rust-bench — Track 1: single-node comparison
 
 Reproducible single-node benchmark of **durable-streams** (Rust) vs **ursula** vs **S2 Lite**,
-under matched durability, driven by `ds-bench` — a **verbatim fork of ursula's own
-`ursula-bench`**. See the design spec at
+under matched durability, driven by `ds-bench` — **derived from ursula's own `ursula-bench`**
+(Apache-2.0). See the design spec at
 `docs/superpowers/specs/2026-06-17-single-node-bench-design.md`.
 
 ## Quick start
@@ -17,8 +17,13 @@ python3 scripts/render-results.py results       # -> results/comparison.md
 
 ## What is measured
 
-`ds-bench` (a verbatim fork of `ursula-bench`, Apache-2.0 — packaging changes only)
-drives three workloads against all three systems, each emitting HDR-histogram latency +
+`ds-bench` is **derived from ursula-bench** (Apache-2.0). The per-client **measurement
+logic is ursula's, unchanged**; our only edits to the upstream workloads are **additive
+output** — each workload also serializes its HDR histogram to a file (for exact
+cross-fleet merge in Track 2) when `DS_BENCH_HDR_OUT` is set. Verifiable as a small
+additive diff that touches no measurement code. `catch_up.rs` and `mixed.rs` are our own.
+
+`ds-bench` drives three workloads against all three systems, each emitting HDR-histogram latency +
 throughput JSON:
 
 - **multi-stream** — N concurrent streams, one writer each (write throughput + latency).
@@ -39,10 +44,11 @@ the larger scale-out comparison (multi-node, higher client counts).
 
 ## Fairness — what is equal, and what is not
 
-- **Equal:** single node each; **ursula's own benchmark client, unmodified** (only
-  packaging changed); identical workload parameters (see `run-bench.sh`); all three
-  servers point at the same single-node MinIO instance. Only one server runs during
-  its own measurement.
+- **Equal:** single node each; **ursula's own measurement logic, unchanged** (per-client
+  measurement code derived from ursula-bench, Apache-2.0; only additive HDR-file output
+  added — see provenance note above); identical workload parameters (see `run-bench.sh`);
+  all three servers point at the same single-node MinIO instance. Only one server runs
+  during its own measurement.
 - **Matched durability (durable-streams & ursula):** ursula runs a single-voter Raft
   group with `[raft.wal] backend = "disk"` (fsync per commit); durable-streams fsyncs
   per append. **Both group-commit fsyncs** (ursula: 200µs/1024-record window;

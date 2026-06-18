@@ -152,6 +152,7 @@ pub async fn run(args: FanOutArgs) -> Result<FanOutResult> {
 
     let hist = hist.lock().await;
     let latency = summarize(&hist);
+    crate::dist::emit_hdr(&hist, &format!("fanout-{}", std::process::id()));
 
     Ok(FanOutResult {
         scenario: "fanout",

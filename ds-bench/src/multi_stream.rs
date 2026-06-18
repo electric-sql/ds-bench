@@ -175,6 +175,7 @@ pub async fn run(args: MultiStreamArgs) -> Result<MultiStreamResult> {
         .collect();
     let h = hist.lock().await;
     let latency = summarize(&h);
+    crate::dist::emit_hdr(&h, &format!("multi-stream-{}", std::process::id()));
     let elapsed_secs = elapsed.as_secs_f64();
     let aggregate = counts.ok as f64 / elapsed_secs.max(1e-9);
     let per_stream_mean = aggregate / args.streams.max(1) as f64;
