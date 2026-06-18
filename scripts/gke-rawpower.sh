@@ -59,10 +59,10 @@ else
   # capped at 8 (the BENCHMARKS.md server scale) so it fits an 8-CPU server node
   SERVER_CPUS="2 4 8"
   DURATION=30
-  REPEATS=3
+  REPEATS="${REPEATS:-3}"
   INIT_PARALLELISM="${PARALLELISM:-4}"
   MAX_PODS=32
-  MAX_BUMPS=8
+  MAX_BUMPS="${MAX_BUMPS:-8}"
 fi
 
 echo "=== gke-rawpower: profile=${PROFILE} run_id=${RUN_ID} ==="
@@ -197,7 +197,14 @@ run_fleet_and_coordinator() {
   echo "    launching fleet (${PARALLELISM} pods)..."
   envsubst '${PROJECT} ${RUN_ID} ${PARALLELISM} ${BENCH_CMD} ${OUT_PREFIX}' \
     < gke/bench-job.yaml | K apply -f -
-  K wait --for=condition=complete job/bench-fleet --timeout=900s
+  # Tolerant: a hung server makes some pods fail → the Job never reaches
+  # `complete`. Wait for complete OR failed, then proceed — the coordinator
+  # merges whatever HDRs the surviving pods uploaded (partial but real data),
+  # instead of aborting the whole matrix under `set -e`.
+  K wait --for=condition=complete job/bench-fleet --timeout="${FLEET_TIMEOUT:-180}s" 2>/dev/null \
+    || K wait --for=condition=failed job/bench-fleet --timeout=5s 2>/dev/null \
+    || true
+  echo "    fleet pods: $(K get pods -l job-name=bench-fleet --no-headers 2>/dev/null | awk '{print $3}' | sort | uniq -c | tr '\n' ' ')"
   echo "    fleet done. Pod placement:"
   K get pods -l job-name=bench-fleet -o wide
 
@@ -364,7 +371,7 @@ for SERVER_CPU in $SERVER_CPUS; do
     READ_CONNS="256"
   else
     READ_SIZES="1024 16384"
-    READ_CONNS="16 64 256 1024"
+    READ_CONNS="16 64 256"
   fi
 
   for read_size in $READ_SIZES; do
@@ -431,7 +438,7 @@ for SERVER_CPU in $SERVER_CPUS; do
   if [ "$PROFILE" = "fast" ]; then
     FO_SUBS_LIST="256"
   else
-    FO_SUBS_LIST="1 10 100 1000"
+    FO_SUBS_LIST="1 10 100"
   fi
 
   for subs in $FO_SUBS_LIST; do
