@@ -65,9 +65,11 @@ spec:
           resources:
             requests:
               memory: "2Gi"
-              # available_parallelism() reads cpu.max (cgroup v2) → bounds worker_threads.
-              # Both request and limit must match so the quota is enforced.
-              cpu: "${SERVER_CPU}"
+              # Only the LIMIT sets cgroup v2 cpu.max (the quota that available_parallelism
+              # reads to bound worker_threads). The request only affects cpu.weight under
+              # contention — keep it a small floor so a SERVER_CPU=8 pod still schedules on
+              # an 8-core node (the server node is dedicated, so it bursts to the limit).
+              cpu: "500m"
             limits:
               memory: "6Gi"
               cpu: "${SERVER_CPU}"

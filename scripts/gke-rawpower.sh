@@ -51,7 +51,8 @@ if [ "$PROFILE" = "fast" ]; then
   MAX_PODS=16
   MAX_BUMPS=1
 else
-  SERVER_CPUS="2 4 8 16"
+  # capped at 8 (the BENCHMARKS.md server scale) so it fits an 8-CPU server node
+  SERVER_CPUS="2 4 8"
   DURATION=30
   REPEATS=3
   INIT_PARALLELISM="${PARALLELISM:-4}"
