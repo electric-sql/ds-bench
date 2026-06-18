@@ -14,7 +14,7 @@
 # Every kubectl is scoped to the dedicated context + namespace. bash 3.2 safe.
 set -euo pipefail
 
-PROJECT="$(gcloud config get-value project 2>/dev/null)"
+export PROJECT="$(gcloud config get-value project 2>/dev/null)"  # exported so envsubst sees it
 ZONE=europe-west1-b
 CLUSTER=ds-bench
 CTX="gke_${PROJECT}_${ZONE}_${CLUSTER}"
