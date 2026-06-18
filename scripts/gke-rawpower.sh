@@ -73,31 +73,65 @@ K create configmap metrics-poller \
 # ── helpers ────────────────────────────────────────────────────────────────────
 
 # deploy_server SERVER_CPU [extra_args...]
-#   Applies durable-streams.yaml with envsubst, optionally patching server args
-#   via a sed post-processing step for variant flags (--splice-appends, --tier local).
-#   extra_args are appended to the container args list as additional YAML items.
+#   Applies durable-streams.yaml with envsubst, optionally patching server args.
+#
+#   Two injection modes (selected automatically from extra_args):
+#
+#   1. "--splice-appends" (or any non-tier flag):
+#      Appends one "- <flag>" YAML list item after the "--tier-allow-http" line.
+#      Uses `sed r <tmpfile>` (file-read) which works on BOTH BSD sed (macOS) and
+#      GNU sed — the broken `a\` + literal-\n approach only works on GNU sed.
+#
+#   2. "--tier local" (cold-tier variant):
+#      Replaces the entire S3 tier block (--tier s3 through --tier-allow-http) with
+#      a local cold-tier block: --tier local, --tier-local-dir /data/cold,
+#      --tier-segment-bytes 1048576.  The two tier modes are mutually exclusive;
+#      passing both s3 AND local flags to the server is an error.
 deploy_server() {
   local cpu="$1"; shift
-  local extra_args="${*:-}"   # space-separated flags, e.g. "--splice-appends"
+  local extra_args="${*:-}"   # space-separated flags, e.g. "--splice-appends" or "--tier local"
   export PROJECT SERVER_CPU="$cpu"
 
   echo "    deploying durable-streams server: cpu=${cpu} extra='${extra_args}'..."
 
   if [ -z "$extra_args" ]; then
     envsubst '${PROJECT} ${SERVER_CPU}' < gke/durable-streams.yaml | K apply -f -
+
+  elif echo "$extra_args" | grep -q -- "--tier local"; then
+    # Cold-tier variant: REPLACE the entire S3 tier block with a local cold-tier
+    # block.  The S3 block in durable-streams.yaml is 9 lines spanning from
+    # '- "--tier"' through '- "--tier-allow-http"'.  We use a sed range delete
+    # (/start/,/end/d) which is valid on both BSD sed (macOS) and GNU sed.
+    # The local tier block is then injected after the "- /data" (--data-dir value)
+    # line using `sed r <tmpfile>` — also BSD+GNU safe.
+    local tmp_tier
+    tmp_tier="$(mktemp /tmp/ds-tier-XXXXXX.txt)"
+    printf '            - "--tier"\n'             >> "$tmp_tier"
+    printf '            - "local"\n'              >> "$tmp_tier"
+    printf '            - "--tier-local-dir"\n'   >> "$tmp_tier"
+    printf '            - "/data/cold"\n'         >> "$tmp_tier"
+    printf '            - "--tier-segment-bytes"\n' >> "$tmp_tier"
+    printf '            - "1048576"\n'            >> "$tmp_tier"
+
+    envsubst '${PROJECT} ${SERVER_CPU}' < gke/durable-streams.yaml \
+      | sed \
+          -e '/- "--tier"$/,/- "--tier-allow-http"$/d' \
+          -e "/- \"\/data\"/r ${tmp_tier}" \
+      | K apply -f -
+    rm -f "$tmp_tier"
+
   else
-    # Build a sed expression that appends each extra flag as a new YAML list item
-    # directly after the last existing arg line ("--tier-allow-http").
-    # This is a sed-based approach because envsubst only handles simple variable
-    # substitution and cannot inject multi-line YAML.
-    local inject=""
+    # Generic extra flags: append each as a new YAML list item after
+    # "--tier-allow-http" using `sed r <tmpfile>` (BSD + GNU safe).
+    local tmp_inject
+    tmp_inject="$(mktemp /tmp/ds-inject-XXXXXX.txt)"
     for flag in $extra_args; do
-      inject="${inject}            - \"${flag}\"\n"
+      printf '            - "%s"\n' "$flag" >> "$tmp_inject"
     done
     envsubst '${PROJECT} ${SERVER_CPU}' < gke/durable-streams.yaml \
-      | sed "/--tier-allow-http/a\\
-${inject}" \
+      | sed "/--tier-allow-http/r ${tmp_inject}" \
       | K apply -f -
+    rm -f "$tmp_inject"
   fi
 
   K wait --for=condition=available deploy/durable-streams --timeout=300s
@@ -297,10 +331,6 @@ run_cell() {
       echo "    server not yet saturated → doubling pods: ${pods} → ${new_pods}"
       bumps=$((bumps + 1))
       pods="$new_pods"
-
-      # Update verdict.txt to reflect the bump decision
-      echo "verdict=${verdict}" >> "${cell_dir}/verdict.txt"
-      echo "bumping=true" >> "${cell_dir}/verdict.txt"
     done
 
     echo "  rep ${repeat}/${REPEATS} final verdict: ${verdict}  parallelism=${pods}"
@@ -333,7 +363,10 @@ for SERVER_CPU in $SERVER_CPUS; do
   for read_size in $READ_SIZES; do
     for read_conn in $READ_CONNS; do
       cell="reads-cpu${SERVER_CPU}-size${read_size}-conn${read_conn}"
-      bench_cmd="reads --target ${TARGET} --api-style ${API_STYLE} --stream ${cell}-${RUN_ID} --read-size-bytes ${read_size} --connections ${read_conn} --duration-secs ${DURATION} --seed-bytes ${read_size}"
+      # seed-bytes is fixed at 256 MiB so there is a large resident stream to
+      # read repeatedly — using only read_size here would leave a single record
+      # and measure request overhead rather than the sendfile/throughput path.
+      bench_cmd="reads --target ${TARGET} --api-style ${API_STYLE} --stream ${cell}-${RUN_ID} --read-size-bytes ${read_size} --connections ${read_conn} --duration-secs ${DURATION} --seed-bytes 268435456"
       out_prefix="reads"
       merge_cmd="ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix reads-"
       run_cell "$cell" "$bench_cmd" "$out_prefix" "$merge_cmd" "$SERVER_CPU"
@@ -404,9 +437,10 @@ for SERVER_CPU in $SERVER_CPUS; do
     echo "=== deploying cold-tier server variant (cpu=${SERVER_CPU}) ==="
     deploy_server "$SERVER_CPU" "--tier local"
 
-    # seed-bytes = 100MB to exceed typical hot cache
+    # seed-bytes = 32 MiB = 32× the tier-segment-bytes (1 MiB) so multiple segments
+    # seal + offload to cold storage and reads actually exercise the cold-tier path.
     cell="reads-cold-cpu${SERVER_CPU}-size1m-conn64"
-    bench_cmd="reads --target ${TARGET} --api-style ${API_STYLE} --stream ${cell}-${RUN_ID} --read-size-bytes 1048576 --connections 64 --duration-secs ${DURATION} --seed-bytes 104857600"
+    bench_cmd="reads --target ${TARGET} --api-style ${API_STYLE} --stream ${cell}-${RUN_ID} --read-size-bytes 1048576 --connections 64 --duration-secs ${DURATION} --seed-bytes 33554432"
     out_prefix="reads-cold"
     merge_cmd="ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix reads-cold-"
     run_cell "$cell" "$bench_cmd" "$out_prefix" "$merge_cmd" "$SERVER_CPU"

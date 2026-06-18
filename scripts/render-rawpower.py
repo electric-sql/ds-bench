@@ -147,10 +147,13 @@ def load_rep(rep_dir: pathlib.Path):
     def mg(key):
         return m.get(key) if m else None
 
+    # For fan-out cells: single-stream fanout emits events_per_sec; multi-fanout
+    # emits aggregate_events_per_sec.  Accept either, preferring events_per_sec.
+    events_sec = mg("events_per_sec") or mg("aggregate_events_per_sec")
     return {
         "ops":          mg("aggregate_ops_per_sec"),
         "bytes_sec":    mg("bytes_per_sec"),
-        "events_sec":   mg("aggregate_events_per_sec"),
+        "events_sec":   events_sec,
         "p50":          mg("p50_ms"),
         "p99":          mg("p99_ms"),
         "p999":         mg("p999_ms"),

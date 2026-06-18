@@ -96,6 +96,9 @@ pub struct MergeSummary {
     /// Summed aggregate_events_per_sec — multi-fanout only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aggregate_events_per_sec: Option<f64>,
+    /// Summed bytes/sec — reads scenario only (cold-tier GB/s, splice MB/s).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes_per_sec: Option<f64>,
 }
 
 /// Accumulators built from scanning the per-pod JSONs in the results dir.
@@ -111,6 +114,9 @@ struct HeadlineAcc {
     max_duration_secs: f64,
     saw_multi_fanout: bool,
     multi_fanout_events_per_sec: f64,
+    /// Summed bytes/sec from reads pods (bytes_per_sec field in per-pod JSON).
+    saw_reads: bool,
+    reads_bytes_per_sec: f64,
 }
 
 fn scan_headlines(results_dir: Option<&Path>) -> HeadlineAcc {
@@ -144,6 +150,17 @@ fn scan_headlines(results_dir: Option<&Path>) -> HeadlineAcc {
                 .get("aggregate_events_per_sec")
                 .and_then(|x| x.as_f64())
                 .unwrap_or(0.0);
+        } else if scenario == "reads" {
+            // Reads: collect both ops/s (for the headline reads/s counter) and
+            // bytes/s (for cold-tier GB/s and splice MB/s columns in the report).
+            if let Some(ops) = v.get("aggregate_ops_per_sec").and_then(|x| x.as_f64()) {
+                acc.saw_ops = true;
+                acc.ops += ops;
+            }
+            if let Some(bps) = v.get("bytes_per_sec").and_then(|x| x.as_f64()) {
+                acc.saw_reads = true;
+                acc.reads_bytes_per_sec += bps;
+            }
         } else {
             // multi-stream-write / mixed (and any future ops/s workload).
             if let Some(ops) = v.get("aggregate_ops_per_sec").and_then(|x| x.as_f64()) {
@@ -171,22 +188,25 @@ pub fn merge_summary_filtered(
     // catch-up and fan-out take precedence (they never carry ops/s); ops/s is
     // multi-stream/mixed. A results dir holds one workload's pods at a time.
     let (aggregate_ops_per_sec, aggregate_mb_per_sec, bytes_received_total,
-         events_received_total, events_per_sec, aggregate_events_per_sec) = if acc.saw_catchup {
-        (None, Some(acc.mb_per_sec), Some(acc.bytes_received), None, None, None)
+         events_received_total, events_per_sec, aggregate_events_per_sec,
+         bytes_per_sec) = if acc.saw_catchup {
+        (None, Some(acc.mb_per_sec), Some(acc.bytes_received), None, None, None, None)
     } else if acc.saw_fanout {
         let eps = if acc.max_duration_secs > 0.0 {
             Some(acc.events_received as f64 / acc.max_duration_secs)
         } else {
             None
         };
-        (None, None, None, Some(acc.events_received), eps, None)
+        (None, None, None, Some(acc.events_received), eps, None, None)
     } else if acc.saw_multi_fanout {
-        (None, None, None, None, None, Some(acc.multi_fanout_events_per_sec))
+        (None, None, None, None, None, Some(acc.multi_fanout_events_per_sec), None)
     } else if acc.saw_ops {
-        (Some(acc.ops), None, None, None, None, None)
+        // reads scenario: also carry bytes_per_sec when available.
+        let bps = if acc.saw_reads { Some(acc.reads_bytes_per_sec) } else { None };
+        (Some(acc.ops), None, None, None, None, None, bps)
     } else {
         // No per-pod JSON (e.g. tests merging raw .hdr only): omit all headlines.
-        (None, None, None, None, None, None)
+        (None, None, None, None, None, None, None)
     };
     Ok(MergeSummary {
         merged_count: h.len(),
@@ -201,6 +221,7 @@ pub fn merge_summary_filtered(
         events_received_total,
         events_per_sec,
         aggregate_events_per_sec,
+        bytes_per_sec,
     })
 }
 
@@ -225,4 +246,47 @@ pub fn run_merge(args: HdrMergeArgs) -> Result<String> {
     let prefix = args.label_prefix.as_deref();
     let summary = merge_summary_filtered(Path::new(&args.hdr_dir), results, prefix)?;
     Ok(serde_json::to_string_pretty(&summary)?)
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// A reads per-pod JSON that carries bytes_per_sec must contribute that value
+    /// to the merged summary via scan_headlines.
+    #[test]
+    fn reads_bytes_per_sec_is_merged() {
+        let dir = std::env::temp_dir()
+            .join(format!("ds-bench-dist-test-{}-{}", std::process::id(), line!()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Write a minimal per-pod JSON for the reads scenario.
+        let json = r#"{
+            "scenario": "reads",
+            "aggregate_ops_per_sec": 500.0,
+            "bytes_per_sec": 1000.0,
+            "elapsed_secs": 10.0
+        }"#;
+        let mut f = std::fs::File::create(dir.join("pod0.json")).unwrap();
+        f.write_all(json.as_bytes()).unwrap();
+
+        let acc = scan_headlines(Some(&dir));
+        let _ = std::fs::remove_dir_all(&dir); // cleanup (best effort)
+        assert!(acc.saw_reads, "expected saw_reads=true");
+        assert!(
+            (acc.reads_bytes_per_sec - 1000.0).abs() < 1e-6,
+            "expected reads_bytes_per_sec≈1000, got {}",
+            acc.reads_bytes_per_sec
+        );
+        assert!(
+            (acc.ops - 500.0).abs() < 1e-6,
+            "expected ops≈500, got {}",
+            acc.ops
+        );
+    }
 }

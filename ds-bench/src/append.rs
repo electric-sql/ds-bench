@@ -210,6 +210,15 @@ pub async fn run(args: AppendArgs) -> Result<AppendResult> {
     let deadline = Instant::now() + Duration::from_secs(args.duration_secs);
     let start = Instant::now();
 
+    // Include the pod instance index (DS_BENCH_INSTANCE = $JOB_COMPLETION_INDEX,
+    // set by the fleet Job) so that parallel pods appending to the same stream
+    // do not collide on (producer_id, seq) — duplicates get deduped/409'd by the
+    // server and inflate the reported aggregate_ops_per_sec ~N×.
+    let instance = std::env::var("DS_BENCH_INSTANCE")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "0".to_string());
+
     let mut workers = Vec::with_capacity(args.connections);
     for idx in 0..args.connections {
         let backend = backend.clone();
@@ -222,7 +231,7 @@ pub async fn run(args: AppendArgs) -> Result<AppendResult> {
         let mode = args.body_mode;
         let payload_bytes = args.payload_bytes;
         let array_records = args.array_records;
-        let producer_id = format!("bench-append-{idx}");
+        let producer_id = format!("bench-append-{instance}-{idx}");
         workers.push(tokio::spawn(async move {
             run_appender(
                 backend,
