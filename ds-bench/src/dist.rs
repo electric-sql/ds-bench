@@ -59,7 +59,17 @@ pub fn merge_dir_filtered(dir: &Path, label_prefix: Option<&str>) -> Result<Hist
     Ok(merged)
 }
 
-#[derive(Serialize)]
+/// Per-workload headline metrics, summed across every per-pod JSON in the
+/// results dir. Each workload has a *different* right headline:
+///   * multi-stream / mixed → summed `aggregate_ops_per_sec` (writes/s)
+///   * catch-up             → summed `aggregate_mb_per_sec` + `bytes_received_total`
+///   * fan-out              → ops/s is N/A (latency is the headline); we instead
+///                            sum `events_received` → `events_per_sec` over duration
+///
+/// Fields are `Option` so the JSON omits / nulls metrics that don't apply to a
+/// workload rather than emitting a misleading `0`. The workload is auto-detected
+/// from each per-pod JSON's `scenario` field; no flag required.
+#[derive(Serialize, Default)]
 pub struct MergeSummary {
     pub merged_count: u64,
     pub p50_ms: f64,
@@ -67,24 +77,71 @@ pub struct MergeSummary {
     pub p99_ms: f64,
     pub p999_ms: f64,
     pub max_ms: f64,
-    pub aggregate_ops_per_sec: f64,
+    /// Summed writes/sec — multi-stream / mixed only. `None` (null/omitted) for
+    /// fan-out and catch-up, where ops/s is not the headline.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aggregate_ops_per_sec: Option<f64>,
+    /// Summed MB/sec — catch-up only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aggregate_mb_per_sec: Option<f64>,
+    /// Total bytes received — catch-up only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes_received_total: Option<u64>,
+    /// Total events received — fan-out only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub events_received_total: Option<u64>,
+    /// Events/sec (events_received_total / max per-pod duration) — fan-out only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub events_per_sec: Option<f64>,
 }
 
-fn sum_ops(results_dir: Option<&Path>) -> f64 {
-    let Some(dir) = results_dir else { return 0.0 };
-    let mut total = 0.0;
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for entry in rd.flatten() {
-            let p = entry.path();
-            if p.extension().and_then(|e| e.to_str()) != Some("json") { continue; }
-            if let Ok(txt) = std::fs::read_to_string(&p) {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
-                    total += v.get("aggregate_ops_per_sec").and_then(|x| x.as_f64()).unwrap_or(0.0);
-                }
+/// Accumulators built from scanning the per-pod JSONs in the results dir.
+#[derive(Default)]
+struct HeadlineAcc {
+    saw_ops: bool,
+    ops: f64,
+    saw_catchup: bool,
+    mb_per_sec: f64,
+    bytes_received: u64,
+    saw_fanout: bool,
+    events_received: u64,
+    max_duration_secs: f64,
+}
+
+fn scan_headlines(results_dir: Option<&Path>) -> HeadlineAcc {
+    let mut acc = HeadlineAcc::default();
+    let Some(dir) = results_dir else { return acc };
+    let Ok(rd) = std::fs::read_dir(dir) else { return acc };
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if p.extension().and_then(|e| e.to_str()) != Some("json") { continue; }
+        let Ok(txt) = std::fs::read_to_string(&p) else { continue };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) else { continue };
+        let scenario = v.get("scenario").and_then(|x| x.as_str()).unwrap_or("");
+        if scenario.starts_with("catch-up") {
+            acc.saw_catchup = true;
+            acc.mb_per_sec += v.get("aggregate_mb_per_sec").and_then(|x| x.as_f64()).unwrap_or(0.0);
+            acc.bytes_received += v.get("bytes_received_total").and_then(|x| x.as_u64()).unwrap_or(0);
+        } else if scenario == "fanout" {
+            acc.saw_fanout = true;
+            acc.events_received += v.get("events_received").and_then(|x| x.as_u64()).unwrap_or(0);
+            let d = v
+                .get("duration_secs")
+                .and_then(|x| x.as_f64())
+                .or_else(|| v.get("elapsed_secs").and_then(|x| x.as_f64()))
+                .unwrap_or(0.0);
+            if d > acc.max_duration_secs {
+                acc.max_duration_secs = d;
+            }
+        } else {
+            // multi-stream-write / mixed (and any future ops/s workload).
+            if let Some(ops) = v.get("aggregate_ops_per_sec").and_then(|x| x.as_f64()) {
+                acc.saw_ops = true;
+                acc.ops += ops;
             }
         }
     }
-    total
+    acc
 }
 
 pub fn merge_summary(hdr_dir: &Path, results_dir: Option<&Path>) -> Result<MergeSummary> {
@@ -98,6 +155,26 @@ pub fn merge_summary_filtered(
 ) -> Result<MergeSummary> {
     let h = merge_dir_filtered(hdr_dir, label_prefix)?;
     let ms = |v: u64| (v as f64) / 1000.0;
+    let acc = scan_headlines(results_dir);
+    // Pick the headline(s) by which workload's per-pod JSONs we actually saw.
+    // catch-up and fan-out take precedence (they never carry ops/s); ops/s is
+    // multi-stream/mixed. A results dir holds one workload's pods at a time.
+    let (aggregate_ops_per_sec, aggregate_mb_per_sec, bytes_received_total,
+         events_received_total, events_per_sec) = if acc.saw_catchup {
+        (None, Some(acc.mb_per_sec), Some(acc.bytes_received), None, None)
+    } else if acc.saw_fanout {
+        let eps = if acc.max_duration_secs > 0.0 {
+            Some(acc.events_received as f64 / acc.max_duration_secs)
+        } else {
+            None
+        };
+        (None, None, None, Some(acc.events_received), eps)
+    } else if acc.saw_ops {
+        (Some(acc.ops), None, None, None, None)
+    } else {
+        // No per-pod JSON (e.g. tests merging raw .hdr only): omit all headlines.
+        (None, None, None, None, None)
+    };
     Ok(MergeSummary {
         merged_count: h.len(),
         p50_ms: ms(h.value_at_quantile(0.5)),
@@ -105,7 +182,11 @@ pub fn merge_summary_filtered(
         p99_ms: ms(h.value_at_quantile(0.99)),
         p999_ms: ms(h.value_at_quantile(0.999)),
         max_ms: ms(h.max()),
-        aggregate_ops_per_sec: sum_ops(results_dir),
+        aggregate_ops_per_sec,
+        aggregate_mb_per_sec,
+        bytes_received_total,
+        events_received_total,
+        events_per_sec,
     })
 }
 

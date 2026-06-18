@@ -76,6 +76,116 @@ fn emit_then_merge_roundtrips_exactly() {
 }
 
 #[test]
+fn merge_summary_reports_per_workload_headline() {
+    use serde_json::json;
+    // --- fan-out: ops/s is N/A (null), latency is the headline ---
+    {
+        let dir = std::env::temp_dir().join("ds-bench-headline-fanout");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // one hdr file so merged_count > 0
+        let mut h = Histogram::<u64>::new_with_bounds(1, 60_000_000, 3).unwrap();
+        for v in [1000u64, 2000, 3000] { h.record(v).unwrap(); }
+        {
+            let mut buf = Vec::new();
+            V2Serializer::new().serialize(&h, &mut buf).unwrap();
+            std::fs::write(dir.join("fanout-0.hdr"), &buf).unwrap();
+        }
+        // two fan-out pods: no aggregate_ops_per_sec; events_received + duration_secs.
+        std::fs::write(
+            dir.join("pod-0.json"),
+            serde_json::to_string(&json!({
+                "scenario": "fanout", "events_received": 6000u64, "duration_secs": 30u64
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("pod-1.json"),
+            serde_json::to_string(&json!({
+                "scenario": "fanout", "events_received": 6000u64, "duration_secs": 30u64
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let s = ds_bench::dist::merge_summary(&dir, Some(&dir)).unwrap();
+        assert_eq!(s.aggregate_ops_per_sec, None, "fanout ops/s must be null, not a misleading 0");
+        // events_received_total = 12000 over 30s = 400 events/s
+        assert_eq!(s.events_received_total, Some(12000));
+        assert!((s.events_per_sec.unwrap() - 400.0).abs() < 1.0, "events_per_sec={:?}", s.events_per_sec);
+        assert!(s.merged_count > 0);
+    }
+    // --- catch-up: headline is MB/s + bytes_received_total ---
+    {
+        let dir = std::env::temp_dir().join("ds-bench-headline-catchup");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut h = Histogram::<u64>::new_with_bounds(1, 60_000_000, 3).unwrap();
+        for v in [1000u64, 2000] { h.record(v).unwrap(); }
+        {
+            let mut buf = Vec::new();
+            V2Serializer::new().serialize(&h, &mut buf).unwrap();
+            std::fs::write(dir.join("catch-up-0.hdr"), &buf).unwrap();
+        }
+        std::fs::write(
+            dir.join("pod-0.json"),
+            serde_json::to_string(&json!({
+                "scenario": "catch-up-stampede",
+                "aggregate_mb_per_sec": 50.0, "bytes_received_total": 1000u64
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("pod-1.json"),
+            serde_json::to_string(&json!({
+                "scenario": "catch-up-stampede",
+                "aggregate_mb_per_sec": 25.0, "bytes_received_total": 500u64
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let s = ds_bench::dist::merge_summary(&dir, Some(&dir)).unwrap();
+        assert_eq!(s.aggregate_ops_per_sec, None, "catch-up has no ops/s headline");
+        assert!((s.aggregate_mb_per_sec.unwrap() - 75.0).abs() < 1e-9);
+        assert_eq!(s.bytes_received_total, Some(1500));
+    }
+    // --- multi-stream: headline is summed ops/s (backward compatible) ---
+    {
+        let dir = std::env::temp_dir().join("ds-bench-headline-multi");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut h = Histogram::<u64>::new_with_bounds(1, 60_000_000, 3).unwrap();
+        for v in [1000u64, 2000] { h.record(v).unwrap(); }
+        {
+            let mut buf = Vec::new();
+            V2Serializer::new().serialize(&h, &mut buf).unwrap();
+            std::fs::write(dir.join("multi-stream-0.hdr"), &buf).unwrap();
+        }
+        std::fs::write(
+            dir.join("pod-0.json"),
+            serde_json::to_string(&json!({
+                "scenario": "multi-stream-write", "aggregate_ops_per_sec": 1000.0
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("pod-1.json"),
+            serde_json::to_string(&json!({
+                "scenario": "multi-stream-write", "aggregate_ops_per_sec": 2000.0
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let s = ds_bench::dist::merge_summary(&dir, Some(&dir)).unwrap();
+        assert_eq!(s.aggregate_ops_per_sec, Some(3000.0));
+        assert_eq!(s.aggregate_mb_per_sec, None);
+        assert_eq!(s.events_per_sec, None);
+    }
+}
+
+#[test]
 fn hdr_merge_summary_matches_merged_histogram() {
     let dir = std::env::temp_dir().join("ds-bench-hdr-merge-test");
     let _ = std::fs::remove_dir_all(&dir);
