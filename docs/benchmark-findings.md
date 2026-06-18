@@ -211,25 +211,32 @@ The scalability finding generalizes into the core positioning point:
 > *state* in RAM is bounded by stream *cardinality*, no matter how well it offloads
 > stream *data*.
 
-- **ursula** keeps the hot ring + **per-stream state + producer dedup state in
-  memory per Raft group**, evicted only on delete (§7). Offloading hot *data* to S3
-  doesn't lower that floor. So its memory ceiling is the number of streams, and the
-  "millions of streams" claim is unproven against that ceiling.
-- **durable-streams is disk-first by construction**: each stream is an append-only
-  segment log on disk (the read path is zero-copy `sendfile` range reads straight
-  from those files — which is exactly why its catch-up p99 is 7.5 ms, §4), sealed
-  segments tier to object storage, and the working set in memory is bounded rather
-  than scaling with the number of streams. That's what lets it carry **millions of
-  streams**: the disk (and cold tier) is the dataset; memory is a bounded cache.
+**Source-verified outcome (both systems audited at file:line) — the honest result is
+SYMMETRIC, and it cuts against our initial thesis:**
 
-⚠️ **Honesty guard (to keep this defensible):** the durable-streams half of this
-claim is being **verified in source the same way we audited ursula** — confirming
-that per-stream state is disk-backed/bounded (not an in-memory map that grows with
-stream count), the segment-per-stream on-disk layout, and the memory behaviour at
-high cardinality. We will not publish "built for millions of streams" as a bare
-assertion; it gets the same file:line scrutiny ursula got, and a cardinality
-benchmark (many-streams, exceeding RAM) is the experiment that would actually prove
-it — neither benchmark here has run that yet.
+| | durable-streams (Rust) | ursula |
+|---|---|---|
+| **DATA path** | disk-first: append-only file/stream, coalesced fsync, **sendfile** zero-copy reads, S3 tier for sealed segments | hot ring in RAM; flush to S3 (own tiering); cold reads via bounded cache |
+| **Per-stream STATE** | **resident & unbounded** — one global `DashMap<String,StreamState>`, **eager-loaded at boot**, **no LRU/cap/idle-eviction** (`store.rs:301,384,482`) | **resident & unbounded** — 8 per-stream maps per Raft group, evicted only on delete (`state_machine.rs:46,2432`) |
+| **Producer dedup** | **unbounded, no TTL** (`handlers.rs:858`) | **unbounded, no TTL** (`state_machine.rs:56`) |
+| **Memory ceiling** | **stream COUNT + producer cardinality** (not data volume) | **stream COUNT + producer cardinality** (not data volume) |
+| **Extra cost at scale** | tiering does **not reclaim the local hot file** yet (sealed prefix retained, `tier.rs:444`) → local disk grows | Raft log **not auto-purged** + **full-group JSON snapshot every 60s** → O(streams) CPU/IO; 64 MiB hot **admission gate rejects writes**; cold **off by default** |
+
+**So the corrected, honest conclusion:** *both* systems are disk-first for **data**
+but hold **unbounded resident per-stream state** — neither's memory is bounded by
+stream count today, and **"built for millions of streams" is not supported by either
+codebase as written.** The earlier draft of this section overclaimed for DS; the
+audit corrected it. We will **not** make the millions-of-streams claim.
+
+**Where DS still has a real, defensible edge (data path, not cardinality):** no
+consensus on the write path, no Raft log to purge, no periodic full-group snapshot,
+no write-rejecting admission gate, and zero-copy sendfile reads. So at a given stream
+count DS's per-stream resident cost is *lighter* and it lacks ursula's O(streams)
+snapshot/log amplification — DS likely reaches a **higher** cardinality before falling
+over, but both ultimately fall over on stream-count, not data volume. That nuance is
+the honest claim; the absolute "millions" claim needs **engineering** (lazy-load +
+LRU/idle-eviction of stream state, producer-state TTL) — it is not true of the
+shipping code, and **no benchmark here has measured the cardinality wall yet.**
 
 ---
 
