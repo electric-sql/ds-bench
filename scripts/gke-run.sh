@@ -31,25 +31,51 @@ RUN_ID="${WORKLOAD}-$(date +%s)-$$"
 # --- resolve the server target (only DS-rust in 2b.1) ---
 case "$SYSTEM" in
   durable) TARGET="http://durable-streams:4438"; API_STYLE="durable" ;;
-  *) echo "ERROR: unknown system: $SYSTEM (2b.1 supports: durable)" >&2; exit 1 ;;
+  ursula)  TARGET="http://ursula:4437";          API_STYLE="ursula"  ;;
+  s2)      TARGET="http://s2lite:80";             API_STYLE="s2"      ;;
+  *) echo "ERROR: unknown system: $SYSTEM (supported: durable | ursula | s2)" >&2; exit 1 ;;
 esac
 
-# --- per-workload ds-bench command (mirrors kind-run.sh's get_wl_cmd) ---
+# S2 is its own substrate and is excluded from catch-up + mixed (the bench tool
+# bails). Skip cleanly so the matrix can iterate without special-casing.
+if [ "$SYSTEM" = "s2" ] && { [ "$WORKLOAD" = "catch-up" ] || [ "$WORKLOAD" = "mixed" ]; }; then
+  echo "SKIP: s2 is excluded from $WORKLOAD (S2 runs multi-stream + fan-out only)"
+  exit 0
+fi
+
+# --- per-workload ds-bench command (mirrors kind-run.sh's get_wl_cmd). The
+# baseline flags are overridable via env so the matrix runner can drive a
+# saturation sweep without forking the command map. ---
+MS_STREAMS="${MS_STREAMS:-200}"
+MS_DURATION="${MS_DURATION:-30}"
+MS_PAYLOAD="${MS_PAYLOAD:-256}"
+FO_SUBSCRIBERS="${FO_SUBSCRIBERS:-500}"
+FO_RATE="${FO_RATE:-50}"
+FO_DURATION="${FO_DURATION:-30}"
+FO_PAYLOAD="${FO_PAYLOAD:-256}"
+CU_CLIENTS="${CU_CLIENTS:-50}"
+CU_PRE_EVENTS="${CU_PRE_EVENTS:-500}"
+CU_EVENT_BYTES="${CU_EVENT_BYTES:-256}"
+MX_STREAMS="${MX_STREAMS:-8}"
+MX_READERS="${MX_READERS:-8}"
+MX_SUBSCRIBERS="${MX_SUBSCRIBERS:-8}"
+MX_DURATION="${MX_DURATION:-30}"
+
 case "$WORKLOAD" in
   multi-stream)
-    BENCH_CMD="multi-stream --target ${TARGET} --api-style ${API_STYLE} --streams 20 --duration-secs 15 --payload-bytes 256"
+    BENCH_CMD="multi-stream --target ${TARGET} --api-style ${API_STYLE} --streams ${MS_STREAMS} --duration-secs ${MS_DURATION} --payload-bytes ${MS_PAYLOAD}"
     OUT_PREFIX="ms"
     ;;
   fan-out)
-    BENCH_CMD="fan-out --target ${TARGET} --api-style ${API_STYLE} --subscribers 50 --writer-rate 50 --duration-secs 15 --payload-bytes 256"
+    BENCH_CMD="fan-out --target ${TARGET} --api-style ${API_STYLE} --subscribers ${FO_SUBSCRIBERS} --writer-rate ${FO_RATE} --duration-secs ${FO_DURATION} --payload-bytes ${FO_PAYLOAD}"
     OUT_PREFIX="fan-out"
     ;;
   catch-up)
-    BENCH_CMD="catch-up --target ${TARGET} --api-style ${API_STYLE} --clients 50 --pre-events 500 --event-bytes 256"
+    BENCH_CMD="catch-up --target ${TARGET} --api-style ${API_STYLE} --clients ${CU_CLIENTS} --pre-events ${CU_PRE_EVENTS} --event-bytes ${CU_EVENT_BYTES}"
     OUT_PREFIX="catch-up"
     ;;
   mixed)
-    BENCH_CMD="mixed --target ${TARGET} --api-style ${API_STYLE} --streams 4 --readers 4 --subscribers 4 --duration-secs 15"
+    BENCH_CMD="mixed --target ${TARGET} --api-style ${API_STYLE} --streams ${MX_STREAMS} --readers ${MX_READERS} --subscribers ${MX_SUBSCRIBERS} --duration-secs ${MX_DURATION}"
     OUT_PREFIX="mixed"
     ;;
   *)
@@ -67,10 +93,28 @@ export PROJECT RUN_ID PARALLELISM BENCH_CMD OUT_PREFIX MERGE_CMD
 
 echo "=== gke-run: system=${SYSTEM} workload=${WORKLOAD} pods=${PARALLELISM} run_id=${RUN_ID} ==="
 
-# --- ensure the server is up (idempotent) ---
-echo "  ensuring durable-streams server..."
-envsubst '${PROJECT}' < gke/durable-streams.yaml | K apply -f -
-K wait --for=condition=available deploy/durable-streams --timeout=300s
+# --- ensure the server is up (idempotent). The matrix runner owns deploy/scale
+# of one server-under-test at a time; set GKE_RUN_SKIP_SERVER=1 to skip this and
+# assume the server is already up. Otherwise ensure the per-system server. ---
+if [ "${GKE_RUN_SKIP_SERVER:-0}" != "1" ]; then
+  case "$SYSTEM" in
+    durable)
+      echo "  ensuring durable-streams server..."
+      envsubst '${PROJECT}' < gke/durable-streams.yaml | K apply -f -
+      K wait --for=condition=available deploy/durable-streams --timeout=300s
+      ;;
+    ursula)
+      echo "  ensuring ursula server..."
+      envsubst '${PROJECT}' < gke/ursula.yaml | K apply -f -
+      K wait --for=condition=available deploy/ursula --timeout=300s
+      ;;
+    s2)
+      echo "  ensuring s2lite server..."
+      K apply -f gke/s2lite.yaml
+      K wait --for=condition=available deploy/s2lite --timeout=300s
+      ;;
+  esac
+fi
 
 # --- clean prior jobs ---
 K delete job bench-fleet bench-coordinator --ignore-not-found >/dev/null 2>&1 || true
