@@ -136,21 +136,28 @@ spec:
 
 # ---------------------------------------------------------------------------
 # Helper: clear /results on the PVC via a short-lived pod
+# Aborts the harness (exit 1) if the cleaner pod fails to create, ends in
+# Failed phase, or does not reach Succeeded within 60 s — prevents a
+# subsequent workload from merging stale files from the prior run.
 # ---------------------------------------------------------------------------
 clear_results_pvc() {
   echo "  clearing /results PVC..."
   # Delete any leftover cleaner pod
   kubectl --context "${CTX}" delete pod pvc-cleaner --ignore-not-found >/dev/null 2>&1 || true
 
-  kubectl --context "${CTX}" run pvc-cleaner --image=busybox:1.36 \
+  # Capture exit status; do NOT swallow failures with || true
+  if ! kubectl --context "${CTX}" run pvc-cleaner --image=busybox:1.36 \
     --restart=Never \
     --overrides='{"spec":{"volumes":[{"name":"results","persistentVolumeClaim":{"claimName":"bench-results"}}],"containers":[{"name":"pvc-cleaner","image":"busybox:1.36","command":["/bin/sh","-c","rm -f /results/* && echo cleared"],"volumeMounts":[{"name":"results","mountPath":"/results"}]}]}}' \
-    >/dev/null 2>&1 || true
+    >/dev/null 2>&1; then
+    echo "  ERROR: failed to create pvc-cleaner pod — aborting to avoid stale results" >&2
+    exit 1
+  fi
 
   # Wait for the cleaner pod to finish (up to 60s)
   local i=0
+  local phase="Pending"
   while [ $i -lt 60 ]; do
-    local phase
     phase="$(kubectl --context "${CTX}" get pod pvc-cleaner -o jsonpath='{.status.phase}' 2>/dev/null || echo "Missing")"
     if [ "$phase" = "Succeeded" ] || [ "$phase" = "Failed" ] || [ "$phase" = "Missing" ]; then
       break
@@ -158,8 +165,22 @@ clear_results_pvc() {
     sleep 1
     i=$((i+1))
   done
-  kubectl --context "${CTX}" delete pod pvc-cleaner --ignore-not-found >/dev/null 2>&1 || true
-  echo "  /results cleared."
+
+  # Evaluate outcome — only Succeeded is safe to proceed
+  if [ "$phase" = "Succeeded" ]; then
+    kubectl --context "${CTX}" delete pod pvc-cleaner --ignore-not-found >/dev/null 2>&1 || true
+    echo "  /results cleared."
+  elif [ "$phase" = "Failed" ]; then
+    echo "  ERROR: pvc-cleaner pod ended in Failed phase — aborting to avoid stale results" >&2
+    kubectl --context "${CTX}" logs pvc-cleaner 2>/dev/null || true
+    kubectl --context "${CTX}" delete pod pvc-cleaner --ignore-not-found >/dev/null 2>&1 || true
+    exit 1
+  else
+    # Missing or still running after 60 s
+    echo "  ERROR: pvc-cleaner did not reach Succeeded within 60 s (phase=${phase}) — aborting to avoid stale results" >&2
+    kubectl --context "${CTX}" delete pod pvc-cleaner --ignore-not-found >/dev/null 2>&1 || true
+    exit 1
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -191,6 +212,9 @@ for WL in $WORKLOADS; do
     sleep 2
     elapsed=$((elapsed+2))
   done
+  if [ $elapsed -ge $local_timeout ]; then
+    echo "  WARNING: prior pods did not fully terminate within ${local_timeout}s — proceeding anyway" >&2
+  fi
 
   # Clear PVC results
   clear_results_pvc
