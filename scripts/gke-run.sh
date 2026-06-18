@@ -121,16 +121,19 @@ if [ "${GKE_RUN_SKIP_SERVER:-0}" != "1" ]; then
 fi
 
 # --- active in-cluster readiness probe of the server target ---
-# Deployment-level readiness + rollout-status still leave a brief window after a
-# restart where the Service endpoint hasn't fully propagated (kube-proxy) and a
-# fresh connection gets refused. Poll the target from inside the cluster until it
-# answers (any HTTP response — even 4xx — means it's serving) before launching
-# the fleet. This is what stops ursula's first-run "connection refused".
+# tcpSocket readiness + rollout-status still return BEFORE the server actually
+# handles HTTP requests (ursula's TCP listener binds early, but Raft/HTTP isn't
+# serving yet → "connection refused" / reset on the fleet's first request). Poll
+# the target from a CLIENT node (same network path as the fleet) and require
+# THREE CONSECUTIVE successful HTTP responses (any code, even 404, means HTTP is
+# truly serving) before launching the fleet. This is what stops ursula's
+# first-run "connection refused".
 PROBE_HOSTPORT="${TARGET#http://}"   # e.g. ursula:4437
-echo "  probing server ${PROBE_HOSTPORT} until it answers..."
-K run server-probe-$$ --rm -i --restart=Never --image=curlimages/curl:latest --command -- \
-  /bin/sh -c "for i in \$(seq 1 60); do code=\$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://${PROBE_HOSTPORT}/ 2>/dev/null || echo 000); if [ \"\$code\" != \"000\" ]; then echo \"server up (HTTP \$code)\"; exit 0; fi; sleep 2; done; echo 'server never answered'; exit 1" \
-  >/dev/null 2>&1 || { echo "  WARN: server probe did not confirm readiness; proceeding anyway"; }
+echo "  probing server ${PROBE_HOSTPORT} (need 3 consecutive HTTP answers)..."
+K run "server-probe-$$" --rm -i --restart=Never --image=curlimages/curl:latest \
+  --overrides='{"spec":{"nodeSelector":{"role":"client"}}}' --command -- \
+  /bin/sh -c "ok=0; for i in \$(seq 1 90); do code=\$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://${PROBE_HOSTPORT}/ 2>/dev/null || echo 000); if [ \"\$code\" != \"000\" ]; then ok=\$((ok+1)); else ok=0; fi; if [ \"\$ok\" -ge 3 ]; then echo \"server serving (HTTP \$code, 3x)\"; exit 0; fi; sleep 1; done; echo 'server never served'; exit 1" \
+  || { echo "  ERROR: server ${PROBE_HOSTPORT} never became ready" >&2; exit 1; }
 
 # --- clean prior jobs ---
 K delete job bench-fleet bench-coordinator --ignore-not-found >/dev/null 2>&1 || true
