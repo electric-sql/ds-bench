@@ -4,6 +4,7 @@ mod catch_up;
 mod common;
 mod dist;
 mod fanout;
+mod mixed;
 mod multi_stream;
 
 use anyhow::Result;
@@ -31,6 +32,8 @@ enum Cmd {
     Bootstrap(bootstrap::BootstrapArgs),
     /// Catch-up stampede - N clients replay a pre-populated stream from offset -1 simultaneously.
     CatchUp(catch_up::CatchUpArgs),
+    /// Mixed workload - concurrent writers + catch-up readers + live SSE subscribers.
+    Mixed(mixed::MixedArgs),
     /// Merge per-pod HDR histograms into exact fleet-wide percentiles.
     HdrMerge(dist::HdrMergeArgs),
 }
@@ -52,6 +55,7 @@ async fn main() -> Result<()> {
         Cmd::FanOut(args) => serde_json::to_string_pretty(&fanout::run(args).await?)?,
         Cmd::Bootstrap(args) => serde_json::to_string_pretty(&bootstrap::run(args).await?)?,
         Cmd::CatchUp(a) => serde_json::to_string_pretty(&catch_up::run(a).await?)?,
+        Cmd::Mixed(a) => serde_json::to_string_pretty(&mixed::run(a).await?)?,
         Cmd::HdrMerge(a) => dist::run_merge(a)?,
     };
     println!("{json}");

@@ -90,7 +90,7 @@ fn catch_up_start(b: &Backend) -> &'static str {
 
 /// Loop catch-up GETs, feeding back stream-next-offset, until stream-up-to-date.
 /// Returns total bytes read. Offset is opaque (format-agnostic across servers).
-async fn catch_up_read_all(b: &Backend, base_idx: usize, stream: &str) -> anyhow::Result<u64> {
+pub(crate) async fn catch_up_read_all(b: &Backend, base_idx: usize, stream: &str) -> anyhow::Result<u64> {
     use anyhow::Context;
     let mut offset = catch_up_start(b).to_string();
     let mut total: u64 = 0;
