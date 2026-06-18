@@ -33,6 +33,11 @@ spec:
             - { name: AWS_REGION, value: us-east-1 }
           ports:
             - containerPort: 80
+          readinessProbe:
+            tcpSocket: { port: 80 }
+            initialDelaySeconds: 2
+            periodSeconds: 2
+            failureThreshold: 30
           resources:
             requests: { memory: "2Gi", cpu: "2" }
             limits: { memory: "6Gi" }

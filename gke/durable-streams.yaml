@@ -48,6 +48,13 @@ spec:
               value: minioadmin
           ports:
             - containerPort: 4438
+          # Serve-readiness gate (see ursula.yaml) so the matrix's rollout-restart
+          # + `wait --for=condition=available` only passes once :4438 accepts.
+          readinessProbe:
+            tcpSocket: { port: 4438 }
+            initialDelaySeconds: 2
+            periodSeconds: 2
+            failureThreshold: 30
           volumeMounts:
             - { name: data, mountPath: /data }
           resources:

@@ -61,6 +61,16 @@ spec:
           args: ["--config", "/etc/ursula/ursula.toml", "--node-id", "1"]
           ports:
             - containerPort: 4437
+          # readinessProbe so `kubectl wait --for=condition=available` (and the
+          # matrix's deploy gate) only passes once ursula is actually serving on
+          # :4437 — without it the deployment reports available the moment the
+          # pod is Running, before the HTTP listener + Raft leader election are
+          # up, and the fleet hits "connection refused".
+          readinessProbe:
+            tcpSocket: { port: 4437 }
+            initialDelaySeconds: 2
+            periodSeconds: 2
+            failureThreshold: 30
           volumeMounts:
             - { name: config, mountPath: /etc/ursula }
             - { name: data, mountPath: /var/lib/ursula }
