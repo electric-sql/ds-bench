@@ -132,7 +132,7 @@ PROBE_HOSTPORT="${TARGET#http://}"   # e.g. ursula:4437
 echo "  probing server ${PROBE_HOSTPORT} (need 3 consecutive HTTP answers)..."
 K run "server-probe-$$" --rm -i --restart=Never --image=curlimages/curl:latest \
   --overrides='{"spec":{"nodeSelector":{"role":"client"}}}' --command -- \
-  /bin/sh -c "ok=0; for i in \$(seq 1 90); do code=\$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://${PROBE_HOSTPORT}/ 2>/dev/null || echo 000); if [ \"\$code\" != \"000\" ]; then ok=\$((ok+1)); else ok=0; fi; if [ \"\$ok\" -ge 3 ]; then echo \"server serving (HTTP \$code, 3x)\"; exit 0; fi; sleep 1; done; echo 'server never served'; exit 1" \
+  /bin/sh -c "ok=0; for i in \$(seq 1 90); do code=\$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://${PROBE_HOSTPORT}/ 2>/dev/null); case \"\$code\" in 2??|3??|4??|5??) ok=\$((ok+1));; *) ok=0;; esac; if [ \"\$ok\" -ge 3 ]; then echo \"server serving (HTTP \$code, 3x)\"; exit 0; fi; sleep 1; done; echo 'server never served'; exit 1" \
   || { echo "  ERROR: server ${PROBE_HOSTPORT} never became ready" >&2; exit 1; }
 
 # --- clean prior jobs (synchronously) — a previously interrupted run can leave a
