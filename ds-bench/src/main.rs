@@ -31,6 +31,8 @@ enum Cmd {
     Bootstrap(bootstrap::BootstrapArgs),
     /// Catch-up stampede - N clients replay a pre-populated stream from offset -1 simultaneously.
     CatchUp(catch_up::CatchUpArgs),
+    /// Merge per-pod HDR histograms into exact fleet-wide percentiles.
+    HdrMerge(dist::HdrMergeArgs),
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -50,6 +52,7 @@ async fn main() -> Result<()> {
         Cmd::FanOut(args) => serde_json::to_string_pretty(&fanout::run(args).await?)?,
         Cmd::Bootstrap(args) => serde_json::to_string_pretty(&bootstrap::run(args).await?)?,
         Cmd::CatchUp(a) => serde_json::to_string_pretty(&catch_up::run(a).await?)?,
+        Cmd::HdrMerge(a) => dist::run_merge(a)?,
     };
     println!("{json}");
     Ok(())
