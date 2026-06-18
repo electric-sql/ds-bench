@@ -95,8 +95,9 @@ run_and_save() {
   local log="$OUT_DIR/$tag.log"
   # gke-run.sh ensures the server itself is up (we already scaled it); the run
   # script's ensure step is idempotent and cheap.
+  # NB: return 0 even on failure so one bad run never aborts the matrix (set -e).
   if ! GKE_RUN_SKIP_SERVER=1 ./scripts/gke-run.sh "$system" "$workload" "$pods" >"$log" 2>&1; then
-    echo "  !! gke-run.sh failed for $tag (see $log)"; tail -5 "$log" || true; return 1
+    echo "  !! gke-run.sh failed for $tag (see $log)"; tail -6 "$log" || true; return 0
   fi
   # client-pod CPU headroom snapshot (so we know the generator isn't the bottleneck)
   K top pods -l job-name=bench-fleet --no-headers 2>/dev/null | sed 's/^/  client-pod cpu: /' || true

@@ -135,12 +135,15 @@ K run "server-probe-$$" --rm -i --restart=Never --image=curlimages/curl:latest \
   /bin/sh -c "ok=0; for i in \$(seq 1 90); do code=\$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://${PROBE_HOSTPORT}/ 2>/dev/null || echo 000); if [ \"\$code\" != \"000\" ]; then ok=\$((ok+1)); else ok=0; fi; if [ \"\$ok\" -ge 3 ]; then echo \"server serving (HTTP \$code, 3x)\"; exit 0; fi; sleep 1; done; echo 'server never served'; exit 1" \
   || { echo "  ERROR: server ${PROBE_HOSTPORT} never became ready" >&2; exit 1; }
 
-# --- clean prior jobs ---
-K delete job bench-fleet bench-coordinator --ignore-not-found >/dev/null 2>&1 || true
-# wait for old pods to clear
-for _ in $(seq 1 30); do
-  n=$(K get pods -l 'job-name in (bench-fleet,bench-coordinator)' --no-headers 2>/dev/null | wc -l | tr -d ' ')
-  [ "$n" = "0" ] && break
+# --- clean prior jobs (synchronously) — a previously interrupted run can leave a
+# bench-fleet/bench-coordinator Job behind, and `apply` then fails with
+# AlreadyExists. Delete and wait until BOTH the Job objects AND their pods are
+# actually gone before launching. ---
+K delete job bench-fleet bench-coordinator --ignore-not-found --wait=true >/dev/null 2>&1 || true
+for _ in $(seq 1 45); do
+  j=$(K get jobs bench-fleet bench-coordinator --no-headers 2>/dev/null | wc -l | tr -d ' ')
+  p=$(K get pods -l 'job-name in (bench-fleet,bench-coordinator)' --no-headers 2>/dev/null | wc -l | tr -d ' ')
+  [ "$j" = "0" ] && [ "$p" = "0" ] && break
   sleep 2
 done
 
