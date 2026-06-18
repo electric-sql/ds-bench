@@ -1,0 +1,19 @@
+# BuildKit-enabled Cloud Build for ursula (its Dockerfile uses
+# `# syntax=docker/dockerfile:1.7`, heredoc COPY <<EOF, and --mount=type=cache,
+# none of which the legacy `gcloud builds submit --tag` builder supports).
+# Run: gcloud builds submit vendor/ursula --config vendor/ursula/cloudbuild.yaml
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    env: ['DOCKER_BUILDKIT=1']
+    args:
+      - -c
+      - |
+        docker build \
+          -t europe-west1-docker.pkg.dev/$PROJECT_ID/ds-bench/ursula:dev \
+          -f Dockerfile .
+images:
+  - 'europe-west1-docker.pkg.dev/$PROJECT_ID/ds-bench/ursula:dev'
+timeout: 3600s
+options:
+  machineType: 'E2_HIGHCPU_8'

@@ -1,0 +1,83 @@
+# ursula (SINGLE NODE) for Phase 2b, on the NVMe role=server node.
+#
+# Per the USER DECISION, ursula runs at a SINGLE node only (multi-node deferred
+# to Phase 3). This is a plain Deployment mirroring config/ursula.toml — the
+# acceptable fallback to the Helm chart (which is fiddly: gateway/StatefulSet/TLS
+# and tuned for replicaCount 1/3/5). Single-node needs none of that.
+#
+# Matched durability: disk WAL Raft ([raft.wal] backend=disk) on the node's local
+# NVMe (emptyDir), cold tier → in-cluster MinIO `ursula` bucket (HMAC minioadmin).
+# Listens on :4437; ds-bench talks to it with `--api-style ursula`.
+#
+# The config is mounted from a ConfigMap; we override the image's default CMD to
+# point at it. ([raft.peers] omitted in the config → Topology::SingleNode.)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ursula-config
+  namespace: ds-bench
+data:
+  ursula.toml: |
+    [server]
+    listen = "0.0.0.0:4437"
+
+    [raft]
+    node_id = 1
+    # [raft.peers] intentionally omitted -> Topology::SingleNode
+
+    [raft.wal]
+    backend = "disk"
+    path = "/var/lib/ursula/data"
+
+    [storage.cold]
+    backend = "s3"
+
+    [storage.cold.s3]
+    bucket = "ursula"
+    endpoint = "http://minio:9000"
+    region = "us-east-1"
+    access_key_id = "minioadmin"
+    secret_access_key = "minioadmin"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ursula
+  namespace: ds-bench
+  labels: { app: ursula }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: ursula } }
+  strategy: { type: Recreate }
+  template:
+    metadata: { labels: { app: ursula } }
+    spec:
+      nodeSelector: { role: server }
+      containers:
+        - name: ursula
+          image: europe-west1-docker.pkg.dev/${PROJECT}/ds-bench/ursula:dev
+          imagePullPolicy: Always
+          command: ["/usr/local/bin/ursula"]
+          args: ["--config", "/etc/ursula/ursula.toml", "--node-id", "1"]
+          ports:
+            - containerPort: 4437
+          volumeMounts:
+            - { name: config, mountPath: /etc/ursula }
+            - { name: data, mountPath: /var/lib/ursula }
+          resources:
+            requests: { memory: "2Gi", cpu: "2" }
+            limits: { memory: "6Gi" }
+      volumes:
+        - name: config
+          configMap: { name: ursula-config }
+        - name: data
+          emptyDir: { medium: "" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ursula
+  namespace: ds-bench
+spec:
+  selector: { app: ursula }
+  ports: [{ port: 4437, targetPort: 4437 }]
