@@ -1,7 +1,10 @@
 # MinIO object store for Phase 2b, pinned to the NVMe role=server node.
 # Data lives on an emptyDir (medium "" → the node's local SSD ephemeral
-# storage) for fast fsync. Two buckets: `durable-streams` (DS-rust cold tier)
-# and `bench-results` (per-pod HDR/JSON upload for the cross-node merge).
+# storage) for fast fsync. Buckets:
+#   durable-streams  DS-rust cold tier
+#   ursula           ursula cold tier
+#   s2-bench         S2 Lite object substrate
+#   bench-results    per-pod HDR/JSON upload for the cross-node merge
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -58,4 +61,4 @@ spec:
           args:
             - >
               until mc alias set local http://minio:9000 minioadmin minioadmin; do sleep 2; done &&
-              mc mb -p local/durable-streams local/bench-results && echo buckets-ready
+              mc mb -p local/durable-streams local/ursula local/s2-bench local/bench-results && echo buckets-ready
