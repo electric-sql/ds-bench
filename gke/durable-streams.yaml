@@ -65,9 +65,12 @@ spec:
           resources:
             requests:
               memory: "2Gi"
-              cpu: "2"
+              # available_parallelism() reads cpu.max (cgroup v2) → bounds worker_threads.
+              # Both request and limit must match so the quota is enforced.
+              cpu: "${SERVER_CPU}"
             limits:
               memory: "6Gi"
+              cpu: "${SERVER_CPU}"
         # ── metrics sidecar ─────────────────────────────────────────────────────
         # Samples the server's RSS + CPU from /proc/<pid>/stat every second and
         # appends rows to /metrics/samples.csv (shared emptyDir).
