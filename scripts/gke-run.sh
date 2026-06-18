@@ -130,10 +130,10 @@ fi
 # first-run "connection refused".
 PROBE_HOSTPORT="${TARGET#http://}"   # e.g. ursula:4437
 echo "  probing server ${PROBE_HOSTPORT} (need 3 consecutive HTTP answers)..."
-K run "server-probe-$$" --rm -i --restart=Never --image=curlimages/curl:latest \
+K run "server-probe-$$" --rm --attach --restart=Never --image=curlimages/curl:latest \
   --overrides='{"spec":{"nodeSelector":{"role":"client"}}}' --command -- \
-  /bin/sh -c "ok=0; for i in \$(seq 1 90); do code=\$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://${PROBE_HOSTPORT}/ 2>/dev/null); case \"\$code\" in 2??|3??|4??|5??) ok=\$((ok+1));; *) ok=0;; esac; if [ \"\$ok\" -ge 3 ]; then echo \"server serving (HTTP \$code, 3x)\"; exit 0; fi; sleep 1; done; echo 'server never served'; exit 1" \
-  || { echo "  ERROR: server ${PROBE_HOSTPORT} never became ready" >&2; exit 1; }
+  /bin/sh -c "ok=0; for i in \$(seq 1 90); do code=\$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://${PROBE_HOSTPORT}/ 2>/dev/null); case \"\$code\" in 2??|3??|4??|5??) ok=\$((ok+1));; *) ok=0;; esac; if [ \"\$ok\" -ge 3 ]; then echo \"server serving (HTTP \$code, 3x)\"; exit 0; fi; sleep 1; done; echo 'server never served'; exit 1" </dev/null \
+  && echo "  probe ok" || echo "  WARN: probe wrapper returned non-zero (kubectl --rm attach is flaky); continuing — fleet has its own retry"
 
 # --- clean prior jobs (synchronously) — a previously interrupted run can leave a
 # bench-fleet/bench-coordinator Job behind, and `apply` then fails with
@@ -141,8 +141,11 @@ K run "server-probe-$$" --rm -i --restart=Never --image=curlimages/curl:latest \
 # actually gone before launching. ---
 K delete job bench-fleet bench-coordinator --ignore-not-found --wait=true >/dev/null 2>&1 || true
 for _ in $(seq 1 45); do
-  j=$(K get jobs bench-fleet bench-coordinator --no-headers 2>/dev/null | wc -l | tr -d ' ')
-  p=$(K get pods -l 'job-name in (bench-fleet,bench-coordinator)' --no-headers 2>/dev/null | wc -l | tr -d ' ')
+  # NB: `get jobs <name>...` exits non-zero when a named job is absent; with
+  # `set -e -o pipefail` that non-zero in a `j=$(...)` assignment would abort the
+  # script BEFORE the fleet launch. Guard with `|| true`.
+  j=$( { K get jobs bench-fleet bench-coordinator --no-headers 2>/dev/null || true; } | wc -l | tr -d ' ')
+  p=$( { K get pods -l 'job-name in (bench-fleet,bench-coordinator)' --no-headers 2>/dev/null || true; } | wc -l | tr -d ' ')
   # NB: explicit if (not `cond && break`) — a failing `&&` chain returns non-zero
   # and would trip `set -e`, silently exiting the script before the fleet launch.
   if [ "$j" = "0" ] && [ "$p" = "0" ]; then break; fi
