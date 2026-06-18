@@ -34,6 +34,31 @@ with results we can publish.
 `micro/` answers "how fast is *this* server and which engine/knobs win"; `ds-bench/`
 answers "how do systems compare at the protocol level, and where do they scale-wall."
 
+## Load generation & the client-saturation guardrail (decided)
+
+Prior bare-metal microbenchmarks (Hetzner) were **capped by the load generator**, not
+the server: `wrk` on a fixed core budget couldn't push the server to its ceiling, so
+the measurement reflected the *client's* limit. The distributed `ds-bench` fleet
+exists precisely to remove that cap (it scales client pods/nodes horizontally until
+the **server** saturates — demonstrated: DS-rust write throughput kept climbing
+84k→181k→200k w/s across 2→4→8 pods). Therefore:
+
+- **The horizontally-scalable fleet is the universal load generator for every
+  THROUGHPUT/saturation number** (Tier A `rps`, Tier B/C, Tier D). Load generation and
+  server-side measurement are separable: load comes from the fleet; the server is
+  instrumented in place (CPU%, RSS — a server-side sidecar/endpoint, shared with Tier D).
+- **`micro/`/autobench is scoped to intrinsically co-located, server-side studies** —
+  syscall/`perf` detail and memory-cold page-cache eviction (privileged, same-box) —
+  *not* peak-throughput. Its `rps`-oriented studies (engines, cpu-scaling, splice,
+  tiering) are driven by the fleet so the client is never the bottleneck.
+- **Hard guardrail:** every throughput measurement reports **load-generator headroom**
+  (client CPU%); a number is **invalid if the generator saturated**. autobench already
+  captures client CPU%, so this is a gate, not new instrumentation.
+- **Cheap validation first:** before building fleet-driven micro workloads, run one
+  in-cluster autobench engine study and watch `wrk` CPU% — confirm the cap actually
+  bites on the `n2d-standard-8` (likely, with `wrk` on 2 cores vs a raw server at
+  200k+ rps). Commit to the fleet path only once the cap is observed on this hardware.
+
 ## Repository structure (publishable layout)
 
 ```
@@ -92,6 +117,11 @@ node. Studies (from the survey): **engines** (hyper/raw/uring × read-size × co
   Hetzner `RESULTS.md`; (4) results → MinIO/GCS → rendered into `results/`.
 - **Note:** Tier A is DS-server-specific (engine/knob studies don't apply to
   ursula/S2). Cross-system comparison lives in Tier B.
+- **Load generation (per the decision above):** the ported `micro/` (co-located `wrk`)
+  is kept for the **server-side/co-located** studies (syscall/`perf`, memory-cold) and
+  as the cheap cap-validation harness; the **throughput** studies are driven by the
+  scalable fleet so the load generator is never the cap. The T1–T4 co-located port is
+  not wasted — it becomes that server-side probe.
 
 ### Tier B — Macro protocol workloads (`ds-bench`, cross-system) · **READY (cleanup needed)**
 multi-stream / fan-out / catch-up / mixed against any pluggable system. This is built
@@ -184,6 +214,14 @@ To be fully measurable by the suite, the DS server should expose:
 - the **`uring` engine** built/enabled on the Linux NVMe node (for Tier A's engine study);
 - (for a real "millions of streams" claim) **lazy stream-state load + LRU/idle-eviction
   + producer-state TTL** — Tier D is the test that would then prove the bound moved.
+
+## Follow-on plans implied by the load-generation decision
+- **Fleet-driven micro workloads:** extend `ds-bench` with the throughput micro-patterns
+  (read-size sweep, append-size sweep, splice/binary append) so the scalable fleet —
+  not co-located `wrk` — produces the engine/cpu-scaling/splice/tiering `rps` numbers.
+- **Server-metrics sidecar/endpoint** (CPU% + RSS), shared by the fleet-driven micro
+  studies and the Tier-D cardinality test, so measurement is independent of where load
+  originates.
 
 ## Open items (resolve in the implementation plan)
 1. Tier A in-cluster isolation: confirm Option A (dedicated NVMe node, privileged Job,
