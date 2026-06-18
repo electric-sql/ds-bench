@@ -1,0 +1,6 @@
+cell=append-cpu2-conn64-binary-p1024
+repeat=1
+parallelism=2
+server_cpu_cores=2
+server_cpu_pct=29.2
+verdict=client_capped

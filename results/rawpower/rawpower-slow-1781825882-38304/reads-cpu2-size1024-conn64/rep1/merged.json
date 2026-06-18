@@ -1,0 +1,19 @@
+Added `local` successfully.
+`local/bench-results/rawpower-slow-1781825940-38304-reads-cpu2-size1024-conn64-r1-p2/reads-0.json` -> `/merge/reads-0.json`
+`local/bench-results/rawpower-slow-1781825940-38304-reads-cpu2-size1024-conn64-r1-p2/reads-7-0.hdr` -> `/merge/reads-7-0.hdr`
+`local/bench-results/rawpower-slow-1781825940-38304-reads-cpu2-size1024-conn64-r1-p2/reads-7-1.hdr` -> `/merge/reads-7-1.hdr`
+`local/bench-results/rawpower-slow-1781825940-38304-reads-cpu2-size1024-conn64-r1-p2/reads-1.json` -> `/merge/reads-1.json`
+┌───────────┬─────────────┬──────────┬────────────┐
+│ Total     │ Transferred │ Duration │ Speed      │
+│ 16.75 KiB │ 16.75 KiB   │ 00m00s   │ 1.89 MiB/s │
+└───────────┴─────────────┴──────────┴────────────┘
+{
+  "merged_count": 838422,
+  "p50_ms": 2.385,
+  "p90_ms": 3.743,
+  "p99_ms": 52.159,
+  "p999_ms": 54.943,
+  "max_ms": 58.239,
+  "aggregate_ops_per_sec": 27942.150594863455,
+  "bytes_per_sec": 57148050.41266779
+}
