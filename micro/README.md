@@ -1,15 +1,14 @@
-# autobench — autonomous, reproducible engine benchmark suite
+# autobench — autonomous, reproducible benchmark suite
 
-A single-command harness that measures the Durable Streams Rust server across its
-HTTP engines under **controlled CPU and memory allocation**, so the numbers are
-reproducible and the engine differences are real (not artifacts of the load
+A single-command harness that measures the Durable Streams Rust server's
+single (raw) durable-streams engine under **controlled CPU and memory allocation**,
+so the numbers are reproducible and reliable (not artifacts of the load
 generator stealing the server's cores).
 
 ## Why this exists / methodology
 
 Running `wrk` on the same box as the server makes client and server fight for
-cores, which **compresses** the apparent engine differences (the machine
-saturates before any one engine does). autobench fixes that:
+cores, which can hide performance characteristics. autobench isolates them:
 
 - **Server isolation** — the server runs as a *transient systemd service* with a
   dedicated cgroup: `AllowedCPUs` pins it to a core set and `MemoryMax` bounds its
@@ -49,21 +48,21 @@ Output lands in `out/<timestamp>/`: `results.jsonl` (one JSON object per cell),
 
 | study | varies | answers |
 |-------|--------|---------|
-| `engines` | engine × read-size × concurrency, + append sweep (server/client pinned) | true per-engine throughput/latency/CPU when neither starves the other |
-| `cpu_scaling` | server cpuset {2,4,6,8 cores} × engine | how each engine scales with cores; where it plateaus |
-| `memory_cold` | `MemoryMax` {∞,2G,1G,512M} × engine/mode | cold-read isolation with *real* disk faults; `inline` stall vs `tail`/`uring` |
+| `engines` | read-size {1K, 16K, 1M} × concurrency {16, 64, 256, 1024}, + `--read-offload` modes | raw server throughput/latency/CPU at various I/O loads and request patterns |
+| `cpu_scaling` | server cpuset {2,4,6,8 cores} | how the raw server scales with cores; where it plateaus |
+| `memory_cold` | `MemoryMax` {∞,2G,1G,512M} × `--read-offload` mode {inline, tail, always} | cold-read isolation with *real* disk faults; `inline` stall vs `tail`/`always` offload |
 | `splice` | binary append, `--splice-appends` off/on | the zero-copy-append CPU lever |
 | `tiering` | `--tier local`(+`s3`) | sealing/offload append cost; cold-tier read throughput |
 
 Key knobs (all overridable inline): `SERVER_CPUS`, `CLIENT_CPUS`, `DUR`,
-`REPEATS`, `ENGINES`, `READ_SIZES`, `CONNS_SWEEP`, `SCALE_CPUSETS`, `COLD_MEMS`,
+`REPEATS`, `READ_SIZES`, `CONNS_SWEEP`, `SCALE_CPUSETS`, `COLD_MEMS`,
 `COLD_STREAM_GIB`, `TIER_SEG_BYTES`, `TIER_S3` (+`TIER_S3_ENDPOINT/BUCKET/KEY/SECRET`).
 
 ## Interpreting results
 
 - **engines/read_size**: small sizes (≤16 KB) are served from the in-memory tail
   cache (`Body::Full`) — they measure the socket-send path; 1 MB is a file read
-  (`sendfile` on raw, io_uring read+send on uring, buffered copy on hyper).
+  (`sendfile` on the raw server).
 - **rps_cv%** > ~5% means a noisy cell — re-run or investigate before trusting it.
 - **memory_cold**: at `MemoryMax=∞` all modes look alike (no disk I/O); the
   isolation story appears only as the cap drops below the cold stream size.
