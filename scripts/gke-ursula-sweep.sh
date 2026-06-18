@@ -98,23 +98,31 @@ for preset in tiny small standard large; do
 
   # Step 2: Run gke-run.sh (applies edited manifest, rolls out, waits-until-serving,
   #         runs the fleet + coordinator, prints merged JSON to stdout).
+  # NOTE: gke-run.sh emits human-readable status lines (e.g. "== merged (ursula/multi-stream) ==")
+  # BEFORE the trailing JSON.  Feed the full stdout to tee for visibility, then extract only
+  # the trailing JSON object (last line starting with '{') into a separate file for jq and
+  # logrun.sh (both run under set -euo pipefail and will abort on non-JSON input).
   out=$(mktemp)
+  merged=$(mktemp)
   bash "$GKE_RUN" ursula multi-stream 2 | tee "$out"
+  grep -E '^\{' "$out" | tail -1 > "$merged"
 
   # Step 3: Extract writes/s from the merged JSON.
   # logrun.sh uses: aggregate_ops_per_sec // aggregate_writes_per_sec // ...
   # render-gke.py confirms aggregate_ops_per_sec is the primary field.
-  writes=$(jq -r '(.aggregate_ops_per_sec // .aggregate_writes_per_sec // .aggregate_mb_per_sec // .events_per_sec // 0)' "$out")
+  writes=$(jq -r '(.aggregate_ops_per_sec // .aggregate_writes_per_sec // .aggregate_mb_per_sec // .events_per_sec // 0)' "$merged")
   echo ""
   echo "  >>> preset=$preset  writes/s=$writes"
 
   # Step 4: Log to bench-history/runlog.tsv.
-  bash "$LOGRUN" ursula "preset-${preset}" multi-stream 2 200 30 "$out" "clean sole-mutator sweep"
+  # Pass MS_STREAMS/MS_DURATION (gke-run.sh defaults for multi-stream) so runlog.tsv
+  # records the ACTUAL streams/duration rather than hardcoded placeholders.
+  bash "$LOGRUN" ursula "preset-${preset}" multi-stream 2 "${MS_STREAMS:-200}" "${MS_DURATION:-30}" "$merged" "clean sole-mutator sweep"
 
   # Accumulate result.
   add_result "$preset" "$writes"
 
-  rm -f "$out"
+  rm -f "$out" "$merged"
 done
 
 # ---------------------------------------------------------------------------

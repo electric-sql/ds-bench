@@ -81,7 +81,13 @@ K apply -f "$MICRO_MANIFEST"
 # ---------------------------------------------------------------------------
 
 echo "=== gke-micro: waiting for job/micro (timeout 7200s) ==="
+# Watch for failure in parallel so a backoffLimit:0 failure doesn't hang 7200s.
+K wait --for=condition=failed job/micro --timeout=7200s \
+  && { echo "ERROR: micro job FAILED"; K logs job/micro | tail -50; exit 1; } &
+FAIL_WATCHER_PID=$!
 K wait --for=condition=complete job/micro --timeout=7200s
+# Job completed successfully — kill the failure watcher.
+kill "$FAIL_WATCHER_PID" 2>/dev/null; wait "$FAIL_WATCHER_PID" 2>/dev/null || true
 
 echo "=== gke-micro: job/micro complete ==="
 

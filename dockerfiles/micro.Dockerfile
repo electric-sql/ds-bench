@@ -38,6 +38,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         python3 \
+        procps \
+        util-linux \
     && rm -rf /var/lib/apt/lists/*
 
 # MinIO client (mc) — amd64 release binary

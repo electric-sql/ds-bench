@@ -16,6 +16,7 @@ spec:
         - { name: PROFILE, value: "fast" }
         - { name: SERVER_CPUS, value: "0-5" }
         - { name: CLIENT_CPUS, value: "6-7" }
+        - { name: BENCH_ALLOWED_CPUS, value: "0-6" }
         - { name: RUN_ID, value: "REPLACE_RUN_ID" }
         command: ["bash","-lc"]
         args:

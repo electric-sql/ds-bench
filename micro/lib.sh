@@ -19,8 +19,8 @@ BIN="${BIN:-/usr/local/bin/durable-streams-server}"
 PORT="${PORT:-4700}"
 DATA="${DATA:-/data}"
 UNIT="${UNIT:-dsbench}"            # kept for reap/stop compatibility
-SERVER_CPUS="${SERVER_CPUS:-0-7}" # cpuset for the server
-CLIENT_CPUS="${CLIENT_CPUS:-8-11}" # cpuset for wrk
+SERVER_CPUS="${SERVER_CPUS:-0-5}" # cpuset for the server (8-core node: 0-5)
+CLIENT_CPUS="${CLIENT_CPUS:-6-7}" # cpuset for wrk (8-core node: 6-7)
 SERVER_MEM="${SERVER_MEM:-infinity}" # MemoryMax (cgroup; only used when delegated cgroup available)
 DUR="${DUR:-10}"
 REPEATS="${REPEATS:-3}"
@@ -130,9 +130,12 @@ stop_server() {
 server_cpu_nsec() {
   local pid="${SRV_MAIN_PID:-}"
   [ -z "$pid" ] && return
-  # /proc/<pid>/stat fields 14+15 are utime+stime in clock ticks
+  # /proc/<pid>/stat fields 14+15 (utime+stime) are after the comm field (field 2).
+  # The comm can contain spaces (e.g. "(durable streams)"), so positional $14+$15
+  # would be wrong.  Strip everything up to and including the closing ')' first,
+  # then the 12th+13th remaining fields are utime+stime.
   local ticks hz
-  ticks=$(awk '{print $14+$15}' "/proc/$pid/stat" 2>/dev/null) || return
+  ticks=$(awk '{s=$0; sub(/^.*\) /,"",s); split(s,f," "); print f[12]+f[13]}' "/proc/$pid/stat" 2>/dev/null) || return
   hz=$(getconf CLK_TCK 2>/dev/null); hz="${hz:-100}"
   # convert ticks -> nanoseconds
   awk -v t="$ticks" -v h="$hz" 'BEGIN{printf "%.0f", t/h*1e9}'

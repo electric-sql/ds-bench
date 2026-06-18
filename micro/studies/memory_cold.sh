@@ -49,10 +49,18 @@ study_memory_cold() {
       eng="${spec%%:*}"; mode="${spec#*:}"
       for rep in $(seq 1 "$REPEATS"); do
         start_server "$eng" "$mode" || continue
-        # Apply memory cap after server starts (move server PID into cgroup if possible)
+        # Apply memory cap after server starts (move server PID into cgroup).
+        # VERIFY the move succeeded — a silent failure would leave the server
+        # uncapped while recording data labelled as capped (wrong cold numbers).
         if [ "$mem" != "infinity" ] && [ -n "${SERVER_PID:-}" ]; then
           local cg="${CGROUP_MEM_PATH:-/sys/fs/cgroup/dsbench}"
           echo "$SERVER_PID" > "$cg/cgroup.procs" 2>/dev/null || true
+          if ! grep -q "^${SERVER_PID}$" "$cg/cgroup.procs" 2>/dev/null; then
+            echo "SKIP memory_cold cap=$mem (cgroup move failed)"
+            ab_log "SKIP memory_cold cap=$mem eng=$eng mode=$mode — server PID $SERVER_PID not in $cg/cgroup.procs; skipping to avoid uncapped result"
+            stop_server
+            continue
+          fi
         fi
         seed 4096 || { stop_server; continue; }            # hot stream
         # build the cold stream (> mem cap)
