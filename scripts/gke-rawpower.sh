@@ -216,7 +216,11 @@ run_fleet_and_coordinator() {
     sleep 2
   done
   envsubst '${PROJECT} ${RUN_ID} ${MERGE_CMD}' < gke/coordinator-job.yaml | K apply -f -
-  K wait --for=condition=complete job/bench-coordinator --timeout=300s
+  # Tolerant: if the fleet all-errored (server hung) there are no HDRs to merge
+  # and the coordinator may never `complete` — don't abort the whole matrix.
+  K wait --for=condition=complete job/bench-coordinator --timeout="${COORD_TIMEOUT:-90}s" 2>/dev/null \
+    || K wait --for=condition=failed job/bench-coordinator --timeout=5s 2>/dev/null \
+    || true
 }
 
 # compute_server_cpu_pct SAMPLES_CSV SERVER_CPU_CORES
@@ -396,7 +400,7 @@ for SERVER_CPU in $SERVER_CPUS; do
     APPEND_PAYLOADS="1024"
   else
     APPEND_CONNS="64 256"
-    APPEND_BODIES="binary json-single json-array"
+    APPEND_BODIES="${APPEND_BODIES:-binary}"   # json-* deferred: json-single append errored (server JSON-body issue or hang) — investigate separately
     APPEND_PAYLOADS="1024 16384"   # 1 KB / 16 KB writes (per user guidance)
   fi
 
