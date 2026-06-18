@@ -160,7 +160,16 @@ echo "  fleet pod placement:"
 K get pods -l job-name=bench-fleet -o wide
 
 # --- launch coordinator ---
+# Delete any leftover coordinator job synchronously right before applying — a
+# run killed between the fleet and coordinator phases leaves bench-coordinator
+# behind, and `apply` then fails AlreadyExists.
 echo "  launching coordinator..."
+K delete job bench-coordinator --ignore-not-found --wait=true >/dev/null 2>&1 || true
+for _ in $(seq 1 30); do
+  c=$( { K get job bench-coordinator --no-headers 2>/dev/null || true; } | wc -l | tr -d ' ')
+  if [ "$c" = "0" ]; then break; fi
+  sleep 2
+done
 envsubst '${PROJECT} ${RUN_ID} ${MERGE_CMD}' < gke/coordinator-job.yaml | K apply -f -
 K wait --for=condition=complete job/bench-coordinator --timeout=180s
 
