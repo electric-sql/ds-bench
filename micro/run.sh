@@ -46,7 +46,9 @@ fi
 # Smoke profile: tiny matrix to validate the full pipeline fast.
 if [ "${PROFILE:-}" = smoke ]; then
   DUR=3; REPEATS=1
-  ENGINES="hyper raw uring"; ENGINE_SPECS="hyper:- raw:tail uring:-"
+  # Honor ENGINES/ENGINE_SPECS env overrides (e.g. a single-engine raw build that
+  # has no --http-engine flag); fall back to the multi-engine default otherwise.
+  ENGINES="${ENGINES:-hyper raw uring}"; ENGINE_SPECS="${ENGINE_SPECS:-hyper:- raw:tail uring:-}"
   READ_SIZES="1024 1048576"; CONNS_SWEEP="64 256"; SWEEP_SIZE=1024; SIZE_CONN=64
   SCALE_CPUSETS="0-1 0-7"; COLD_MEMS="infinity 512M"; COLD_STREAM_GIB=2
   SPLICE_SIZES="1048576"; TIER_SEG_BYTES=262144
