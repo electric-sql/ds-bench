@@ -101,11 +101,16 @@ A system is measurable by the suite if its adapter provides:
 
 ## Test suite — tiers, and what is READY vs NEEDS IMPLEMENTATION
 
-### Tier A — Raw single-node (`micro/`, DS-rust deep-dive) · **NEEDS IMPLEMENTATION**
-The shareable raw numbers. Port `autobench/` in; run it in-cluster on a dedicated NVMe
-node. Studies (from the survey): **engines** (hyper/raw/uring × read-size × conns),
-**cpu_scaling** (2/4/6/8 cores), **memory_cold** (hot-under-cold eviction), **splice**
-(binary append 64K/1M), **tiering** (local vs S3, cold reads).
+### Tier A — `micro/` server-efficiency (co-located, single-engine) · **RAN (rescoped)**
+Ported + run in-cluster (GKE n2d-standard-8). **DECISION 2026-06-18:** the server is
+single-engine (raw), so the engine-comparison machinery was removed (single-engine
+refactor). **`micro/` is now scoped to server-INTERNALS efficiency at controlled,
+co-located load** — the things the fleet can't measure: **CPU-per-op**, the **splice
+CPU saving** (measured: 70%→45%), **syscall/`perf`** counts, **memory-cold** page-cache
+behavior. Co-location is correct here (clean per-op CPU accounting; load need not saturate).
+**Throughput studies move OUT of `micro/` to the fleet:** the read-rps sweep and
+`cpu_scaling`-rps were `wrk`(2-core)-CAPPED when co-located (confirmed) — those become
+fleet workloads (Tier B/C), not `micro/` studies.
 - **Ready:** the autobench scripts exist (shell+wrk+python, machine-readable
   `results.jsonl` + `RESULTS.md` + `meta.txt`).
 - **Needs:** (1) port `autobench/` into `micro/`; (2) a Dockerfile that builds the DS
@@ -133,10 +138,18 @@ and runs end-to-end (exact cross-node HDR merge proven).
   earlier one was corrupted by a concurrency bug — single-runner this time); (4) a
   DS-node adapter (the Node server) for `systems/durable-streams-node/`.
 
-### Tier C — Parameter sweeps (`ds-bench`) · **PARTIAL**
+### Tier C — Parameter sweeps + new fleet workloads (`ds-bench`) · **PARTIAL**
 - **Ready:** client-pod saturation sweep (2→4→8 demonstrated; DS-rust scales to ~200k w/s).
 - **Needs:** automate **payload sweep** (100 B / 1 KB / 16 KB) and **subscriber sweep**
   (100 → 1k → 10k) as first-class matrix dimensions in the runner + renderer.
+- **NEW (decided 2026-06-18) — `sustained` workload:** hold a **steady offered load for a
+  long duration** (minutes) while **sweeping stream count** (10 → 100 → 1k → 10k); report
+  throughput + **latency stability over time** + **server RSS drift** (via the metrics
+  sidecar). Catches steady-state regressions a 30 s burst misses. (Relocates the
+  read-rps/cpu-scaling throughput studies off `micro/` onto the fleet, per Tier A.)
+- **NEW (decided 2026-06-18) — multi-stream fan-out:** extend `fan-out` from one-stream→N-subs
+  to **M streams × S subscribers each**, concurrent — realistic many-stream SSE fan-out, not
+  a single hot stream. Report delivery latency vs (M, S).
 
 ### Tier D — Cardinality / millions of streams (`ds-bench` cardinality workload) · **NEEDS IMPLEMENTATION**
 The decisive scalability test. Full design below. Scope: **DS-rust + ursula** (show

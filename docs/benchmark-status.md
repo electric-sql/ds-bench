@@ -55,6 +55,17 @@ _mixed workload also ran for DS-rust + ursula (per-class latencies in findings d
 
 ## C. PLANNED, NOT BUILT
 
+- **`sustained` workload (decided 2026-06-18):** steady offered load held for a long
+  duration while **sweeping stream count** (10 → 100 → 1k → 10k); reports throughput +
+  **latency stability over time** + **server RSS drift**. Answers "sustained load at
+  different stream counts." Fleet workload; needs the metrics sidecar. **Not built.**
+- **Multi-stream fan-out (decided 2026-06-18):** extend `fan-out` to **M streams × S
+  subscribers each** (concurrent) — realistic many-stream SSE fan-out vs today's single
+  hot stream. **Not built.**
+- **Micro rescope (decided 2026-06-18):** `micro/` is now efficiency-only (CPU-per-op,
+  splice CPU, syscalls, memory-cold; co-located). The **read-rps + cpu-scaling-rps
+  throughput studies relocate to the fleet** (they were `wrk`-capped co-located). Fleet
+  side of that relocation **not built**.
 - **Tier C — parameter sweeps:** payload **100 B / 1 KB / 16 KB** (writes) and **subscribers
   100 → 1k → 10k** (fan-out) as first-class swept dimensions in the runner + renderer.
   _(Today's runs used single fixed values, not sweeps.)_
