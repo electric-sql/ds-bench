@@ -1,0 +1,8 @@
+ts	system	config	workload	pods	streams	dur_s	throughput	p50_ms	p99_ms	p999_ms	samples	notes
+2026-06-18T09:30Z	ds-rust	default	multi-stream	2	200	30	78490	9.62	23.81	30.02	2355695	gke n2d-std-8 NVMe baseline
+2026-06-18T09:35Z	ds-rust	default	multi-stream	2	200	30	84264	-	15.29	19.45	2528750	saturation sweep p2
+2026-06-18T09:40Z	ds-rust	default	multi-stream	4	200	30	181029	-	15.38	22.69	5433141	saturation sweep p4
+2026-06-18T09:45Z	ds-rust	default	multi-stream	8	200	30	200193	-	20.00	26.21	6008510	saturation sweep p8 (near ceiling)
+2026-06-18T09:50Z	ds-rust	default	fan-out	2	-	30	119984	15.10	47.42	82.94	3599529	throughput=events/s
+2026-06-18T09:55Z	ds-rust	default	catch-up	2	-	-	786.43	6.48	7.48	7.48	6400000	throughput=MB/s
+2026-06-18T10:40Z	ursula	no-preset	multi-stream	2	200	30	6190	110.85	372.22	461.31	186984	BASELINE before fairness fix (group_count=default)
