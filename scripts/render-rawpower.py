@@ -56,10 +56,27 @@ def load_merged(rep_dir: pathlib.Path):
     p = rep_dir / "merged.json"
     if not p.exists():
         return None
+    txt = p.read_text()
+    # The runner captures the coordinator's full stdout, which is the `mc cp`
+    # download log followed by the hdr-merge JSON. So the file is usually NOT
+    # pure JSON — extract the last parseable {...} object.
     try:
-        return json.loads(p.read_text())
+        return json.loads(txt)
     except Exception:
-        return None
+        pass
+    import re
+    for o in reversed(re.findall(r"\{.*?\}", txt, re.S)):
+        try:
+            return json.loads(o)
+        except Exception:
+            continue
+    i = txt.find("{")
+    if i >= 0:
+        try:
+            return json.loads(txt[i:])
+        except Exception:
+            return None
+    return None
 
 
 def load_samples(rep_dir: pathlib.Path):
