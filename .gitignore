@@ -4,3 +4,5 @@ results/*
 !results/.gitkeep
 *.log
 .DS_Store
+__pycache__/
+*.pyc
