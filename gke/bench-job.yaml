@@ -43,10 +43,12 @@ spec:
             - { name: out, mountPath: /out }
           resources:
             requests:
-              memory: "256Mi"
-              cpu: "500m"
+              memory: "512Mi"
+              cpu: "2"
             limits:
-              memory: "1Gi"
+              memory: "4Gi"
+              # no CPU limit on purpose — the load generator bursts to the node's
+              # cores (available_parallelism sizes the tokio runtime accordingly).
       volumes:
         - name: out
           emptyDir: {}

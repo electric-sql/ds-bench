@@ -234,6 +234,7 @@ dependencies = [
  "clap",
  "futures",
  "hdrhistogram",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",

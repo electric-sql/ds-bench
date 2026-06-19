@@ -10,7 +10,11 @@ use serde::Serialize;
 pub fn build_client(timeout_secs: u64) -> Result<Client> {
     Client::builder()
         .timeout(Duration::from_secs(timeout_secs))
-        .pool_max_idle_per_host(512)
+        // Keep ALL idle connections alive — at high connection counts a small
+        // idle pool forces TCP re-handshakes (churn) that throttle the load
+        // generator before the server is saturated. Paired with the raised
+        // NOFILE limit, this lets one pod sustain many thousands of connections.
+        .pool_max_idle_per_host(usize::MAX)
         .tcp_nodelay(true)
         .build()
         .context("build reqwest client")

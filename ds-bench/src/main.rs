@@ -16,6 +16,32 @@ use anyhow::Result;
 use clap::Parser;
 use clap::Subcommand;
 
+/// Raise the open-file soft limit to the hard limit at startup so a single
+/// client pod can drive far more than the default ~1024 connections — otherwise
+/// the LOAD GENERATOR hits EMFILE long before the server is saturated and every
+/// cell reads `client_capped`. Best-effort; mirrors the server's own raise.
+#[cfg(unix)]
+fn raise_nofile_limit() {
+    unsafe {
+        let mut lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) != 0 {
+            return;
+        }
+        let target = if lim.rlim_max == libc::RLIM_INFINITY {
+            1_048_576
+        } else {
+            lim.rlim_max
+        };
+        if lim.rlim_cur < target {
+            lim.rlim_cur = target;
+            let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &lim);
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "ursula-bench",
@@ -53,6 +79,9 @@ enum Cmd {
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
+    #[cfg(unix)]
+    raise_nofile_limit();
+
     tracing_subscriber::fmt()
         .with_target(true)
         .with_writer(std::io::stderr)
