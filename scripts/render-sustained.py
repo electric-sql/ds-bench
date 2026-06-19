@@ -12,6 +12,7 @@ Usage:
     (defaults to the newest subdirectory under results/sustained/)
 """
 import csv, json, sys, pathlib, math
+from render_common import *  # shared loaders + CLK_TCK/MiB/fmt_mib
 
 # ---------------------------------------------------------------------------
 # Locate the run directory
@@ -44,61 +45,6 @@ stream_dirs = sorted(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-CLK_TCK = 100  # assume USER_HZ = 100 (standard Linux)
-MiB = 1024 * 1024
-
-
-def load_merged(n_dir: pathlib.Path):
-    p = n_dir / "merged.json"
-    if not p.exists():
-        return None
-    txt = p.read_text()
-    # The runner captures the coordinator's full stdout, which is the `mc cp`
-    # download log followed by the hdr-merge JSON. So the file is usually NOT
-    # pure JSON — extract the last parseable {...} object.
-    try:
-        return json.loads(txt)
-    except Exception:
-        pass
-    import re
-    for o in reversed(re.findall(r"\{.*?\}", txt, re.S)):
-        try:
-            return json.loads(o)
-        except Exception:
-            continue
-    i = txt.find("{")
-    if i >= 0:
-        try:
-            return json.loads(txt[i:])
-        except Exception:
-            return None
-    return None
-
-
-def load_samples(n_dir: pathlib.Path):
-    """Return list of (ts_ms, rss_bytes, cpu_ticks) tuples, or None on error."""
-    p = n_dir / "samples.csv"
-    if not p.exists():
-        return None
-    try:
-        rows = []
-        with p.open(newline="") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                rows.append((
-                    float(row["ts_ms"]),
-                    float(row["rss_bytes"]),
-                    float(row["cpu_ticks"]),
-                ))
-        return rows if rows else None
-    except Exception:
-        return None
-
-
-def fmt_mib(v):
-    return f"{v:.1f}" if v is not None else "-"
-
 
 def rss_stats(samples):
     """Return (start_mib, max_mib, end_mib, slope_mib_per_min) or all None."""
