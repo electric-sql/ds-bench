@@ -1,0 +1,18 @@
+Added `local` successfully.
+`local/bench-results/scaleout-slow-1781844216-51063-ms-cpu8-n10-r1-p2/multi-stream-7-1.hdr` -> `/merge/multi-stream-7-1.hdr`
+`local/bench-results/scaleout-slow-1781844216-51063-ms-cpu8-n10-r1-p2/ms-1.json` -> `/merge/ms-1.json`
+`local/bench-results/scaleout-slow-1781844216-51063-ms-cpu8-n10-r1-p2/multi-stream-7-0.hdr` -> `/merge/multi-stream-7-0.hdr`
+`local/bench-results/scaleout-slow-1781844216-51063-ms-cpu8-n10-r1-p2/ms-0.json` -> `/merge/ms-0.json`
+┌──────────┬─────────────┬──────────┬──────────────┐
+│ Total    │ Transferred │ Duration │ Speed        │
+│ 9.16 KiB │ 9.16 KiB    │ 00m00s   │ 830.64 KiB/s │
+└──────────┴─────────────┴──────────┴──────────────┘
+{
+  "merged_count": 0,
+  "p50_ms": 0.0,
+  "p90_ms": 0.0,
+  "p99_ms": 0.0,
+  "p999_ms": 0.0,
+  "max_ms": 0.0,
+  "aggregate_ops_per_sec": 26857.89650055849
+}

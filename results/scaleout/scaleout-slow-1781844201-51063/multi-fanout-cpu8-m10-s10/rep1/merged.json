@@ -1,0 +1,18 @@
+Added `local` successfully.
+`local/bench-results/scaleout-slow-1781844685-51063-multi-fanout-cpu8-m10-s10-r1-p2/multi-fanout-0.json` -> `/merge/multi-fanout-0.json`
+`local/bench-results/scaleout-slow-1781844685-51063-multi-fanout-cpu8-m10-s10-r1-p2/multi-fanout-7-1.hdr` -> `/merge/multi-fanout-7-1.hdr`
+`local/bench-results/scaleout-slow-1781844685-51063-multi-fanout-cpu8-m10-s10-r1-p2/multi-fanout-7-0.hdr` -> `/merge/multi-fanout-7-0.hdr`
+`local/bench-results/scaleout-slow-1781844685-51063-multi-fanout-cpu8-m10-s10-r1-p2/multi-fanout-1.json` -> `/merge/multi-fanout-1.json`
+┌───────────┬─────────────┬──────────┬────────────┐
+│ Total     │ Transferred │ Duration │ Speed      │
+│ 11.41 KiB │ 11.41 KiB   │ 00m00s   │ 1.11 MiB/s │
+└───────────┴─────────────┴──────────┴────────────┘
+{
+  "merged_count": 500352,
+  "p50_ms": 1.375,
+  "p90_ms": 2.983,
+  "p99_ms": 3.795,
+  "p999_ms": 4.351,
+  "max_ms": 15.183,
+  "aggregate_events_per_sec": 37020.18652280897
+}
