@@ -20,7 +20,9 @@ case "$DS_TARGET" in
     KIND_CLUSTER="${KIND_CLUSTER:-ds-bench}"
     KCTX="kind-${KIND_CLUSTER}"
     # Images are built locally (native arch) and `kind load`ed — no registry.
-    IMG_SERVER="durable-streams:dev"
+    # IMG_SERVER is overridable so several server implementations (reference,
+    # io-uring, …) can be compared by pointing at distinct image tags.
+    IMG_SERVER="${IMG_SERVER:-durable-streams:dev}"
     IMG_DSBENCH="ds-bench:dev"
     IMG_METRICS="ds-bench:dev"        # ds-bench:dev carries bash+curl+procps for the sidecar
     PULL_POLICY="IfNotPresent"        # use the kind-loaded image; never reach for a registry
@@ -33,7 +35,7 @@ case "$DS_TARGET" in
     CLUSTER="${CLUSTER:-ds-bench}"
     KCTX="gke_${PROJECT}_${ZONE}_${CLUSTER}"
     REG="europe-west1-docker.pkg.dev/${PROJECT}/ds-bench"
-    IMG_SERVER="${REG}/durable-streams:dev"
+    IMG_SERVER="${IMG_SERVER:-${REG}/durable-streams:dev}"
     IMG_DSBENCH="${REG}/ds-bench:dev"
     IMG_METRICS="${REG}/micro:dev"
     PULL_POLICY="Always"
