@@ -104,9 +104,15 @@ spec:
               value: "1"
             - name: METRICS_OUT
               value: /metrics/samples.csv
+            # The poller df's this dir to find the backing block device, then reads
+            # device-wide sectors-written from /proc/diskstats (catches kernel
+            # writeback the per-pid /proc/<pid>/io counter misses for buffered writes).
+            - name: DATA_DIR
+              value: /data
           volumeMounts:
             - { name: metrics, mountPath: /metrics }
             - { name: metrics-poller, mountPath: /deploy/metrics }
+            - { name: data, mountPath: /data, readOnly: true }
           resources:
             requests:
               cpu: "10m"
