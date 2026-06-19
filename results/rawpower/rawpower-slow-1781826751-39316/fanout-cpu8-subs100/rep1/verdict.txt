@@ -1,0 +1,6 @@
+cell=fanout-cpu8-subs100
+repeat=1
+parallelism=2
+server_cpu_cores=8
+server_cpu_pct=47.3
+verdict=client_capped

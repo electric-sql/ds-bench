@@ -1,0 +1,6 @@
+cell=reads-cpu4-size16384-conn16
+repeat=1
+parallelism=2
+server_cpu_cores=4
+server_cpu_pct=292.9
+verdict=client_capped

@@ -1,0 +1,6 @@
+cell=reads-cpu8-size1024-conn256
+repeat=1
+parallelism=2
+server_cpu_cores=8
+server_cpu_pct=556.2
+verdict=client_capped

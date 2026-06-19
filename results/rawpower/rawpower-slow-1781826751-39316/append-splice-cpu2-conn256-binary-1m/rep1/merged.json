@@ -1,0 +1,18 @@
+Added `local` successfully.
+`local/bench-results/rawpower-slow-1781827632-39316-append-splice-cpu2-conn256-binary-1m-r1-p2/append-splice-0.json` -> `/merge/append-splice-0.json`
+`local/bench-results/rawpower-slow-1781827632-39316-append-splice-cpu2-conn256-binary-1m-r1-p2/append-splice-1.json` -> `/merge/append-splice-1.json`
+`local/bench-results/rawpower-slow-1781827632-39316-append-splice-cpu2-conn256-binary-1m-r1-p2/append-7-0.hdr` -> `/merge/append-7-0.hdr`
+`local/bench-results/rawpower-slow-1781827632-39316-append-splice-cpu2-conn256-binary-1m-r1-p2/append-7-1.hdr` -> `/merge/append-7-1.hdr`
+┌──────────┬─────────────┬──────────┬──────────────┐
+│ Total    │ Transferred │ Duration │ Speed        │
+│ 3.72 KiB │ 3.72 KiB    │ 00m00s   │ 380.93 KiB/s │
+└──────────┴─────────────┴──────────┴──────────────┘
+{
+  "merged_count": 0,
+  "p50_ms": 0.0,
+  "p90_ms": 0.0,
+  "p99_ms": 0.0,
+  "p999_ms": 0.0,
+  "max_ms": 0.0,
+  "aggregate_ops_per_sec": 377.12890830902984
+}

@@ -1,0 +1,19 @@
+Added `local` successfully.
+`local/bench-results/rawpower-slow-1781829337-39316-fanout-cpu4-subs100-r1-p2/fanout-7-0.hdr` -> `/merge/fanout-7-0.hdr`
+`local/bench-results/rawpower-slow-1781829337-39316-fanout-cpu4-subs100-r1-p2/fan-out-0.json` -> `/merge/fan-out-0.json`
+`local/bench-results/rawpower-slow-1781829337-39316-fanout-cpu4-subs100-r1-p2/fan-out-1.json` -> `/merge/fan-out-1.json`
+`local/bench-results/rawpower-slow-1781829337-39316-fanout-cpu4-subs100-r1-p2/fanout-7-1.hdr` -> `/merge/fanout-7-1.hdr`
+┌──────────┬─────────────┬──────────┬──────────────┐
+│ Total    │ Transferred │ Duration │ Speed        │
+│ 8.82 KiB │ 8.82 KiB    │ 00m00s   │ 924.54 KiB/s │
+└──────────┴─────────────┴──────────┴──────────────┘
+{
+  "merged_count": 599576,
+  "p50_ms": 1.097,
+  "p90_ms": 1.656,
+  "p99_ms": 1.996,
+  "p999_ms": 2.657,
+  "max_ms": 6.235,
+  "events_received_total": 599576,
+  "events_per_sec": 19985.866666666665
+}
