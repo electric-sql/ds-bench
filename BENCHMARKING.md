@@ -242,6 +242,31 @@ All knobs are environment variables (export before the command); defaults in par
 
 ---
 
+## io_uring backend (Linux)
+
+A drop-in `durable-streams-server` built on raw io_uring (same binary name, flags, port 4438,
+`/v1/stream` paths, `--tier s3`). The harness is unchanged — only io_uring syscalls must be
+permitted at runtime.
+
+- **Remote (GKE):** the server pod sets `securityContext.seccompProfile.type: Unconfined`
+  (`gke/durable-streams.yaml`) — Docker 25 / containerd's default seccomp blocks
+  `io_uring_setup/enter/register` (moby#46762), and a Pod-Security/CIS policy can impose
+  `RuntimeDefault`; `Unconfined` permits them. Confirmed on our cluster: **GKE Standard**
+  (not Autopilot), **COS** node image, **kernel 6.12** (≥ 6.0 → io_uring *and*
+  `IORING_OP_SEND_ZC` zero-copy-send both work), **no gVisor/sandbox** (gVisor has no
+  io_uring — do not route this pod through it). No other change needed.
+- **Local (kind) — decision (b):** kind nodes are Docker containers under Docker's default
+  seccomp, which blocks io_uring even though kind *pods* are Unconfined, and kind can't set the
+  node-container seccomp. So:
+  - **kind runs the full multi-pod harness** — the io_uring server runs there via its **splice
+    fallback** (no zero-copy-send inside kind);
+  - **io_uring conformance + the zero-copy-send smoke** run the server directly with seccomp
+    off: `docker run --security-opt seccomp=unconfined … durable-streams-server …` (Docker
+    Desktop's Linux VM kernel supports it), or in a Lima/colima/OrbStack Linux VM.
+- Unconfined is a superset of permissions → the reference / ursula / s2 images are unaffected.
+
+---
+
 ## One-shot (local smoke)
 
 ```bash
