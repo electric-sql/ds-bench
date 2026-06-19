@@ -175,10 +175,11 @@ if append_cells:
     out += [
         "## 3. Appends — throughput by connections × body mode",
         "",
-        "_appends/s = aggregate appends/s. CPU% from sidecar. 256-byte payload._",
+        "_appends/s = aggregate appends/s. disk MB/s = server's actual /proc/io write_bytes "
+        "rate (ground truth). CPU% from sidecar._",
         "",
-        "| cell | cpu_cores | conns | body_mode | appends/s | CPU% (sidecar) | p99 ms | verdict |",
-        "|------|-----------|-------|-----------|----------|---------------|--------|---------|",
+        "| cell | cpu_cores | conns | body_mode | appends/s | disk MB/s | CPU% (sidecar) | p99 ms | verdict |",
+        "|------|-----------|-------|-----------|----------|-----------|---------------|--------|---------|",
     ]
     for name in sorted(append_cells, key=lambda k: dims_append(k)):
         c = append_cells[name]
@@ -186,6 +187,7 @@ if append_cells:
         out.append(
             f"| {name} | {cpu_c} | {conn} | {body} | "
             f"{ops_with_cv(c['ops'], c.get('ops_cv'))} | "
+            f"{_dash(c.get('disk_mbps'), '{:.0f}')} | "
             f"{cpu_with_cv(c['cpu_pct'], c.get('cpu_cv'))} | "
             f"{fmt_ms(c['p99'])} | "
             f"{verdict_annotation(c['verdict'])} |"

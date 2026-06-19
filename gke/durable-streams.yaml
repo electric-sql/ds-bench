@@ -35,6 +35,8 @@ spec:
             - "0.0.0.0"
             - "--port"
             - "4438"
+            - "--group-commit-window-us"
+            - "${GROUP_COMMIT_WINDOW_US}"
             - "--data-dir"
             - "/data"
             - "--tier"

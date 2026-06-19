@@ -15,7 +15,7 @@ MiB = 1024 * 1024
 __all__ = [
     "CLK_TCK", "MiB",
     "load_merged", "load_samples", "load_verdict",
-    "cpu_pct_from_samples", "rss_max_mib", "load_rep",
+    "cpu_pct_from_samples", "disk_write_mbps_from_samples", "rss_max_mib", "load_rep",
     "_median", "_cv_pct", "aggregate_cell",
     "_dash", "fmt_ops", "fmt_mb", "fmt_mib", "fmt_ms", "fmt_pct", "fmt_cv",
     "verdict_annotation", "ops_with_cv", "cpu_with_cv",
@@ -51,7 +51,8 @@ def load_merged(rep_dir: pathlib.Path):
 
 
 def load_samples(rep_dir: pathlib.Path):
-    """Return list of (ts_ms, rss_bytes, cpu_ticks) tuples, or None on error."""
+    """Return list of (ts_ms, rss_bytes, cpu_ticks, write_bytes) tuples, or None.
+    Back-compatible with old 3-column samples.csv (missing write_bytes → 0.0)."""
     p = rep_dir / "samples.csv"
     if not p.exists():
         return None
@@ -59,7 +60,8 @@ def load_samples(rep_dir: pathlib.Path):
         rows = []
         with p.open(newline="") as f:
             for row in csv.DictReader(f):
-                rows.append((float(row["ts_ms"]), float(row["rss_bytes"]), float(row["cpu_ticks"])))
+                rows.append((float(row["ts_ms"]), float(row["rss_bytes"]),
+                             float(row["cpu_ticks"]), float(row.get("write_bytes") or 0)))
         return rows if rows else None
     except Exception:
         return None
@@ -103,7 +105,25 @@ def cpu_pct_from_samples(samples):
 def rss_max_mib(samples):
     if not samples:
         return None
-    return max(r for _, r, _ in samples) / MiB
+    return max(s[1] for s in samples) / MiB
+
+
+def disk_write_mbps_from_samples(samples):
+    """Mean disk write MB/s from consecutive write_bytes deltas / elapsed_s. float|None.
+    write_bytes = /proc/<pid>/io — the bytes the SERVER actually pushed to the block
+    device (ground truth disk throughput, independent of the ops×payload estimate)."""
+    if not samples or len(samples) < 2:
+        return None
+    rates = []
+    for i in range(1, len(samples)):
+        dt_s = (samples[i][0] - samples[i - 1][0]) / 1000.0
+        if dt_s <= 0:
+            continue
+        dbytes = samples[i][3] - samples[i - 1][3]
+        if dbytes < 0:
+            continue  # restart / reset
+        rates.append(dbytes / 1e6 / dt_s)
+    return sum(rates) / len(rates) if rates else None
 
 
 def load_rep(rep_dir: pathlib.Path):
@@ -126,6 +146,7 @@ def load_rep(rep_dir: pathlib.Path):
         "p999":         mg("p999_ms"),
         "merged_count": mg("merged_count"),
         "cpu_pct":      cpu_pct_from_samples(samples),
+        "disk_mbps":    disk_write_mbps_from_samples(samples),
         "rss_max_mib":  rss_max_mib(samples),
         "verdict":      v.get("verdict"),
         "parallelism":  v.get("parallelism"),
@@ -180,6 +201,7 @@ def aggregate_cell(cell_dir: pathlib.Path):
     p999_med, _     = agg("p999")
     count_med, _    = agg("merged_count")
     cpu_med, cpu_cv = agg("cpu_pct")
+    disk_med, _     = agg("disk_mbps")
     rss_med, _      = agg("rss_max_mib")
 
     # Pessimistic verdict: client_capped or server_headroom (old artifacts) → capped.
@@ -197,6 +219,7 @@ def aggregate_cell(cell_dir: pathlib.Path):
         "p50": p50_med, "p99": p99_med, "p99_cv": p99_cv, "p999": p999_med,
         "merged_count": count_med,
         "cpu_pct": cpu_med, "cpu_cv": cpu_cv, "rss_max_mib": rss_med,
+        "disk_mbps": disk_med,
         "verdict": verdict,
         "parallelism": reps[-1].get("parallelism"),
         "cpu_cores": reps[-1].get("cpu_cores"),

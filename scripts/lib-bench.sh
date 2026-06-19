@@ -103,7 +103,7 @@ reset_sidecar_samples() {
   pod="$( { K get pod -l app=durable-streams -o name 2>/dev/null || true; } | head -1 | sed 's|pod/||')"
   if [ -n "$pod" ]; then
     echo "    resetting samples.csv on pod ${pod}..."
-    K exec "$pod" -c metrics -- sh -c 'echo "ts_ms,rss_bytes,cpu_ticks" > /metrics/samples.csv' || true
+    K exec "$pod" -c metrics -- sh -c 'echo "ts_ms,rss_bytes,cpu_ticks,write_bytes" > /metrics/samples.csv' || true
   fi
 }
 
