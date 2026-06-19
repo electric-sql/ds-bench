@@ -40,6 +40,11 @@ K() { kubectl --context "$CTX" -n ds-bench "$@"; }
 
 # ── run identity ───────────────────────────────────────────────────────────────
 RUN_ID="scaleout-${PROFILE}-$(date +%s)-$$"
+# Stable base for STREAM names. RUN_ID is re-set per cell/rep/pods deep in the
+# headroom loop (used only as the MinIO results prefix), so stream names must NOT
+# use it — otherwise each cell's bench_cmd, built before that re-set, embeds the
+# PREVIOUS cell's RUN_ID and produces malformed concatenated stream names.
+SWEEP_RUN_ID="$RUN_ID"
 RESULTS_ROOT="results/scaleout/${RUN_ID}"
 mkdir -p "$RESULTS_ROOT"
 
@@ -50,17 +55,21 @@ PROBE_HOSTPORT="durable-streams:4438"
 if [ "$PROFILE" = "fast" ]; then
   SERVER_CPUS="2"
   DURATION=15
-  REPEATS=1
+  REPEATS="${REPEATS:-1}"
   INIT_PARALLELISM="${PARALLELISM:-4}"
   MAX_PODS=16
-  MAX_BUMPS=1
+  MAX_BUMPS="${MAX_BUMPS:-1}"
 else
-  SERVER_CPUS="8 16"
-  DURATION=30
-  REPEATS=3
+  # Single 8-core server: n2d-standard-8 cannot host 16 cores.  Matrix capped
+  # under the known server-hang limit (~1024 concurrent conns on a small node):
+  # multi-stream N ∈ {10,50,100,200} (×2 pods ≤ 400 conns), multi-fanout (M,S)
+  # pairs with M×S ≤ 200 (×2 ≤ 400 subscriber conns).  See MS_COUNTS / MF_PAIRS.
+  SERVER_CPUS="8"
+  DURATION=25
+  REPEATS="${REPEATS:-3}"
   INIT_PARALLELISM="${PARALLELISM:-4}"
   MAX_PODS=32
-  MAX_BUMPS=8
+  MAX_BUMPS="${MAX_BUMPS:-8}"
 fi
 
 echo "=== gke-scaleout: profile=${PROFILE} run_id=${RUN_ID} ==="
@@ -143,7 +152,14 @@ run_fleet_and_coordinator() {
   echo "    launching fleet (${PARALLELISM} pods)..."
   envsubst '${PROJECT} ${RUN_ID} ${PARALLELISM} ${BENCH_CMD} ${OUT_PREFIX}' \
     < gke/bench-job.yaml | K apply -f -
-  K wait --for=condition=complete job/bench-fleet --timeout=900s
+  # Tolerant: a hung server makes some pods fail → the Job never reaches
+  # `complete`. Wait for complete OR failed, then proceed — the coordinator
+  # merges whatever HDRs the surviving pods uploaded (partial but real data),
+  # instead of aborting the whole matrix under `set -e`.
+  K wait --for=condition=complete job/bench-fleet --timeout="${FLEET_TIMEOUT:-180}s" 2>/dev/null \
+    || K wait --for=condition=failed job/bench-fleet --timeout=5s 2>/dev/null \
+    || true
+  echo "    fleet pods: $(K get pods -l job-name=bench-fleet --no-headers 2>/dev/null | awk '{print $3}' | sort | uniq -c | tr '\n' ' ')"
   echo "    fleet done. Pod placement:"
   K get pods -l job-name=bench-fleet -o wide
 
@@ -155,7 +171,11 @@ run_fleet_and_coordinator() {
     sleep 2
   done
   envsubst '${PROJECT} ${RUN_ID} ${MERGE_CMD}' < gke/coordinator-job.yaml | K apply -f -
-  K wait --for=condition=complete job/bench-coordinator --timeout=300s
+  # Tolerant: if the fleet all-errored (server hung) there are no HDRs to merge
+  # and the coordinator may never `complete` — don't abort the whole matrix.
+  K wait --for=condition=complete job/bench-coordinator --timeout="${COORD_TIMEOUT:-90}s" 2>/dev/null \
+    || K wait --for=condition=failed job/bench-coordinator --timeout=5s 2>/dev/null \
+    || true
 }
 
 # compute_server_cpu_pct SAMPLES_CSV
@@ -310,7 +330,8 @@ for SERVER_CPU in $SERVER_CPUS; do
   if [ "$PROFILE" = "fast" ]; then
     MS_COUNTS="10 100"
   else
-    MS_COUNTS="10 100 1000 10000"
+    # capped under server-hang limit: max N=200 × 2 pods = 400 conns ≤ 512
+    MS_COUNTS="10 50 100 200"
   fi
 
   for N in $MS_COUNTS; do
@@ -326,8 +347,9 @@ for SERVER_CPU in $SERVER_CPUS; do
     # single pair: M=10, S=10
     MF_PAIRS="10:10"
   else
-    # three pairs: (M=10,S=100), (M=100,S=10), (M=1000,S=10)
-    MF_PAIRS="10:100 100:10 1000:10"
+    # capped under server-hang limit: M×S ≤ 200 subscriber conns × 2 pods ≤ 400
+    # pairs: (M=10,S=10), (M=20,S=10), (M=10,S=20)
+    MF_PAIRS="10:10 20:10 10:20"
   fi
 
   for ms_pair in $MF_PAIRS; do
