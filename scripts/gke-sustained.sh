@@ -27,6 +27,18 @@ K() { kubectl --context "$CTX" -n ds-bench "$@"; }
 
 PARALLELISM="${PARALLELISM:-4}"
 
+# Server CPU budget. CAPPED at 8 for Phase 3 (fits the 8-CPU n2d-standard-8
+# server node). durable-streams.yaml's cpu LIMIT is "${SERVER_CPU}" so this MUST
+# be substituted at apply time (it was previously left literal → apply would
+# fail). Overridable via env for ad-hoc runs.
+SERVER_CPUS="${SERVER_CPUS:-8}"
+
+# Env-overridable knobs (parity with gke-rawpower.sh / gke-scaleout.sh). Unused
+# by the sustained sweep loop directly (there is no headroom-bump loop here), but
+# accepted so the same invocation env works across all Phase-1/2/3 runners.
+MAX_BUMPS="${MAX_BUMPS:-0}"
+REPEATS="${REPEATS:-1}"
+
 # --- validate workload ---
 case "$WORKLOAD" in
   sustained|multi-fanout) ;;
@@ -42,17 +54,33 @@ case "$SYSTEM" in
 esac
 
 # --- stream-count sweep defaults (only used for sustained) ---
+# CAPPED for Phase 3 under the known durable-streams server limits:
+#   • concurrent CONNECTIONS must stay ≤ ~512 (server hangs above ~1024)
+#   • total concurrent stream CREATION must stay well below ~200 PUTs
+# The `sustained` CLI spawns `--streams N` writer tasks per pod (each doing one
+# in-flight request at a time → conns ≈ N × PARALLELISM). With PARALLELISM=2,
+# N=150 → ~300 concurrent conns (under 512). Stream NAMES are shared across pods
+# (sustained-00000000..), so the distinct stream count == N ≤ 150 (< 200). Stream
+# creation uses --setup-concurrency 32 below to bound the concurrent PUT burst.
 if [ "$#" -gt 0 ]; then
   STREAM_COUNTS="$*"
 else
-  STREAM_COUNTS="10 100 1000 10000"
+  STREAM_COUNTS="${STREAM_COUNTS:-10 50 100 150}"
 fi
 
 # --- per-workload tuning knobs (overridable via env) ---
-RATE="${RATE:-50}"
-DURATION="${DURATION:-300}"
-M="${M:-100}"          # multi-fanout: streams
-S="${S:-10}"           # multi-fanout: subscribers-per-stream
+# RATE is per-stream ops/sec — kept modest so each writer task holds at most one
+# in-flight request and steady-state conns stay ≈ N × PARALLELISM (≤ 512).
+RATE="${RATE:-10}"
+# DURATION ~90s (longer than Phase-1/2's 30s) so the RSS sidecar captures real
+# drift-over-time under steady load — the core value of this Phase-3 run.
+DURATION="${DURATION:-90}"
+# Bound the concurrent stream-creation PUT burst (server times out at ~200
+# concurrent PUTs; 32 × PARALLELISM stays well under that).
+SETUP_CONCURRENCY="${SETUP_CONCURRENCY:-32}"
+# multi-fanout: cap M×S ≤ 100 to stay under the connection limit.
+M="${M:-10}"           # multi-fanout: streams
+S="${S:-10}"           # multi-fanout: subscribers-per-stream  (M×S = 100)
 
 echo "=== gke-sustained: system=${SYSTEM} workload=${WORKLOAD} pods=${PARALLELISM} ==="
 
@@ -66,8 +94,11 @@ K create configmap metrics-poller \
 if [ "${GKE_RUN_SKIP_SERVER:-0}" != "1" ]; then
   case "$SYSTEM" in
     durable)
-      echo "  ensuring durable-streams server (with metrics sidecar)..."
-      envsubst '${PROJECT}' < gke/durable-streams.yaml | K apply -f -
+      echo "  ensuring durable-streams server (with metrics sidecar, cpu=${SERVER_CPUS})..."
+      # durable-streams.yaml's cpu LIMIT is "${SERVER_CPU}" — substitute it too,
+      # else apply fails on the literal. Pin the server to the SERVER_CPUS budget.
+      export SERVER_CPU="$SERVER_CPUS"
+      envsubst '${PROJECT} ${SERVER_CPU}' < gke/durable-streams.yaml | K apply -f -
       K wait --for=condition=available deploy/durable-streams --timeout=300s
       ;;
     ursula)
@@ -112,7 +143,14 @@ run_fleet_and_coordinator() {
   # launch fleet
   echo "    launching fleet (${PARALLELISM} pods on role=client)..."
   envsubst '${PROJECT} ${RUN_ID} ${PARALLELISM} ${BENCH_CMD} ${OUT_PREFIX}' < gke/bench-job.yaml | K apply -f -
-  K wait --for=condition=complete job/bench-fleet --timeout=600s
+  # Tolerant: a hung server makes some pods fail → the Job never reaches
+  # `complete`. Wait for complete OR failed, then proceed — the coordinator merges
+  # whatever HDRs the surviving pods uploaded (partial but real data), instead of
+  # aborting the whole sweep under `set -e`. (Exact pattern from gke-rawpower.sh.)
+  K wait --for=condition=complete job/bench-fleet --timeout="${FLEET_TIMEOUT:-180}s" 2>/dev/null \
+    || K wait --for=condition=failed job/bench-fleet --timeout=5s 2>/dev/null \
+    || true
+  echo "    fleet pods: $(K get pods -l job-name=bench-fleet --no-headers 2>/dev/null | awk '{print $3}' | sort | uniq -c | tr '\n' ' ')"
   echo "    fleet pod placement:"
   K get pods -l job-name=bench-fleet -o wide
 
@@ -125,7 +163,11 @@ run_fleet_and_coordinator() {
     sleep 2
   done
   envsubst '${PROJECT} ${RUN_ID} ${MERGE_CMD}' < gke/coordinator-job.yaml | K apply -f -
-  K wait --for=condition=complete job/bench-coordinator --timeout=180s
+  # Tolerant: if the fleet all-errored (server hung) there are no HDRs to merge
+  # and the coordinator may never `complete` — don't abort the whole sweep.
+  K wait --for=condition=complete job/bench-coordinator --timeout="${COORD_TIMEOUT:-90}s" 2>/dev/null \
+    || K wait --for=condition=failed job/bench-coordinator --timeout=5s 2>/dev/null \
+    || true
 }
 
 # ─── Step 3a: sustained sweep ─────────────────────────────────────────────────
@@ -151,7 +193,7 @@ if [ "$WORKLOAD" = "sustained" ]; then
         || true  # transient exec failure must not abort the sweep
     fi
 
-    BENCH_CMD="sustained --target ${TARGET} --api-style ${API_STYLE} --streams ${N} --rate-per-stream ${RATE} --duration-secs ${DURATION} --snapshot-secs 5"
+    BENCH_CMD="sustained --target ${TARGET} --api-style ${API_STYLE} --streams ${N} --rate-per-stream ${RATE} --duration-secs ${DURATION} --snapshot-secs 5 --setup-concurrency ${SETUP_CONCURRENCY}"
     OUT_PREFIX="sustained"
     MERGE_CMD="ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix sustained-"
 
@@ -191,7 +233,7 @@ elif [ "$WORKLOAD" = "multi-fanout" ]; then
   RUN_ID="multi-fanout-$(date +%s)-$$"
   echo "  run_id: ${RUN_ID}"
 
-  BENCH_CMD="multi-fanout --target ${TARGET} --api-style ${API_STYLE} --streams ${M} --subscribers-per-stream ${S} --writer-rate ${RATE} --duration-secs ${DURATION}"
+  BENCH_CMD="multi-fanout --target ${TARGET} --api-style ${API_STYLE} --streams ${M} --subscribers-per-stream ${S} --writer-rate ${RATE} --duration-secs ${DURATION} --setup-concurrency ${SETUP_CONCURRENCY}"
   OUT_PREFIX="multi-fanout"
   MERGE_CMD="ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix multi-fanout-"
 
