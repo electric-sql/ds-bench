@@ -26,6 +26,14 @@ spec:
       #   kubectl -n ds-bench create configmap metrics-poller \
       #     --from-file=poller.sh=deploy/metrics/poller.sh
       shareProcessNamespace: true
+      # io_uring backend (Linux): Docker 25 / containerd's default seccomp blocks
+      # io_uring_setup/enter/register (moby#46762), and a Pod Security / CIS policy
+      # may impose RuntimeDefault. Unconfined permits the io_uring syscalls. It is a
+      # superset, so the reference (splice/fdatasync) server is unaffected. GKE
+      # Standard + COS allows this; do NOT route this pod through gVisor (no io_uring).
+      securityContext:
+        seccompProfile:
+          type: Unconfined
       containers:
         - name: durable-streams
           image: ${IMG_SERVER}
