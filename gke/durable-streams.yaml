@@ -20,7 +20,7 @@ spec:
       labels:
         app: durable-streams
     spec:
-      nodeSelector: { role: server }
+      nodeSelector: ${NODESEL_SERVER}
       # Required so the metrics sidecar can read /proc/<pid>/stat of the server.
       # ConfigMap must be created before apply:
       #   kubectl -n ds-bench create configmap metrics-poller \
@@ -28,8 +28,8 @@ spec:
       shareProcessNamespace: true
       containers:
         - name: durable-streams
-          image: europe-west1-docker.pkg.dev/${PROJECT}/ds-bench/durable-streams:dev
-          imagePullPolicy: Always
+          image: ${IMG_SERVER}
+          imagePullPolicy: ${PULL_POLICY}
           args:
             - "--host"
             - "0.0.0.0"
@@ -79,8 +79,8 @@ spec:
         # Runs at nice -n 19 so it does not perturb latency measurements.
         # See gke/metrics-sidecar.yaml for full usage notes.
         - name: metrics
-          image: europe-west1-docker.pkg.dev/${PROJECT}/ds-bench/micro:dev
-          imagePullPolicy: Always
+          image: ${IMG_METRICS}
+          imagePullPolicy: ${PULL_POLICY}
           command:
             - nice
             - "-n"

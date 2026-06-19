@@ -23,11 +23,11 @@ spec:
   template:
     spec:
       restartPolicy: Never
-      nodeSelector: { role: client }
+      nodeSelector: ${NODESEL_CLIENT}
       containers:
         - name: ds-bench
-          image: europe-west1-docker.pkg.dev/${PROJECT}/ds-bench/ds-bench:dev
-          imagePullPolicy: Always
+          image: ${IMG_DSBENCH}
+          imagePullPolicy: ${PULL_POLICY}
           env:
             - { name: DS_BENCH_HDR_OUT, value: /out }
             - { name: RUN_ID, value: "${RUN_ID}" }

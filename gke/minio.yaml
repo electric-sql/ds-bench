@@ -17,7 +17,7 @@ spec:
   template:
     metadata: { labels: { app: minio } }
     spec:
-      nodeSelector: { role: server }
+      nodeSelector: ${NODESEL_SERVER}
       containers:
         - name: minio
           image: minio/minio:latest
