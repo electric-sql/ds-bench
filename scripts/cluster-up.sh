@@ -25,7 +25,7 @@ else
   else
     echo "=== gcloud create cluster ${CLUSTER} (+ clients pool) ==="
     gcloud container clusters create "$CLUSTER" --zone "$ZONE" --project "$PROJECT" --num-nodes 1 \
-      --machine-type n2d-standard-8 --ephemeral-storage-local-ssd count=1 \
+      --machine-type "${SERVER_MACHINE:-n2d-standard-8}" --ephemeral-storage-local-ssd count="${LOCAL_SSD_COUNT:-1}" \
       --node-labels=role=server --network benchmarking --subnetwork benchmarking \
       --enable-ip-alias --release-channel regular
     gcloud container node-pools create clients --cluster "$CLUSTER" --zone "$ZONE" --project "$PROJECT" \
