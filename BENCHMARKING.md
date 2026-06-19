@@ -198,6 +198,50 @@ billing), unsets the context — always run this after a cloud run.**
 
 ---
 
+## Configuration reference
+
+All knobs are environment variables (export before the command); defaults in parentheses.
+
+### Target & cluster — `cluster-up.sh`, `target-env.sh`
+| var | default | meaning |
+|---|---|---|
+| `DS_TARGET` | `local` | `local` (kind) or `remote` (GKE) |
+| `KIND_CLUSTER` | `ds-bench` | local kind cluster name (context `kind-<name>`) |
+| `PROJECT`/`ZONE`/`CLUSTER` | gcloud / `europe-west1-b` / `ds-bench` | remote GKE id; context = `gke_<PROJECT>_<ZONE>_<CLUSTER>` |
+| `CLIENT_NODES` | `2` | client node-pool size (remote). More machines = more load-gen capacity. Proven: beyond what the *server's* real bottleneck needs, adding these does nothing. |
+| `LOCAL_SSD_COUNT` | `1` | local NVMe SSDs striped (RAID0) under the server data dir. **Raises the disk-write ceiling ≈ 0.6 GB/s × count** (1→~0.6, 4→~2.4, 16→~9 GB/s; max 16 on n2d-standard-8). |
+| `SERVER_MACHINE` | `n2d-standard-8` | server node machine type |
+
+### Server flags — durable-streams (passed via `deploy_server`)
+| flag | default | meaning |
+|---|---|---|
+| `--group-commit-window-us` | `0` | **NEW.** fsync group-commit accumulation window (µs). `0` = no batching — each fsync leader flushes immediately (≈ 1 fsync/append under load). `200–500` makes the leader wait so concurrent appends fold into **one** fsync → multi-fold small-write throughput, at ≤ window added p50 latency. Requires the patched server. See "leader election" below. |
+| `--splice-appends` | off | zero-copy splice for large appends (the splice cell enables it) |
+| `--tier {s3\|local}` | `s3` | cold-tier backend (cold-tier cell uses `local`) |
+
+### Matrix dimensions (slow profile) — the runner files
+| var | runner | default | meaning |
+|---|---|---|---|
+| `SERVER_CPUS` | all | `2 4 8` (scaleout `8`) | server CPU budget(s) swept (cgroup `cpu.max` → tokio worker count) |
+| `DURATION` | all | `30`/`25` | seconds per cell |
+| `REPEATS` | all | `3` | repeats per cell (renderer takes median + CV%) |
+| `READ_SIZES`/`READ_CONNS` | rawpower | `1024 16384`/`16 64 256` | read payload sizes / connections |
+| `APPEND_CONNS`/`APPEND_PAYLOADS` | rawpower | `64 256`/`1024 16384` | append connections / payload bytes |
+| `FO_SUBS_LIST` | rawpower | `1 10 100` | fan-out subscriber counts |
+| `SKIP_SPLICE`/`SKIP_COLD` | rawpower | `0`/`0` | set `1` to skip the splice / cold-tier cells |
+| `MS_COUNTS` | scaleout | `10 50 100 200` | multi-stream stream counts |
+| `MF_PAIRS` | scaleout | `10:10 20:10 10:20` | multi-fan-out `M:S` (streams:subs-per-stream) |
+
+### Headroom guard — `lib-bench.sh`
+| var | default | meaning |
+|---|---|---|
+| `PARALLELISM` | `4` | *initial* client pods per cell |
+| `MAX_PODS` | `16`/`32` | ceiling the guard bumps to (doubling: P→2P→4P…). Note doubling: e.g. with `MAX_PODS=64`, P=8 reaches 8→16→32→64; set ≥ the count you want or it stops one rung early. |
+| `MAX_BUMPS` | `1`(fast)/`8`(slow) | max doublings; `0` = fixed `PARALLELISM` (no bump) |
+| `FLEET_TIMEOUT`/`COORD_TIMEOUT` | `180`/`90` | seconds before a hung fleet/coordinator is abandoned (tolerant — keeps the matrix going) |
+
+---
+
 ## One-shot (local smoke)
 
 ```bash
