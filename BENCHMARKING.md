@@ -133,7 +133,20 @@ Include, at the top, the run context so it is reproducible:
   in-cluster MinIO (not cloud S3), 1 vs 3 repeats.
 
 Suggested path: `docs/combined-report-<target>-<date>.md`. To compare local vs cloud,
-produce one per target and diff the headline tables.
+produce one per target and diff the headline tables. Concretely, after step 5:
+
+```bash
+TARGET=${DS_TARGET:-local}; DATE=$(date +%Y%m%d)
+OUT="docs/combined-report-${TARGET}-${DATE}.md"
+{
+  echo "# DS-rust benchmark — combined report (${TARGET})"
+  echo "- server commit: $(git -C ../durable-streams rev-parse --short HEAD) · target: ${TARGET} · date: ${DATE}"
+  echo; echo "---"; cat docs/phase1-report.md
+  echo; echo "---"; cat docs/phase2-report.md
+  echo; echo "---"; cat docs/phase3-report.md
+} > "$OUT"
+echo "wrote $OUT"
+```
 
 ### Known server limits (now fixed — confirm they stay fixed)
 
@@ -153,11 +166,35 @@ them once you've re-confirmed the fixes hold, to chase true (non-capped) ceiling
 ## 7. Tear down
 
 ```bash
-scripts/cluster-down.sh
+scripts/cluster-down.sh           # remote: pass the same ZONE you created with
 ```
 
 Local: `kind delete cluster`. **Remote: deletes the GKE cluster, verifies it is gone (no
 billing), unsets the context — always run this after a cloud run.**
+
+---
+
+## Troubleshooting (practical notes)
+
+- **GKE zone out of capacity** (`does not have enough resources available to fulfill
+  request: <zone>`): retry in a SIBLING zone of the same region (so the `benchmarking`
+  subnetwork still applies): `ZONE=europe-west1-d scripts/cluster-up.sh`. The kubectl
+  context follows the zone (`gke_<project>_<zone>_ds-bench`), so pass the **same `ZONE`**
+  to every later phase/render/teardown command. If `n2d-standard-8` is broadly short,
+  `n2-standard-8` is an NVMe-capable fallback.
+- **Local Docker build wedges or crawls**: Docker Desktop under disk pressure stalls builds
+  (the daemon stops accepting new work — even `docker run alpine` hangs). Free it with
+  `docker builder prune -af && docker image prune -af` (or full `docker system prune -af
+  --volumes`), then re-run `build-images.sh`. Native arm64 build is ~10 min the first time.
+- **Every cell is `client_capped`**: the client fleet — not the server — is the bottleneck.
+  Raise `PARALLELISM` (or drop `MAX_BUMPS=0`) to add client pods until cells go
+  `server_bound` (the trustworthy ceiling).
+- **A cell renders `-` / empty**: that cell's fleet errored; the tolerant fleet/coordinator
+  waits keep the rest of the matrix running. Inspect `kubectl --context $KCTX -n ds-bench
+  logs job/bench-fleet`. Usually a server hiccup or a cap set too aggressively.
+- **Iterating on the server**: `git -C ../durable-streams checkout <branch>` → re-run
+  `build-images.sh` → re-run the phase. The image is built from the current checkout, so
+  that is the whole inner loop.
 
 ---
 
