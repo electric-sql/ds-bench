@@ -56,26 +56,28 @@ Optional: `KIND_CLUSTER` (default `ds-bench`); for remote, `PROJECT`/`ZONE`/`CLU
 
 ---
 
-## 2. Build images
+## 2. Cluster up
 
 ```bash
 export DS_TARGET=local        # or remote
-scripts/build-images.sh
-```
-
-Builds `ds-bench:dev` (workload client) and `durable-streams:dev` (server, from the
-**current `../durable-streams` checkout**). Iterating on the server? `git -C
-../durable-streams checkout <branch>` then re-run this — that is the inner dev loop.
-
-## 3. Cluster up
-
-```bash
 scripts/cluster-up.sh
 ```
 
 Creates the cluster (kind single node / GKE server+clients pools), the `ds-bench`
 namespace, the `metrics-poller` ConfigMap, and MinIO (the object tier + the HDR-merge
-store). Idempotent.
+store). Idempotent. **Run this before building images** — for local, `kind load` (next
+step) needs the cluster to already exist.
+
+## 3. Build images
+
+```bash
+scripts/build-images.sh
+```
+
+Builds `ds-bench:dev` (workload client) and `durable-streams:dev` (server, from the
+**current `../durable-streams` checkout**) and loads them into the cluster. Iterating on
+the server? `git -C ../durable-streams checkout <branch>` then re-run this — that is the
+inner dev loop.
 
 ## 4. Run the phases
 
@@ -163,7 +165,7 @@ billing), unsets the context — always run this after a cloud run.**
 
 ```bash
 export DS_TARGET=local
-scripts/build-images.sh && scripts/cluster-up.sh
+scripts/cluster-up.sh && scripts/build-images.sh
 PARALLELISM=2 MAX_BUMPS=0 scripts/gke-rawpower.sh fast
 python3 scripts/render-rawpower.py results/rawpower/$(ls -t results/rawpower | head -1)
 scripts/cluster-down.sh
