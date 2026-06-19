@@ -3,6 +3,13 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development.
 > Steps use checkbox (`- [ ]`) syntax.
 
+> **SUPERSEDED (2026-06-19): JSON dropped from all phases.** The byte-vs-JSON study and
+> every `json-single`/`json-array` reference below are no longer run — bytes (binary) only,
+> with `--splice-appends` as the large-payload path. Rationale: bytes is the realistic best
+> case and is splice-eligible (zero-copy); JSON only adds client-side encoding the server
+> benchmark doesn't need to chase. The `--body-mode` capability stays in `ds-bench` (binary
+> default, JSON unused). Append cells are now `binary` × conn × payload only.
+
 **Goal:** Reproduce the durable-streams `BENCHMARKS.md` single-stream studies (reads,
 appends, byte-vs-JSON, splice, cold-tier, single-stream fan-out) on modern NVMe hardware,
 **uncapped** — scaled so the SERVER is the bottleneck, not the load generator (their

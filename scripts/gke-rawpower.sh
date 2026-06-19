@@ -394,30 +394,24 @@ for SERVER_CPU in $SERVER_CPUS; do
   done
 
   # ── append cells ─────────────────────────────────────────────────────────────
+  # Bytes only — JSON body modes dropped. Bytes is the realistic best case and is
+  # splice-eligible (zero-copy); JSON only adds client-side encoding the server
+  # benchmark doesn't need to chase. (The --body-mode capability stays in ds-bench.)
   if [ "$PROFILE" = "fast" ]; then
     APPEND_CONNS="256"
-    APPEND_BODIES="binary"
     APPEND_PAYLOADS="1024"
   else
     APPEND_CONNS="64 256"
-    APPEND_BODIES="${APPEND_BODIES:-binary}"   # json-* deferred: json-single append errored (server JSON-body issue or hang) — investigate separately
     APPEND_PAYLOADS="1024 16384"   # 1 KB / 16 KB writes (per user guidance)
   fi
 
   for append_payload in $APPEND_PAYLOADS; do
    for append_conn in $APPEND_CONNS; do
-    for body_mode in $APPEND_BODIES; do
-      # array-records flag only for json-array
-      extra_bench_flags=""
-      if [ "$body_mode" = "json-array" ]; then
-        extra_bench_flags="--array-records 10"
-      fi
-      cell="append-cpu${SERVER_CPU}-conn${append_conn}-${body_mode}-p${append_payload}"
-      bench_cmd="append --target ${TARGET} --api-style ${API_STYLE} --stream ${cell}-${SWEEP_RUN_ID} --connections ${append_conn} --payload-bytes ${append_payload} --duration-secs ${DURATION} --body-mode ${body_mode}${extra_bench_flags:+ $extra_bench_flags}"
+      cell="append-cpu${SERVER_CPU}-conn${append_conn}-binary-p${append_payload}"
+      bench_cmd="append --target ${TARGET} --api-style ${API_STYLE} --stream ${cell}-${SWEEP_RUN_ID} --connections ${append_conn} --payload-bytes ${append_payload} --duration-secs ${DURATION} --body-mode binary"
       out_prefix="append"
       merge_cmd="ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix append-"
       run_cell "$cell" "$bench_cmd" "$out_prefix" "$merge_cmd" "$SERVER_CPU"
-    done
    done
   done
 

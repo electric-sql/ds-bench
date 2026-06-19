@@ -49,8 +49,9 @@ at this payload (the splice CPU-lever comparison vs no-splice was not isolated t
   (server CPU 0.5–12%) and several cells hit the server-hang/error path. **Not a trustworthy
   append result.**
 - **Cold-tier reads: ALL FAILED** (empty) — `--tier local` cold reads errored. Investigate.
-- **JSON appends (json-single / json-array): DEFERRED** — the json-single append cell errored
-  (both fleet pods `Error`); likely a server JSON-body issue *or* a hang. Dropped to finish.
+- **JSON appends: DROPPED from all phases** (not just deferred) — bytes is the realistic best
+  case and is splice-eligible (zero-copy); JSON only adds client-side encoding the server
+  benchmark doesn't need to chase. (The `--body-mode` capability remains in `ds-bench`, unused.)
 
 ## ⚠️ KEY FINDING — the server hangs above ~1024 concurrent connections
 The durable-streams server (`1e9423dc`) **hangs under high concurrency** (≳1024 concurrent
