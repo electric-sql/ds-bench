@@ -149,6 +149,7 @@ def load_rep(rep_dir: pathlib.Path):
         "disk_mbps":    disk_write_mbps_from_samples(samples),
         "rss_max_mib":  rss_max_mib(samples),
         "verdict":      v.get("verdict"),
+        "collect_error": mg("error"),   # coordinator marker: e.g. no_client_results_uploaded
         "parallelism":  v.get("parallelism"),
         "cpu_cores":    v.get("server_cpu_cores"),
     }
@@ -221,6 +222,7 @@ def aggregate_cell(cell_dir: pathlib.Path):
         "cpu_pct": cpu_med, "cpu_cv": cpu_cv, "rss_max_mib": rss_med,
         "disk_mbps": disk_med,
         "verdict": verdict,
+        "collect_error": next((r.get("collect_error") for r in reps if r.get("collect_error")), None),
         "parallelism": reps[-1].get("parallelism"),
         "cpu_cores": reps[-1].get("cpu_cores"),
         "n_reps": len(reps),
