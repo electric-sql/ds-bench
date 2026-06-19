@@ -53,7 +53,7 @@ at this payload (the splice CPU-lever comparison vs no-splice was not isolated t
   case and is splice-eligible (zero-copy); JSON only adds client-side encoding the server
   benchmark doesn't need to chase. (The `--body-mode` capability remains in `ds-bench`, unused.)
 
-## ⚠️ KEY FINDING — the server hangs above ~1024 concurrent connections
+## ⚠️ KEY FINDING — server stalls at ~1024 connections (almost certainly the fd ulimit)
 The durable-streams server (`1e9423dc`) **hangs under high concurrency** (≳1024 concurrent
 connections on a 2-CPU node) and **does not recover**: `curl localhost:4438` from inside the
 pod times out, the deployment goes `0/1 available`, the readiness probe fails indefinitely.
@@ -64,9 +64,19 @@ Reproduced twice — once under over-seeded reads (a harness bug, fixed), once u
   (the headroom guard can't saturate the server without hanging it).
 - The append-heavy and cold-tier cells (heavier load) failed.
 
-This looks like a **deadlock or resource exhaustion under high connection concurrency** —
-the most important thing to investigate server-side; it currently bounds how hard the server
-can be driven.
+**UPDATE (2026-06-19) — this is almost certainly the file-descriptor ulimit, NOT a deadlock.**
+The wall sits at *exactly* 1024 connections (the append hang was 4 pods × 256 conns = 1024),
+which is the classic default soft `RLIMIT_NOFILE`. The server (`server-rust`) never raises its
+own fd limit (no `setrlimit`/`RLIMIT_NOFILE` in its source), and the pod sets no ulimit
+(`gke/durable-streams.yaml` runs the server via `args` with no `command` wrapper or
+`securityContext`), so it inherits the container's default soft nofile (~1024). At ~1024 open
+fds, `accept()` returns `EMFILE` → no new connections accepted (incl. the readiness probe) →
+*appears* hung; abruptly-killed clients leave half-open connections holding fds → no recovery.
+**Fix:** raise the soft nofile — either the server `setrlimit(RLIMIT_NOFILE)` to its hard limit
+at startup (proper, ~3 lines via the existing `libc` dep), or wrap the pod command with
+`ulimit -n`. Then re-run to confirm the wall moves and to get true (non-fd-bound) ceilings.
+The Phase-2 ~200-concurrent-*stream-creation* timeout is a separate, lower limit (200 ≪ 1024),
+not fd exhaustion.
 
 ## Harness fixes made this session (committed on `track2-phase2b`)
 - `reads` seed = `read_size` (the 256 MiB seed caused a cross-pod over-seed race → server OOM/hang).
