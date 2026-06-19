@@ -38,8 +38,8 @@ if [ "$PROFILE" = "fast" ]; then
   INIT_PARALLELISM="${PARALLELISM:-4}"; MAX_PODS=16; MAX_BUMPS=1
 else
   # CPU capped at 8 (the BENCHMARKS.md server scale) so it fits an 8-CPU node.
-  SERVER_CPUS="2 4 8"; DURATION=30; REPEATS="${REPEATS:-3}"
-  INIT_PARALLELISM="${PARALLELISM:-4}"; MAX_PODS=32; MAX_BUMPS="${MAX_BUMPS:-8}"
+  SERVER_CPUS="${SERVER_CPUS:-2 4 8}"; DURATION="${DURATION:-30}"; REPEATS="${REPEATS:-3}"
+  INIT_PARALLELISM="${PARALLELISM:-4}"; MAX_PODS="${MAX_PODS:-32}"; MAX_BUMPS="${MAX_BUMPS:-8}"
 fi
 
 echo "=== gke-rawpower: profile=${PROFILE} target=${DS_TARGET} run=${SWEEP_RUN_ID} ==="
@@ -59,7 +59,7 @@ for SERVER_CPU in $SERVER_CPUS; do
 
   # ── reads: stream size IS the read size (full catch-up per GET) ─────────────
   if [ "$PROFILE" = "fast" ]; then READ_SIZES="1024";        READ_CONNS="256";
-  else                            READ_SIZES="1024 16384";   READ_CONNS="16 64 256"; fi
+  else                            READ_SIZES="${READ_SIZES:-1024 16384}";   READ_CONNS="${READ_CONNS:-16 64 256}"; fi
   for read_size in $READ_SIZES; do
     for read_conn in $READ_CONNS; do
       cell="reads-cpu${SERVER_CPU}-size${read_size}-conn${read_conn}"
@@ -70,7 +70,7 @@ for SERVER_CPU in $SERVER_CPUS; do
 
   # ── appends: BYTES ONLY (splice-eligible; JSON dropped from all phases) ──────
   if [ "$PROFILE" = "fast" ]; then APPEND_CONNS="256";    APPEND_PAYLOADS="1024";
-  else                            APPEND_CONNS="64 256";  APPEND_PAYLOADS="1024 16384"; fi
+  else                            APPEND_CONNS="${APPEND_CONNS:-64 256}";  APPEND_PAYLOADS="${APPEND_PAYLOADS:-1024 16384}"; fi
   for append_payload in $APPEND_PAYLOADS; do
     for append_conn in $APPEND_CONNS; do
       cell="append-cpu${SERVER_CPU}-conn${append_conn}-binary-p${append_payload}"
@@ -80,7 +80,7 @@ for SERVER_CPU in $SERVER_CPUS; do
   done
 
   # ── splice variant (slow only): 1 MB binary with --splice-appends ───────────
-  if [ "$PROFILE" = "slow" ]; then
+  if [ "$PROFILE" = "slow" ] && [ "${SKIP_SPLICE:-0}" = "0" ]; then
     echo ""; echo "=== deploying splice-appends server variant (cpu=${SERVER_CPU}) ==="
     deploy_server "$SERVER_CPU" "--splice-appends"
     cell="append-splice-cpu${SERVER_CPU}-conn256-binary-1m"
@@ -91,7 +91,7 @@ for SERVER_CPU in $SERVER_CPUS; do
   fi
 
   # ── fan-out: 1 writer → N subscribers, end-to-end delivery latency ──────────
-  if [ "$PROFILE" = "fast" ]; then FO_SUBS_LIST="256"; else FO_SUBS_LIST="1 10 100"; fi
+  if [ "$PROFILE" = "fast" ]; then FO_SUBS_LIST="256"; else FO_SUBS_LIST="${FO_SUBS_LIST:-1 10 100}"; fi
   for subs in $FO_SUBS_LIST; do
     cell="fanout-cpu${SERVER_CPU}-subs${subs}"
     bench_cmd="fan-out --target ${TARGET} --api-style ${API_STYLE} --stream ${cell}-${SWEEP_RUN_ID} --subscribers ${subs} --writer-rate 50 --duration-secs ${DURATION} --payload-bytes 1024"
@@ -99,7 +99,7 @@ for SERVER_CPU in $SERVER_CPUS; do
   done
 
   # ── cold-tier read (slow only): --tier local, seed > hot cap (32 MiB) ───────
-  if [ "$PROFILE" = "slow" ]; then
+  if [ "$PROFILE" = "slow" ] && [ "${SKIP_COLD:-0}" = "0" ]; then
     echo ""; echo "=== deploying cold-tier server variant (cpu=${SERVER_CPU}) ==="
     deploy_server "$SERVER_CPU" "--tier local"
     cell="reads-cold-cpu${SERVER_CPU}-size1m-conn64"

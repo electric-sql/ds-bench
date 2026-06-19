@@ -37,8 +37,8 @@ if [ "$PROFILE" = "fast" ]; then
   SERVER_CPUS="2"; DURATION=15; REPEATS="${REPEATS:-1}"
   INIT_PARALLELISM="${PARALLELISM:-4}"; MAX_PODS=16; MAX_BUMPS="${MAX_BUMPS:-1}"
 else
-  SERVER_CPUS="8"; DURATION=25; REPEATS="${REPEATS:-3}"
-  INIT_PARALLELISM="${PARALLELISM:-4}"; MAX_PODS=32; MAX_BUMPS="${MAX_BUMPS:-8}"
+  SERVER_CPUS="${SERVER_CPUS:-8}"; DURATION="${DURATION:-25}"; REPEATS="${REPEATS:-3}"
+  INIT_PARALLELISM="${PARALLELISM:-4}"; MAX_PODS="${MAX_PODS:-32}"; MAX_BUMPS="${MAX_BUMPS:-8}"
 fi
 
 echo "=== gke-scaleout: profile=${PROFILE} target=${DS_TARGET} run=${SWEEP_RUN_ID} ==="
@@ -57,7 +57,7 @@ for SERVER_CPU in $SERVER_CPUS; do
   deploy_server "$SERVER_CPU"
 
   # ── multi-stream writes — sweep stream count N ──────────────────────────────
-  if [ "$PROFILE" = "fast" ]; then MS_COUNTS="10 100"; else MS_COUNTS="10 50 100 200"; fi
+  if [ "$PROFILE" = "fast" ]; then MS_COUNTS="10 100"; else MS_COUNTS="${MS_COUNTS:-10 50 100 200}"; fi
   for N in $MS_COUNTS; do
     cell="ms-cpu${SERVER_CPU}-n${N}"
     bench_cmd="multi-stream --target ${TARGET} --api-style ${API_STYLE} --streams ${N} --duration-secs ${DURATION} --payload-bytes 256"
@@ -65,7 +65,7 @@ for SERVER_CPU in $SERVER_CPUS; do
   done
 
   # ── multi-fanout — sweep (M streams × S subscribers) ────────────────────────
-  if [ "$PROFILE" = "fast" ]; then MF_PAIRS="10:10"; else MF_PAIRS="10:10 20:10 10:20"; fi
+  if [ "$PROFILE" = "fast" ]; then MF_PAIRS="10:10"; else MF_PAIRS="${MF_PAIRS:-10:10 20:10 10:20}"; fi
   for ms_pair in $MF_PAIRS; do
     M="${ms_pair%%:*}"; S="${ms_pair##*:}"
     cell="multi-fanout-cpu${SERVER_CPU}-m${M}-s${S}"
