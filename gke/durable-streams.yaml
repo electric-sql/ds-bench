@@ -81,7 +81,7 @@ spec:
               # an 8-core node (the server node is dedicated, so it bursts to the limit).
               cpu: "500m"
             limits:
-              memory: "6Gi"
+              memory: "${SERVER_MEM}"
               cpu: "${SERVER_CPU}"
         # ── metrics sidecar ─────────────────────────────────────────────────────
         # Samples the server's RSS + CPU from /proc/<pid>/stat every second and

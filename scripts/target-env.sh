@@ -50,13 +50,15 @@ esac
 # to the un-patched server). Requires a server image built with the group-commit
 # patch. Substituted into gke/durable-streams.yaml.
 GROUP_COMMIT_WINDOW_US="${GROUP_COMMIT_WINDOW_US:-0}"
+# Server pod memory limit (the cgroup OOM ceiling — drives fan-out subscriber capacity).
+SERVER_MEM="${SERVER_MEM:-16Gi}"
 
 # Vars referenced by envsubst in the manifests + by the runners.
 export DS_TARGET KCTX IMG_SERVER IMG_DSBENCH IMG_METRICS PULL_POLICY \
        NODESEL_SERVER NODESEL_CLIENT PROJECT ZONE CLUSTER KIND_CLUSTER REG \
-       GROUP_COMMIT_WINDOW_US
+       GROUP_COMMIT_WINDOW_US SERVER_MEM
 
 # Every manifest envsubst must whitelist these so the image/policy/selector
 # placeholders resolve. Runners reference $MANIFEST_VARS in their envsubst calls.
-MANIFEST_VARS='${IMG_SERVER} ${IMG_DSBENCH} ${IMG_METRICS} ${PULL_POLICY} ${NODESEL_SERVER} ${NODESEL_CLIENT} ${GROUP_COMMIT_WINDOW_US}'
+MANIFEST_VARS='${IMG_SERVER} ${IMG_DSBENCH} ${IMG_METRICS} ${PULL_POLICY} ${NODESEL_SERVER} ${NODESEL_CLIENT} ${GROUP_COMMIT_WINDOW_US} ${SERVER_MEM}'
 export MANIFEST_VARS
