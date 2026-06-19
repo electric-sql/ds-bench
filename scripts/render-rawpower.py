@@ -187,7 +187,7 @@ if append_cells:
         out.append(
             f"| {name} | {cpu_c} | {conn} | {body} | "
             f"{ops_with_cv(c['ops'], c.get('ops_cv'))} | "
-            f"{_dash(c.get('disk_mbps'), '{:.0f}')} | "
+            f"{_dash(c.get('disk_mbps'), lambda v: f'{v:,.0f}')} | "
             f"{cpu_with_cv(c['cpu_pct'], c.get('cpu_cv'))} | "
             f"{fmt_ms(c['p99'])} | "
             f"{verdict_annotation(c['verdict'])} |"
