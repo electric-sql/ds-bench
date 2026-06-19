@@ -255,14 +255,15 @@ permitted at runtime.
   (not Autopilot), **COS** node image, **kernel 6.12** (≥ 6.0 → io_uring *and*
   `IORING_OP_SEND_ZC` zero-copy-send both work), **no gVisor/sandbox** (gVisor has no
   io_uring — do not route this pod through it). No other change needed.
-- **Local (kind) — decision (b):** kind nodes are Docker containers under Docker's default
-  seccomp, which blocks io_uring even though kind *pods* are Unconfined, and kind can't set the
-  node-container seccomp. So:
-  - **kind runs the full multi-pod harness** — the io_uring server runs there via its **splice
-    fallback** (no zero-copy-send inside kind);
-  - **io_uring conformance + the zero-copy-send smoke** run the server directly with seccomp
-    off: `docker run --security-opt seccomp=unconfined … durable-streams-server …` (Docker
-    Desktop's Linux VM kernel supports it), or in a Lima/colima/OrbStack Linux VM.
+- **Local (kind) — works directly, no extra setup** (verified empirically). kind launches its
+  node containers `--privileged` with `seccomp=unconfined apparmor=unconfined`, so the node
+  boundary does NOT block io_uring — the *only* gate is the **pod's** `seccompProfile`, and we
+  already set it to `Unconfined`. Test result: an `Unconfined` pod → `io_uring_setup` returns an
+  fd (PERMITTED); a `RuntimeDefault` pod → EPERM (BLOCKED). Docker Desktop's VM kernel is **6.10**
+  (≥ 6.0), so **io_uring AND `IORING_OP_SEND_ZC` zero-copy-send both work inside kind** — no
+  separate Linux VM and no special kind config required. So the full multi-pod harness runs real
+  io_uring locally. (Outside k8s, `docker run --security-opt seccomp=unconfined …` works too for
+  a single-instance smoke.)
 - Unconfined is a superset of permissions → the reference / ursula / s2 images are unaffected.
 
 ---
