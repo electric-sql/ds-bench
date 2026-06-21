@@ -48,7 +48,11 @@ ensure_metrics_configmap() {
 #   Both use `sed r <tmpfile>` / range-delete (BSD-sed + GNU-sed safe).
 deploy_server() {
   local cpu="$1"; shift
-  local extra_args="${*:-}"
+  # SERVER_EXTRA_ARGS (env) is prepended to any per-call flags so a comparison can
+  # add server flags (e.g. "--wal --wal-sync strict --wal-fsync-events 1") to every
+  # deploy without threading them through each runner. xargs normalizes whitespace
+  # so the empty case stays empty (preserves the no-injection fast path).
+  local extra_args; extra_args="$(echo "${SERVER_EXTRA_ARGS:-} ${*:-}" | xargs)"
   export SERVER_CPU="$cpu"
 
   echo "    deploying durable-streams server: cpu=${cpu} extra='${extra_args}' (${DS_TARGET})..."
@@ -84,7 +88,7 @@ deploy_server() {
     rm -f "$tmp_inject"
   fi
 
-  K wait --for=condition=available deploy/durable-streams --timeout=300s
+  K wait --for=condition=available deploy/durable-streams --timeout=600s
   echo "    server available."
 
   # 3× consecutive HTTP readiness probe. nodeSelector via ${NODESEL_CLIENT} so it
