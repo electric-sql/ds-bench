@@ -36,7 +36,7 @@ run_impl() {
   ( trap "DS_TARGET=remote PROJECT=${PROJECT:-vaxine} CLUSTER=$cluster ZONE=$zone bash scripts/cluster-down.sh >/dev/null 2>&1" EXIT
     set -e
     export DS_TARGET=remote PROJECT="${PROJECT:-vaxine}" ZONE="$zone" CLUSTER="$cluster" IMG_SERVER="$img"
-    export SERVER_CPUS="$SERVER_CPU" SERVER_MEM="$SERVER_MEM" GROUP_COMMIT_WINDOW_US=0
+    export SERVER_CPUS="$SERVER_CPU" SERVER_MEM="$SERVER_MEM"
     export LOCAL_SSD_COUNT="${LOCAL_SSD_COUNT:-1}" CLIENT_NODES="${CLIENT_NODES:-4}"
     export PARALLELISM=4 MAX_BUMPS="${MAX_BUMPS:-4}" MAX_PODS="${MAX_PODS:-24}" REPEATS="${REPEATS:-1}"
     export FLEET_TIMEOUT=300 COORD_TIMEOUT=120
