@@ -1,9 +1,15 @@
 # Build context must be the durable-streams repo root (../durable-streams).
-FROM rust:1.86-bookworm AS builder
+# RUST_VERSION is overridable — the `telemetry` feature pulls tonic 0.14 which
+# needs rustc >= 1.88; the default production set builds on 1.86.
+ARG RUST_VERSION=1.86
+FROM rust:${RUST_VERSION}-bookworm AS builder
 WORKDIR /src
 COPY . .
 WORKDIR /src/packages/server-rust
-RUN cargo build --release --features tier
+# FEATURES is overridable so a bench/diagnostic image can add `telemetry`
+# (WAL_STATS to stdout + per-append OTel timers). Default = production set.
+ARG FEATURES=tier
+RUN cargo build --release --features ${FEATURES}
 RUN cp target/release/durable-streams-server /durable-streams-server
 
 FROM debian:bookworm-slim
