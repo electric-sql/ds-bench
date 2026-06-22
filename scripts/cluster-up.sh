@@ -3,8 +3,8 @@
 # cluster-up.sh — bring up the cluster + namespace + metrics ConfigMap + MinIO
 # for DS_TARGET. Idempotent: re-running on an existing cluster just re-applies.
 #   local  → kind create cluster (single node).
-#   remote → gcloud create: n2d-standard-8 role=server (NVMe) + clients pool
-#            (n2d-standard-16 ×2, role=client) on the `benchmarking` VPC.
+#   remote → gcloud create: c4d-standard-16-lssd role=server (Titanium NVMe) +
+#            clients pool (n2d-standard-16 ×2, role=client) on the `benchmarking` VPC.
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -24,8 +24,16 @@ else
     echo "GKE cluster '${CLUSTER}' already exists"
   else
     echo "=== gcloud create cluster ${CLUSTER} (+ clients pool) ==="
+    SERVER_MACHINE="${SERVER_MACHINE:-c4d-standard-16-lssd}"
+    # 4th-gen Titanium "-lssd" machines bundle a fixed Local SSD (the count is set
+    # by the machine type — gcloud rejects an explicit count). Older N2D-style
+    # types let you stripe N×375 GB devices via LOCAL_SSD_COUNT.
+    case "$SERVER_MACHINE" in
+      *-lssd) LSSD_FLAG=(--ephemeral-storage-local-ssd) ;;
+      *)      LSSD_FLAG=(--ephemeral-storage-local-ssd "count=${LOCAL_SSD_COUNT:-1}") ;;
+    esac
     gcloud container clusters create "$CLUSTER" --zone "$ZONE" --project "$PROJECT" --num-nodes 1 \
-      --machine-type "${SERVER_MACHINE:-n2d-standard-8}" --ephemeral-storage-local-ssd count="${LOCAL_SSD_COUNT:-1}" \
+      --machine-type "$SERVER_MACHINE" "${LSSD_FLAG[@]}" \
       --node-labels=role=server --network benchmarking --subnetwork benchmarking \
       --enable-ip-alias --release-channel regular
     gcloud container node-pools create clients --cluster "$CLUSTER" --zone "$ZONE" --project "$PROJECT" \

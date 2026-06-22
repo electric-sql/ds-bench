@@ -9,11 +9,14 @@ as `! gcloud auth login` in the agent prompt if you want its output captured.
 
 - **Dedicated, zonal cluster** in a single zone `europe-west1-b` — single zone ⇒
   all pods co-located ⇒ **no cross-zone egress** for fleet↔server traffic.
-- **AMD `n2d`, x86/amd64** — cheapest GCP family that supports **Local NVMe SSD**
-  (Arm `t2a` is cheaper per-vCPU but has no Local SSD). amd64 ⇒ no image-arch change.
+- **AMD `c4d`, x86/amd64** — 4th-gen with **Titanium Local SSD** (much higher
+  per-device throughput than the older N2D Local SSD, which throttles below the
+  24-vCPU mark and capped our fsync bandwidth). amd64 ⇒ no image-arch change.
 - **Two node pools:**
-  - `role=server` — `n2d-standard-8` + Local NVMe SSD. The server-under-test AND
-    in-cluster MinIO schedule here, so their disk I/O (fsync, offload) is on NVMe.
+  - `role=server` — `c4d-standard-16-lssd` + bundled Titanium NVMe SSD. The
+    server-under-test AND in-cluster MinIO schedule here, so their disk I/O (fsync,
+    offload) is on fast NVMe. 16 vCPU also leaves headroom for MinIO + the metrics
+    sidecar during the `SERVER_CPU=8` cell (the old 8-vCPU node had none).
   - `role=client` — `n2d-standard-16` ×2 (scalable). The `ds-bench` load-generator
     fleet runs here (CPU/network-bound).
 - **Object store = in-cluster MinIO on the NVMe node** (NOT GCS). Same MinIO/config
@@ -48,15 +51,18 @@ gcloud config set compute/zone europe-west1-b
 gcloud services enable container.googleapis.com artifactregistry.googleapis.com
 ```
 
-### 4. Create the cluster — server pool with NVMe (billable; ~5 min)
+### 4. Create the cluster — server pool with Titanium NVMe (billable; ~5 min)
 ```bash
 gcloud container clusters create ds-bench \
   --zone europe-west1-b --num-nodes 1 \
-  --machine-type n2d-standard-8 \
-  --ephemeral-storage-local-ssd count=1 \
+  --machine-type c4d-standard-16-lssd \
+  --ephemeral-storage-local-ssd \
   --node-labels=role=server \
   --release-channel regular
 ```
+> `c4d-standard-16-lssd` bundles a fixed Titanium Local SSD, so pass
+> `--ephemeral-storage-local-ssd` **without** `count=` (gcloud rejects an explicit
+> count on these 4th-gen `-lssd` machine types).
 
 ### 5. Add the client/worker pool
 ```bash
@@ -91,7 +97,8 @@ gcloud artifacts repositories describe ds-bench --location=europe-west1
 ```
 
 ## Cost + teardown
-Rough on-demand cost ≈ ~$2/hr (1×n2d-standard-8 + 2×n2d-standard-16 + NVMe). Single
+Rough on-demand cost ≈ ~$3/hr (1×c4d-standard-16-lssd + 2×n2d-standard-16 + Titanium
+NVMe; ~$1/hr more than the old n2d-standard-8 server, i.e. ~+$2 per 2-hr run). Single
 zone + everything in-cluster ⇒ no egress; you pay compute + small Artifact Registry
 storage. **Delete when done:**
 ```bash

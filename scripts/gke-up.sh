@@ -12,11 +12,11 @@ ZONE=europe-west1-b
 CLUSTER=ds-bench
 echo "project=$PROJECT zone=$ZONE cluster=$CLUSTER"
 
-# Cluster + server pool (default pool, NVMe local SSD for fast fsync)
+# Cluster + server pool (default pool, Titanium NVMe local SSD for fast fsync)
 gcloud container clusters describe "$CLUSTER" --zone "$ZONE" --project "$PROJECT" >/dev/null 2>&1 || \
 gcloud container clusters create "$CLUSTER" --project "$PROJECT" --zone "$ZONE" \
-  --num-nodes 1 --machine-type n2d-standard-8 \
-  --ephemeral-storage-local-ssd count=1 \
+  --num-nodes 1 --machine-type c4d-standard-16-lssd \
+  --ephemeral-storage-local-ssd \
   --node-labels=role=server --release-channel regular \
   --network benchmarking --subnetwork benchmarking
 

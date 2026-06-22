@@ -9,8 +9,8 @@
 #   system   : durable (local+remote) | ursula | s2 (comparison systems, REMOTE only)
 #   workload : sustained (default) | multi-fanout
 #   N...     : stream counts (default "10 50 100 150"); ignored for multi-fanout
-# Env knobs: PARALLELISM SERVER_CPUS RATE DURATION SETUP_CONCURRENCY M S
-#            FLEET_TIMEOUT COORD_TIMEOUT DS_TARGET.
+# Env knobs: PARALLELISM RATE DURATION SETUP_CONCURRENCY M S
+#            FLEET_TIMEOUT COORD_TIMEOUT DS_TARGET.  (server is fixed 8-core/16 GB)
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -24,7 +24,7 @@ cd "$REPO_ROOT"
 . scripts/lib-bench.sh    # sources target-env.sh; defines K() + the engine
 
 PARALLELISM="${PARALLELISM:-4}"
-SERVER_CPUS="${SERVER_CPUS:-8}"        # server CPU budget (durable)
+SERVER_CPUS="8"; export SERVER_MEM="16Gi"   # server FIXED at 8 cores / 16 GB — never swept
 MAX_BUMPS="${MAX_BUMPS:-0}"            # accepted for env parity; no bump loop here
 REPEATS="${REPEATS:-1}"
 
