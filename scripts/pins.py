@@ -35,7 +35,7 @@ def cmd_key(a):
 
 def cmd_get(a):
     e = _load(_path(a)).get(a.key)
-    if not e or a.cell not in e.get("cells", {}):
+    if e is None or a.cell not in e.get("cells", {}):
         sys.exit(1)
     print(e["cells"][a.cell]["pods"])
 
@@ -51,6 +51,21 @@ def cmd_set(a):
         cell["ops"] = a.ops
     e["cells"][a.cell] = cell
     _save(path, data)
+
+def cmd_latest(a):
+    data = _load(_path(a))
+    m = [(v.get("seq", 0), k) for k, v in data.items()
+         if v.get("machine") == a.machine and v.get("server_cpu") == a.cpu
+         and v.get("server_mem") == a.mem]
+    if not m:
+        sys.exit(1)
+    print(max(m)[1])
+
+def cmd_list(a):
+    data = _load(_path(a))
+    for k in sorted(data, key=lambda k: data[k].get("seq", 0)):
+        e = data[k]
+        print(f"[seq {e.get('seq')}] {k}  ({len(e.get('cells', {}))} cells)")
 
 def _bool(x):
     return str(x).lower() == "true"
@@ -72,6 +87,10 @@ def main():
     for f in ("image", "machine", "cpu", "mem"):
         s.add_argument("--" + f, default=None)
     s.set_defaults(func=cmd_set)
+    la = sub.add_parser("latest")
+    la.add_argument("machine"); la.add_argument("cpu"); la.add_argument("mem")
+    la.set_defaults(func=cmd_latest)
+    li = sub.add_parser("list"); li.set_defaults(func=cmd_list)
     a = p.parse_args(); a.func(a)
 
 if __name__ == "__main__":
