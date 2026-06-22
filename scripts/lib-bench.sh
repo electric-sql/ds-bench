@@ -304,6 +304,36 @@ print(m.classify(float(sys.argv[1]),float(sys.argv[2]),float(sys.argv[3]),float(
   echo "  calibrated ${cell_name}: pods=${pin_pods} reason=${reason} saturated=${saturated} → ${key}"
 }
 
+# _run_cell_measure — resolve the pin for this cell (own key, else REUSE=latest, else
+# fail fast), run REPEATS-fixed at the pinned pods, record provenance.
+_run_cell_measure() {
+  local cell_name="$1" bench_cmd="$2" out_prefix="$3" merge_cmd="$4" cpu_cores="$5" cell_dir="$6" repeat="$7"
+  local key used_key pin_pods matched="true"
+  key="$(server_calibration_key)"
+  if pin_pods="$(python3 "${REPO_ROOT}/scripts/pins.py" get "$key" "$cell_name" 2>/dev/null)"; then
+    used_key="$key"
+  elif [ "${REUSE_CALIBRATION:-}" = "latest" ]; then
+    used_key="$(python3 "${REPO_ROOT}/scripts/pins.py" latest "${SERVER_MACHINE:-kind}" "$SERVER_CPUS" "$SERVER_MEM" 2>/dev/null)" \
+      || { echo "ERROR: REUSE_CALIBRATION=latest but no calibration for machine=${SERVER_MACHINE:-kind} cpu=${SERVER_CPUS} mem=${SERVER_MEM}" >&2; exit 1; }
+    pin_pods="$(python3 "${REPO_ROOT}/scripts/pins.py" get "$used_key" "$cell_name" 2>/dev/null)" \
+      || { echo "ERROR: reused calibration ${used_key} has no cell ${cell_name}" >&2; exit 1; }
+    matched="false"
+    echo "    REUSE: pinning from ${used_key} (image mismatch vs ${key})"
+  else
+    echo "ERROR: no calibration for ${key} cell ${cell_name}; run MODE=calibrate or set REUSE_CALIBRATION=latest" >&2
+    exit 1
+  fi
+
+  echo "  [measure ${cell_name}] pinned parallelism=${pin_pods} (matched=${matched})"
+  local cpu_pct thr
+  read -r cpu_pct thr < <(_run_cell_one "$cell_name" "$bench_cmd" "$out_prefix" "$merge_cmd" "$pin_pods" "$repeat" "$cell_dir")
+  { echo "cell=${cell_name}"; echo "mode=measure"; echo "parallelism=${pin_pods}";
+    echo "server_cpu_cores=${cpu_cores}"; echo "server_cpu_pct=${cpu_pct}";
+    echo "calibration_key=${used_key}"; echo "running_key=${key}";
+    echo "calibration_matched=${matched}"; } > "${cell_dir}/verdict.txt"
+  echo "  measured ${cell_name}: pods=${pin_pods} cpu%=${cpu_pct} thr=${thr} matched=${matched}"
+}
+
 # run_cell CELL_NAME BENCH_CMD OUT_PREFIX MERGE_CMD SERVER_CPU_CORES
 #   Runs one matrix cell. In measure mode (default): headroom-guard loop (bumps PARALLELISM
 #   until the server saturates or MAX_PODS/MAX_BUMPS). In calibrate mode: bump to knee,
