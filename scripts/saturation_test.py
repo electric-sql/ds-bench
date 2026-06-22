@@ -1,4 +1,4 @@
-import json, os, tempfile, unittest
+import json, os, subprocess, sys, tempfile, unittest
 import importlib.util
 HERE = os.path.dirname(os.path.abspath(__file__))
 spec = importlib.util.spec_from_file_location("saturation", os.path.join(HERE, "saturation.py"))
@@ -32,6 +32,53 @@ class TestThroughput(unittest.TestCase):
         p.close()
         self.assertAlmostEqual(sat.extract_throughput(p.name), 999.0)
         os.unlink(p.name)
+    def test_pretty_printed_multiline_with_log_prefix(self):
+        # Regression: the REAL coordinator merged.json is a `mc cp` log prefix
+        # followed by a PRETTY-PRINTED (multi-line) JSON object. A per-line scan
+        # misses it (no single line is a complete object) → must still parse it.
+        real = (
+            "Added `local` successfully.\n"
+            "coordinator: 8 client result file(s) under run-x\n"
+            "`local/bench-results/run-x/ms-0.json` -> `/merge/ms-0.json`\n"
+            "┌───┐\n│ Total │\n└───┘\n"
+            "{\n"
+            '  "merged_count": 1240094,\n'
+            '  "p50_ms": 0.214,\n'
+            '  "p99_ms": 3.813,\n'
+            '  "aggregate_ops_per_sec": 82654.70762487104\n'
+            "}\n"
+        )
+        p = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w")
+        p.write(real); p.close()
+        self.assertAlmostEqual(sat.extract_throughput(p.name), 82654.70762487104)
+        os.unlink(p.name)
+
+class TestCLI(unittest.TestCase):
+    # The calibrate loop in lib-bench.sh shells out to this CLI and takes the
+    # first field as the reason. Lock that "<reason> <thr>" contract.
+    def _run(self, merged_text, prev_thr, cpu, cores):
+        p = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w")
+        p.write(merged_text); p.close()
+        try:
+            r = subprocess.run(
+                [sys.executable, os.path.join(HERE, "saturation.py"),
+                 "--merged", p.name, "--prev-thr", str(prev_thr),
+                 "--cpu", str(cpu), "--cores", str(cores)],
+                capture_output=True, text=True)
+            return r
+        finally:
+            os.unlink(p.name)
+
+    def test_cli_prints_reason_and_throughput(self):
+        r = self._run('{"aggregate_ops_per_sec": 1050000.0}\n', 1000000, 50, 4)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        reason, thr = r.stdout.split()
+        self.assertEqual(reason, "plateau")        # +5% gain <10%
+        self.assertAlmostEqual(float(thr), 1050000.0)
+
+    def test_cli_cpu_bound(self):
+        r = self._run('{"aggregate_ops_per_sec": 5000.0}\n', 0, 370, 4)
+        self.assertEqual(r.stdout.split()[0], "cpu")   # 370 >= 0.9*4*100
 
 if __name__ == "__main__":
     unittest.main()

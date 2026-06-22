@@ -271,12 +271,11 @@ _run_cell_calibrate() {
   while true; do
     echo "  [calibrate ${cell_name}] parallelism=${pods}"
     read -r cpu_pct thr < <(_run_cell_one "$cell_name" "$bench_cmd" "$out_prefix" "$merge_cmd" "$pods" "$repeat" "$cell_dir")
+    # Classify via saturation.py's CLI (prints "<reason> <thr>"); take the reason.
+    # Uses shell-expanded $REPO_ROOT (not os.environ — phase scripts don't export it).
     local cls
-    cls="$(python3 -c 'import sys,importlib.util,os
-s=importlib.util.spec_from_file_location("s",os.path.join(os.environ["REPO_ROOT"],"scripts","saturation.py"))
-m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
-print(m.classify(float(sys.argv[1]),float(sys.argv[2]),float(sys.argv[3]),float(sys.argv[4])))' \
-      "$prev_thr" "$thr" "$cpu_pct" "$cpu_cores")"
+    cls="$(python3 "${REPO_ROOT}/scripts/saturation.py" --merged "${cell_dir}/merged.json" \
+      --prev-thr "$prev_thr" --cpu "$cpu_pct" --cores "$cpu_cores" | awk '{print $1}')"
     echo "    cpu%=${cpu_pct} thr=${thr} class=${cls}"
     if [ "$cls" = "cpu" ]; then
       reason="cpu"; saturated="true"; pin_pods="$pods"; pin_thr="$thr"; break
