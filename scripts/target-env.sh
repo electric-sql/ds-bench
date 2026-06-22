@@ -29,6 +29,7 @@ case "$DS_TARGET" in
     PULL_POLICY="IfNotPresent"        # use the kind-loaded image; never reach for a registry
     NODESEL_SERVER="{}"               # single-node kind: schedule anywhere
     NODESEL_CLIENT="{}"
+    SERVER_MACHINE="${SERVER_MACHINE:-kind}"   # node label for the calibration key
     ;;
   remote)
     PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
@@ -43,6 +44,9 @@ case "$DS_TARGET" in
     PULL_POLICY="Always"
     NODESEL_SERVER='{ "role": "server" }'
     NODESEL_CLIENT='{ "role": "client" }'
+    # Server node machine type — also the calibration-key component. Keep in sync
+    # with cluster-up.sh's create default so pins reflect the real machine.
+    SERVER_MACHINE="${SERVER_MACHINE:-c4d-standard-16-lssd}"
     ;;
   *)
     echo "DS_TARGET must be 'local' or 'remote' (got: '$DS_TARGET')" >&2
@@ -56,7 +60,7 @@ SERVER_MEM="${SERVER_MEM:-16Gi}"
 # Vars referenced by envsubst in the manifests + by the runners.
 export DS_TARGET KCTX IMG_SERVER IMG_URSULA IMG_DSBENCH IMG_METRICS PULL_POLICY \
        NODESEL_SERVER NODESEL_CLIENT PROJECT ZONE CLUSTER KIND_CLUSTER REG \
-       SERVER_MEM
+       SERVER_MEM SERVER_MACHINE
 
 # Every manifest envsubst must whitelist these so the image/policy/selector
 # placeholders resolve. Runners reference $MANIFEST_VARS in their envsubst calls.
