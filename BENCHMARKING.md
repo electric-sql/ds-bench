@@ -163,6 +163,50 @@ Two limits bounded earlier runs; both are fixed in the server and worth re-confi
 The `slow` matrices keep conservative caps (N≤200, conns≤256) as safe defaults — raise
 them once you've re-confirmed the fixes hold, to chase true (non-capped) ceilings.
 
+## Calibrate-then-pin
+
+The phase runners measure at a **pinned** client pod-count per cell, recorded in
+`calibration/pins.json` and keyed by server-image-digest + machine + cpu/mem.
+
+1. After building a new server image, calibrate once:
+   `MODE=calibrate DS_TARGET=remote scripts/gke-scaleout.sh slow`
+   then `git add calibration/pins.json && git commit`.
+2. Measure (default) — pinned, reproducible:
+   `DS_TARGET=remote scripts/gke-scaleout.sh slow`
+   Fails fast if the running image has no calibration.
+3. Reuse a previous image's calibration on a new build:
+   `REUSE_CALIBRATION=latest DS_TARGET=remote scripts/gke-scaleout.sh slow`
+   Reports flag every cell as `⚠ reused` (image mismatch).
+
+Saturation during calibration = server CPU ≥ 90%×cores **or** <10% throughput gain
+on doubling pods; the leanest fleet at ~peak (the knee) is pinned. Reports show the
+cap reason (`cpu`/`plateau`/`max_pods`) and whether the calibration matched.
+
+### Manual validation (requires a local kind cluster)
+
+The following commands verify the full calibrate→measure→fail-fast cycle. Run them
+when a local kind cluster is available (after `scripts/cluster-up.sh && scripts/build-images.sh`):
+
+```bash
+export DS_TARGET=local
+
+# calibrate writes a pin:
+MODE=calibrate scripts/gke-scaleout.sh fast
+test -s calibration/pins.json && python3 scripts/pins.py list
+
+# measure consumes it (no bumping):
+scripts/gke-scaleout.sh fast
+
+# fail-fast proof: a bogus key has no pin →
+MODE=measure SERVER_MEM=999Gi scripts/gke-scaleout.sh fast
+echo "exit=$?  (expect non-zero: no calibration)"
+```
+
+Expected outcomes:
+- `MODE=calibrate` prints `calibrated … → <key>` and `pins.py list` shows the entry.
+- Default measure run prints `measured … matched=true`.
+- The bogus-mem run exits non-zero with the "no calibration … run MODE=calibrate" message.
+
 ## 7. Tear down
 
 ```bash

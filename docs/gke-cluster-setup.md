@@ -108,6 +108,11 @@ gcloud container clusters delete ds-bench --zone europe-west1-b
 # optional: gcloud artifacts repositories delete ds-bench --location=europe-west1
 ```
 
+## Env knobs
+
+- `MODE=calibrate|measure` (default `measure`) and `REUSE_CALIBRATION=latest`
+  control calibrate-then-pin (see BENCHMARKING.md → Calibrate-then-pin).
+
 ## Next
 After step 6, the agent verifies the cluster, then pushes images (step 7 + builds)
 and adapts the manifests per the Phase 2b plan
