@@ -234,20 +234,15 @@ compute_server_cpu_pct() {
   ' "$csv"
 }
 
-# headroom_verdict SAMPLES_CSV SERVER_CPU_CORES — "server_bound" if CPU ≥ 90%×cores.
-headroom_verdict() {
-  local csv="$1" cpu_cores="$2" pct threshold
-  pct="$(compute_server_cpu_pct "$csv")"
-  threshold=$(awk -v c="$cpu_cores" 'BEGIN { printf "%.0f", c * 100 * 0.9 }')
-  awk -v pct="$pct" -v thr="$threshold" 'BEGIN {
-    if (pct+0 >= thr+0) { print "server_bound" } else { print "server_headroom" }
-  }'
-}
-
 # run_cell CELL_NAME BENCH_CMD OUT_PREFIX MERGE_CMD SERVER_CPU_CORES
-#   Runs one matrix cell with the headroom-guard loop (bumps PARALLELISM until the
-#   server saturates or MAX_PODS/MAX_BUMPS). Collects merged.json/samples.csv/verdict.txt
-#   per REPEAT under ${RESULTS_ROOT}/<cell>/rep<N>/.
+#   Dispatches per MODE (default: measure):
+#     calibrate — bumps parallelism to the saturation knee and pins the result via
+#                 pins.py (REPEATS forced to 1; safe to re-run).
+#     measure   — resolves the pinned pod-count for this cell/key, then runs
+#                 REPEATS-fixed reps (fail-fast if no pin; set REUSE_CALIBRATION=latest
+#                 to fall back to the most-recent matching calibration).
+#   Collects merged.json/samples.csv/verdict.txt per rep under
+#   ${RESULTS_ROOT}/<cell>/rep<N>/.
 _run_cell_one() {
   local cell_name="$1" bench_cmd="$2" out_prefix="$3" merge_cmd="$4" pods="$5" repeat="$6" cell_dir="$7"
   RUN_ID="${SWEEP_RUN_ID}-${cell_name}-r${repeat}-p${pods}"
@@ -334,11 +329,6 @@ _run_cell_measure() {
   echo "  measured ${cell_name}: pods=${pin_pods} cpu%=${cpu_pct} thr=${thr} matched=${matched}"
 }
 
-# run_cell CELL_NAME BENCH_CMD OUT_PREFIX MERGE_CMD SERVER_CPU_CORES
-#   Runs one matrix cell. In measure mode (default): headroom-guard loop (bumps PARALLELISM
-#   until the server saturates or MAX_PODS/MAX_BUMPS). In calibrate mode: bump to knee,
-#   pin via pins.py. Collects merged.json/samples.csv/verdict.txt per REPEAT under
-#   ${RESULTS_ROOT}/<cell>/rep<N>/.
 run_cell() {
   local cell_name="$1" bench_cmd="$2" out_prefix="$3" merge_cmd="$4" cpu_cores="$5"
   local MODE="${MODE:-measure}"

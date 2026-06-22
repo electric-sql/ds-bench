@@ -67,23 +67,6 @@ def load_samples(rep_dir: pathlib.Path):
         return None
 
 
-def load_verdict(rep_dir: pathlib.Path):
-    """Return dict of key=value pairs from verdict.txt, or {}."""
-    p = rep_dir / "verdict.txt"
-    if not p.exists():
-        return {}
-    try:
-        d = {}
-        for line in p.read_text().splitlines():
-            line = line.strip()
-            if "=" in line:
-                k, _, v = line.partition("=")
-                d[k.strip()] = v.strip()
-        return d
-    except Exception:
-        return {}
-
-
 def parse_verdict(path):
     """Return all key=value lines from a verdict.txt as a dict (str->str)."""
     out = {}
@@ -94,9 +77,14 @@ def parse_verdict(path):
                 if "=" in line:
                     k, _, val = line.partition("=")
                     out[k.strip()] = val.strip()
-    except FileNotFoundError:
+    except (FileNotFoundError, OSError):
         pass
     return out
+
+
+def load_verdict(rep_dir: pathlib.Path):
+    """Return dict of key=value pairs from verdict.txt, or {}."""
+    return parse_verdict(rep_dir / "verdict.txt")
 
 
 # ── metric helpers ───────────────────────────────────────────────────────────

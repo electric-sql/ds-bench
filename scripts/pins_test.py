@@ -9,7 +9,8 @@ def run(args, path):
 
 class TestKeyGetSet(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False).name
+        fd, self.tmp = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
         with open(self.tmp, "w") as f:
             f.write("{}\n")
     def tearDown(self):
@@ -47,7 +48,8 @@ class TestKeyGetSet(unittest.TestCase):
 
 class TestLatest(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False).name
+        fd, self.tmp = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
         with open(self.tmp, "w") as f:
             f.write("{}\n")
     def tearDown(self):
