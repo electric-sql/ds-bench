@@ -191,6 +191,22 @@ run_fleet_and_coordinator() {
     || true
 }
 
+# fetch_coordinator_merged DEST — pull coordinator stdout into DEST. Retries while
+# the pod is still ContainerCreating (kubectl logs returns BadRequest then). Never
+# fatal: on persistent failure writes an error marker so `set -e` can't abort.
+fetch_coordinator_merged() {
+  local dest="$1" i out
+  for i in $(seq 1 30); do
+    if out="$(K logs job/bench-coordinator 2>/dev/null)" && [ -n "$out" ]; then
+      printf '%s\n' "$out" > "$dest"
+      return 0
+    fi
+    sleep 2
+  done
+  echo '{"error":"coordinator logs unavailable after retries"}' > "$dest"
+  echo "    WARN: coordinator logs unavailable after retries → wrote error marker"
+}
+
 # compute_server_cpu_pct SAMPLES_CSV — cpu_pct = (Δticks/CLK_TCK)/Δs ×100. CLK_TCK=100.
 compute_server_cpu_pct() {
   local csv="$1"
@@ -251,7 +267,7 @@ run_cell() {
       reset_sidecar_samples
       run_fleet_and_coordinator
 
-      K logs job/bench-coordinator > "${cell_dir}/merged.json"
+      fetch_coordinator_merged "${cell_dir}/merged.json"
       echo "    saved merged.json → ${cell_dir}/merged.json"
       collect_sidecar "$cell_dir"
 
