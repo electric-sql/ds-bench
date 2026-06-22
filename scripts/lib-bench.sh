@@ -147,6 +147,16 @@ collect_sidecar() {
   fi
 }
 
+# server_calibration_key — calibration key for the CURRENTLY RUNNING server pod:
+# <image-digest12>-<machine>-cpu<cpus>-mem<mem>. Machine is "kind" when unset (local).
+server_calibration_key() {
+  local img machine
+  img="$(K get pod -l "$(server_label)" -o jsonpath='{.items[0].status.containerStatuses[0].imageID}' 2>/dev/null)"
+  machine="${SERVER_MACHINE:-kind}"
+  python3 "${REPO_ROOT}/scripts/pins.py" key --image "$img" \
+    --machine "$machine" --cpu "$SERVER_CPUS" --mem "$SERVER_MEM"
+}
+
 # clean_jobs — delete bench-fleet + bench-coordinator synchronously.
 clean_jobs() {
   K delete job bench-fleet bench-coordinator --ignore-not-found --wait=true >/dev/null 2>&1 || true
