@@ -248,8 +248,70 @@ headroom_verdict() {
 #   Runs one matrix cell with the headroom-guard loop (bumps PARALLELISM until the
 #   server saturates or MAX_PODS/MAX_BUMPS). Collects merged.json/samples.csv/verdict.txt
 #   per REPEAT under ${RESULTS_ROOT}/<cell>/rep<N>/.
+_run_cell_one() {
+  local cell_name="$1" bench_cmd="$2" out_prefix="$3" merge_cmd="$4" pods="$5" repeat="$6" cell_dir="$7"
+  RUN_ID="${SWEEP_RUN_ID}-${cell_name}-r${repeat}-p${pods}"
+  export PARALLELISM="$pods"
+  BENCH_CMD="$bench_cmd"; OUT_PREFIX="$out_prefix"; MERGE_CMD="$merge_cmd"
+  reset_sidecar_samples
+  run_fleet_and_coordinator
+  fetch_coordinator_merged "${cell_dir}/merged.json"
+  collect_sidecar "$cell_dir"
+  local cpu_pct="0"
+  if [ -f "${cell_dir}/samples.csv" ]; then
+    cpu_pct="$(compute_server_cpu_pct "${cell_dir}/samples.csv")"
+  fi
+  local thr
+  thr="$(python3 "${REPO_ROOT}/scripts/saturation.py" --merged "${cell_dir}/merged.json" \
+          --prev-thr 0 --cpu "$cpu_pct" --cores 1 2>/dev/null | awk '{print $2}')"
+  echo "${cpu_pct} ${thr:-0}"
+}
+
+# _run_cell_calibrate — bump until saturation_check says cpu/plateau (or caps), pin the knee.
+_run_cell_calibrate() {
+  local cell_name="$1" bench_cmd="$2" out_prefix="$3" merge_cmd="$4" cpu_cores="$5" cell_dir="$6" repeat="$7"
+  local pods="$INIT_PARALLELISM" prev_pods=0 prev_thr=0 bumps=0
+  local reason="max_pods" saturated="false" pin_pods="$pods" pin_thr=0
+  while true; do
+    echo "  [calibrate ${cell_name}] parallelism=${pods}"
+    read -r cpu_pct thr < <(_run_cell_one "$cell_name" "$bench_cmd" "$out_prefix" "$merge_cmd" "$pods" "$repeat" "$cell_dir")
+    local cls
+    cls="$(python3 -c 'import sys,importlib.util,os
+s=importlib.util.spec_from_file_location("s",os.path.join(os.environ["REPO_ROOT"],"scripts","saturation.py"))
+m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
+print(m.classify(float(sys.argv[1]),float(sys.argv[2]),float(sys.argv[3]),float(sys.argv[4])))' \
+      "$prev_thr" "$thr" "$cpu_pct" "$cpu_cores")"
+    echo "    cpu%=${cpu_pct} thr=${thr} class=${cls}"
+    if [ "$cls" = "cpu" ]; then
+      reason="cpu"; saturated="true"; pin_pods="$pods"; pin_thr="$thr"; break
+    elif [ "$cls" = "plateau" ]; then
+      reason="plateau"; saturated="true"; pin_pods="$prev_pods"; pin_thr="$prev_thr"; break
+    fi
+    if [ "$bumps" -ge "$MAX_BUMPS" ] || [ $((pods * 2)) -gt "$MAX_PODS" ]; then
+      reason="max_pods"; saturated="false"; pin_pods="$pods"; pin_thr="$thr"; break
+    fi
+    prev_pods="$pods"; prev_thr="$thr"; bumps=$((bumps + 1)); pods=$((pods * 2))
+  done
+  local key; key="$(server_calibration_key)"
+  python3 "${REPO_ROOT}/scripts/pins.py" set "$key" "$cell_name" "$pin_pods" \
+    --reason "$reason" --saturated "$saturated" --ops "${pin_thr%.*}" \
+    --image "$(K get pod -l "$(server_label)" -o jsonpath='{.items[0].status.containerStatuses[0].imageID}' 2>/dev/null)" \
+    --machine "${SERVER_MACHINE:-kind}" --cpu "$SERVER_CPUS" --mem "$SERVER_MEM"
+  { echo "cell=${cell_name}"; echo "mode=calibrate"; echo "parallelism=${pin_pods}";
+    echo "server_cpu_cores=${cpu_cores}"; echo "reason=${reason}"; echo "saturated=${saturated}";
+    echo "calibration_key=${key}"; } > "${cell_dir}/verdict.txt"
+  echo "  calibrated ${cell_name}: pods=${pin_pods} reason=${reason} saturated=${saturated} → ${key}"
+}
+
+# run_cell CELL_NAME BENCH_CMD OUT_PREFIX MERGE_CMD SERVER_CPU_CORES
+#   Runs one matrix cell. In measure mode (default): headroom-guard loop (bumps PARALLELISM
+#   until the server saturates or MAX_PODS/MAX_BUMPS). In calibrate mode: bump to knee,
+#   pin via pins.py. Collects merged.json/samples.csv/verdict.txt per REPEAT under
+#   ${RESULTS_ROOT}/<cell>/rep<N>/.
 run_cell() {
   local cell_name="$1" bench_cmd="$2" out_prefix="$3" merge_cmd="$4" cpu_cores="$5"
+  local MODE="${MODE:-measure}"
+  if [ "$MODE" = "calibrate" ]; then REPEATS=1; fi
 
   echo ""
   echo "=== cell: ${cell_name}  cpu=${cpu_cores}  repeats=${REPEATS} ==="
@@ -259,65 +321,10 @@ run_cell() {
     local cell_dir="${RESULTS_ROOT}/${cell_name}/rep${repeat}"
     mkdir -p "$cell_dir"
 
-    local pods="$INIT_PARALLELISM"
-    local bumps=0
-    local verdict="client_capped"
-
-    while true; do
-      echo "  [rep ${repeat}/${REPEATS}] parallelism=${pods}"
-
-      # Per-attempt id = MinIO results prefix. Streams use $SWEEP_RUN_ID (stable),
-      # NOT this, so a cell never inherits the previous cell's id.
-      RUN_ID="${SWEEP_RUN_ID}-${cell_name}-r${repeat}-p${pods}"
-      export PARALLELISM="$pods"
-      BENCH_CMD="$bench_cmd"
-      OUT_PREFIX="$out_prefix"
-      MERGE_CMD="$merge_cmd"
-
-      reset_sidecar_samples
-      run_fleet_and_coordinator
-
-      fetch_coordinator_merged "${cell_dir}/merged.json"
-      echo "    saved merged.json → ${cell_dir}/merged.json"
-      collect_sidecar "$cell_dir"
-
-      local v="server_bound"
-      if [ -f "${cell_dir}/samples.csv" ]; then
-        local cpu_pct
-        cpu_pct="$(compute_server_cpu_pct "${cell_dir}/samples.csv")"
-        v="$(headroom_verdict "${cell_dir}/samples.csv" "$cpu_cores")"
-        echo "    server CPU%=${cpu_pct}  iter_verdict=${v}  (threshold=$(awk -v c="$cpu_cores" 'BEGIN{printf "%.0f", c*100*0.9}')%)"
-      else
-        echo "    WARN: no samples.csv — assuming server_bound (cannot verify headroom)"
-      fi
-
-      if [ "$v" = "server_bound" ]; then
-        verdict="server_bound"; break
-      fi
-      if [ "$bumps" -ge "$MAX_BUMPS" ]; then
-        echo "    MAX_BUMPS (${MAX_BUMPS}) reached without saturating server → client_capped"
-        verdict="client_capped"; break
-      fi
-      local new_pods=$((pods * 2))
-      if [ "$new_pods" -gt "$MAX_PODS" ]; then
-        echo "    MAX_PODS (${MAX_PODS}) reached without saturating server → client_capped"
-        verdict="client_capped"; break
-      fi
-      echo "    server not yet saturated → doubling pods: ${pods} → ${new_pods}"
-      bumps=$((bumps + 1)); pods="$new_pods"
-    done
-
-    # Persist the FINAL outcome (server_bound | client_capped), not the per-iter check.
-    {
-      echo "cell=${cell_name}"
-      echo "repeat=${repeat}"
-      echo "parallelism=${pods}"
-      echo "server_cpu_cores=${cpu_cores}"
-      if [ -f "${cell_dir}/samples.csv" ]; then
-        echo "server_cpu_pct=$(compute_server_cpu_pct "${cell_dir}/samples.csv")"
-      fi
-      echo "verdict=${verdict}"
-    } > "${cell_dir}/verdict.txt"
-    echo "  rep ${repeat}/${REPEATS} final verdict: ${verdict}  parallelism=${pods}"
+    if [ "$MODE" = "calibrate" ]; then
+      _run_cell_calibrate "$cell_name" "$bench_cmd" "$out_prefix" "$merge_cmd" "$cpu_cores" "$cell_dir" "$repeat"
+    else
+      _run_cell_measure "$cell_name" "$bench_cmd" "$out_prefix" "$merge_cmd" "$cpu_cores" "$cell_dir" "$repeat"
+    fi
   done
 }
