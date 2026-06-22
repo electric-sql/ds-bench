@@ -55,6 +55,24 @@ deploy_server() {
   local extra_args; extra_args="$(echo "${SERVER_EXTRA_ARGS:-} ${*:-}" | xargs)"
   export SERVER_CPU="$cpu"
 
+  # ── ursula variant ─────────────────────────────────────────────────────────
+  # A different server (separate manifest, no --wal/--splice/--tier injection).
+  # Matched node + cgroup budget (SERVER_CPU/SERVER_MEM) for a fair comparison.
+  # Caller sets SERVER_KIND=ursula and TARGET/API_STYLE/PROBE_HOSTPORT=ursula:4437.
+  if [ "${SERVER_KIND:-durable}" = "ursula" ]; then
+    echo "    deploying ursula server: cpu=${cpu} mem=${SERVER_MEM} (${DS_TARGET})..."
+    envsubst "${MANIFEST_VARS} \${SERVER_CPU} \${PROJECT}" < gke/ursula.yaml | K apply -f -
+    K rollout status deploy/ursula --timeout=600s
+    echo "    ursula available."
+    echo "    probing ursula (need 3 consecutive HTTP answers)..."
+    K run "ursula-probe-$$" --rm --attach --restart=Never --image=curlimages/curl:latest \
+      --overrides="{\"spec\":{\"nodeSelector\":${NODESEL_CLIENT}}}" --command -- \
+      /bin/sh -c "ok=0; for i in \$(seq 1 90); do code=\$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://${PROBE_HOSTPORT}/ 2>/dev/null); case \"\$code\" in 2??|3??|4??|5??) ok=\$((ok+1));; *) ok=0;; esac; if [ \"\$ok\" -ge 3 ]; then echo \"ursula ready (HTTP \$code, 3x)\"; exit 0; fi; sleep 1; done; echo 'ursula never ready'; exit 1" </dev/null \
+      && echo "    probe ok" \
+      || echo "    WARN: probe pod non-zero (kubectl --rm attach is flaky); continuing"
+    return 0
+  fi
+
   echo "    deploying durable-streams server: cpu=${cpu} extra='${extra_args}' (${DS_TARGET})..."
 
   if [ -z "$extra_args" ]; then
@@ -101,10 +119,14 @@ deploy_server() {
     || echo "    WARN: probe pod non-zero (kubectl --rm attach is flaky); continuing"
 }
 
+# server_label — pod selector for the server under test (durable-streams | ursula),
+# so the metrics sidecar helpers find the right pod regardless of SERVER_KIND.
+server_label() { [ "${SERVER_KIND:-durable}" = "ursula" ] && echo "app=ursula" || echo "app=durable-streams"; }
+
 # reset_sidecar_samples — truncate the server sidecar's samples.csv before a cell.
 reset_sidecar_samples() {
   local pod
-  pod="$( { K get pod -l app=durable-streams -o name 2>/dev/null || true; } | head -1 | sed 's|pod/||')"
+  pod="$( { K get pod -l "$(server_label)" -o name 2>/dev/null || true; } | head -1 | sed 's|pod/||')"
   if [ -n "$pod" ]; then
     echo "    resetting samples.csv on pod ${pod}..."
     K exec "$pod" -c metrics -- sh -c 'echo "ts_ms,rss_bytes,cpu_ticks,write_bytes" > /metrics/samples.csv' || true
@@ -115,13 +137,13 @@ reset_sidecar_samples() {
 collect_sidecar() {
   local dest="$1"
   local pod
-  pod="$( { K get pod -l app=durable-streams -o name 2>/dev/null || true; } | head -1 | sed 's|pod/||')"
+  pod="$( { K get pod -l "$(server_label)" -o name 2>/dev/null || true; } | head -1 | sed 's|pod/||')"
   if [ -n "$pod" ]; then
     K cp "ds-bench/${pod}:/metrics/samples.csv" "${dest}/samples.csv" -c metrics \
       && echo "    saved samples.csv → ${dest}/samples.csv" \
       || echo "    WARN: could not copy samples.csv"
   else
-    echo "    WARN: no durable-streams pod found for sidecar collection"
+    echo "    WARN: no server pod found for sidecar collection"
   fi
 }
 

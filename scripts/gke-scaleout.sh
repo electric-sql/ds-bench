@@ -29,9 +29,12 @@ cd "$REPO_ROOT"
 SWEEP_RUN_ID="scaleout-${PROFILE}-$(date +%s)-$$"
 RESULTS_ROOT="results/scaleout/${SWEEP_RUN_ID}"
 mkdir -p "$RESULTS_ROOT"
-TARGET="http://durable-streams:4438"
-API_STYLE="durable"
-PROBE_HOSTPORT="durable-streams:4438"
+# Target/api/probe are env-overridable so this matrix can run against the
+# durable-streams server (default) OR ursula (TARGET=http://ursula:4437
+# API_STYLE=ursula PROBE_HOSTPORT=ursula:4437 SERVER_KIND=ursula).
+TARGET="${TARGET:-http://durable-streams:4438}"
+API_STYLE="${API_STYLE:-durable}"
+PROBE_HOSTPORT="${PROBE_HOSTPORT:-durable-streams:4438}"
 
 if [ "$PROFILE" = "fast" ]; then
   SERVER_CPUS="2"; DURATION=15; REPEATS="${REPEATS:-1}"
@@ -61,7 +64,9 @@ for SERVER_CPU in $SERVER_CPUS; do
   for N in $MS_COUNTS; do
     cell="ms-cpu${SERVER_CPU}-n${N}"
     bench_cmd="multi-stream --target ${TARGET} --api-style ${API_STYLE} --streams ${N} --duration-secs ${DURATION} --payload-bytes 256"
-    run_cell "$cell" "$bench_cmd" "ms" "ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix ms-" "$SERVER_CPU"
+    # multi_stream emits `multi-stream-<pid>.hdr`; the HDR latency filter must match
+    # that stem (the old `ms-` matched nothing → p99=0). Throughput is independent.
+    run_cell "$cell" "$bench_cmd" "ms" "ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix multi-stream-" "$SERVER_CPU"
   done
 
   # ── multi-fanout — sweep (M streams × S subscribers) ────────────────────────

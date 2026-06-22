@@ -28,9 +28,12 @@ cd "$REPO_ROOT"
 SWEEP_RUN_ID="rawpower-${PROFILE}-$(date +%s)-$$"
 RESULTS_ROOT="results/rawpower/${SWEEP_RUN_ID}"
 mkdir -p "$RESULTS_ROOT"
-TARGET="http://durable-streams:4438"
-API_STYLE="durable"
-PROBE_HOSTPORT="durable-streams:4438"
+# Target/api/probe are env-overridable so this matrix can run against the
+# durable-streams server (default) OR ursula (TARGET=http://ursula:4437
+# API_STYLE=ursula PROBE_HOSTPORT=ursula:4437 SERVER_KIND=ursula).
+TARGET="${TARGET:-http://durable-streams:4438}"
+API_STYLE="${API_STYLE:-durable}"
+PROBE_HOSTPORT="${PROBE_HOSTPORT:-durable-streams:4438}"
 
 # ── profile knobs ────────────────────────────────────────────────────────────
 if [ "$PROFILE" = "fast" ]; then

@@ -23,6 +23,7 @@ case "$DS_TARGET" in
     # IMG_SERVER is overridable so several server implementations (reference,
     # io-uring, …) can be compared by pointing at distinct image tags.
     IMG_SERVER="${IMG_SERVER:-durable-streams:dev}"
+    IMG_URSULA="${IMG_URSULA:-ursula:dev}"   # ursula comparison server (kind-loaded)
     IMG_DSBENCH="ds-bench:dev"
     IMG_METRICS="ds-bench:dev"        # ds-bench:dev carries bash+curl+procps for the sidecar
     PULL_POLICY="IfNotPresent"        # use the kind-loaded image; never reach for a registry
@@ -36,6 +37,7 @@ case "$DS_TARGET" in
     KCTX="gke_${PROJECT}_${ZONE}_${CLUSTER}"
     REG="europe-west1-docker.pkg.dev/${PROJECT}/ds-bench"
     IMG_SERVER="${IMG_SERVER:-${REG}/durable-streams:dev}"
+    IMG_URSULA="${IMG_URSULA:-${REG}/ursula:dev}"
     IMG_DSBENCH="${REG}/ds-bench:dev"
     IMG_METRICS="${REG}/micro:dev"
     PULL_POLICY="Always"
@@ -52,11 +54,11 @@ esac
 SERVER_MEM="${SERVER_MEM:-16Gi}"
 
 # Vars referenced by envsubst in the manifests + by the runners.
-export DS_TARGET KCTX IMG_SERVER IMG_DSBENCH IMG_METRICS PULL_POLICY \
+export DS_TARGET KCTX IMG_SERVER IMG_URSULA IMG_DSBENCH IMG_METRICS PULL_POLICY \
        NODESEL_SERVER NODESEL_CLIENT PROJECT ZONE CLUSTER KIND_CLUSTER REG \
        SERVER_MEM
 
 # Every manifest envsubst must whitelist these so the image/policy/selector
 # placeholders resolve. Runners reference $MANIFEST_VARS in their envsubst calls.
-MANIFEST_VARS='${IMG_SERVER} ${IMG_DSBENCH} ${IMG_METRICS} ${PULL_POLICY} ${NODESEL_SERVER} ${NODESEL_CLIENT} ${SERVER_MEM}'
+MANIFEST_VARS='${IMG_SERVER} ${IMG_URSULA} ${IMG_DSBENCH} ${IMG_METRICS} ${PULL_POLICY} ${NODESEL_SERVER} ${NODESEL_CLIENT} ${SERVER_MEM}'
 export MANIFEST_VARS

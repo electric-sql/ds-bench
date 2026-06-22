@@ -52,11 +52,13 @@ spec:
   template:
     metadata: { labels: { app: ursula } }
     spec:
-      nodeSelector: { role: server }
+      nodeSelector: ${NODESEL_SERVER}
+      # Required so the metrics sidecar can read /proc/<pid>/stat of ursula.
+      shareProcessNamespace: true
       containers:
         - name: ursula
-          image: europe-west1-docker.pkg.dev/${PROJECT}/ds-bench/ursula:dev
-          imagePullPolicy: Always
+          image: ${IMG_URSULA}
+          imagePullPolicy: ${PULL_POLICY}
           command: ["/usr/local/bin/ursula"]
           args: ["--config", "/etc/ursula/ursula.toml", "--node-id", "1", "--preset", "standard"]
           ports:
@@ -75,13 +77,39 @@ spec:
             - { name: config, mountPath: /etc/ursula }
             - { name: data, mountPath: /var/lib/ursula }
           resources:
-            requests: { memory: "2Gi", cpu: "2" }
-            limits: { memory: "6Gi" }
+            # Matched budget to the durable-streams server for a fair comparison:
+            # cgroup cpu.max = ${SERVER_CPU}, mem limit = ${SERVER_MEM}. Small cpu
+            # request floor so it still schedules on the dedicated server node.
+            requests: { memory: "2Gi", cpu: "500m" }
+            limits: { memory: "${SERVER_MEM}", cpu: "${SERVER_CPU}" }
+        # ── metrics sidecar (mirrors durable-streams.yaml) ──────────────────────
+        - name: metrics
+          image: ${IMG_METRICS}
+          imagePullPolicy: ${PULL_POLICY}
+          command: [nice, "-n", "19", bash, /deploy/metrics/poller.sh]
+          env:
+            - { name: SERVER_PROC, value: ursula }
+            - { name: METRICS_INTERVAL_S, value: "1" }
+            - { name: METRICS_OUT, value: /metrics/samples.csv }
+            - { name: DATA_DIR, value: /var/lib/ursula }
+          volumeMounts:
+            - { name: metrics, mountPath: /metrics }
+            - { name: metrics-poller, mountPath: /deploy/metrics }
+            - { name: data, mountPath: /var/lib/ursula, readOnly: true }
+          resources:
+            requests: { cpu: "10m", memory: "32Mi" }
+            limits: { cpu: "50m", memory: "64Mi" }
       volumes:
         - name: config
           configMap: { name: ursula-config }
         - name: data
           emptyDir: { medium: "" }
+        - name: metrics
+          emptyDir: {}
+        - name: metrics-poller
+          configMap:
+            name: metrics-poller
+            defaultMode: 0755
 ---
 apiVersion: v1
 kind: Service
