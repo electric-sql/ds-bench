@@ -26,6 +26,13 @@ MODES="${MODES:-strict wal fast}"
 WAL_SHARDS="${WAL_SHARDS:-4}"
 PORT="${PORT:-4471}"
 export DURATION_MS="${DURATION_MS:-6000}"
+export CARD="${CARD:-1000,10000,100000}" CONC="${CONC:-256}"
+
+# High cardinality = many open files (per stream: data file + sidecar). Raise the fd
+# limit as high as the OS allows so the server can hold 10k–100k streams; if the OS
+# caps below ~200k the 100k rung will surface as a graceful "CREATE FAILED" (fd-bound).
+ulimit -n 1048576 2>/dev/null || ulimit -n 200000 2>/dev/null || ulimit -n "$(ulimit -Hn 2>/dev/null || echo 10240)" 2>/dev/null || true
+echo "fd limit (ulimit -n) = $(ulimit -n)"
 
 [ -x "$BIN" ] || { echo "server binary not found/executable: $BIN" >&2; echo "build it: ( cd ../durable-streams/packages/server-rust && cargo build --release )" >&2; exit 1; }
 
