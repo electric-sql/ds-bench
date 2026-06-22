@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Pure saturation classifier + throughput reader for the calibration bump loop."""
-import argparse, json, re, sys
+import argparse, json
 
 def classify(prev_thr, thr, cpu_pct, cores, cpu_frac=0.90, plateau_frac=0.10):
     if cpu_pct >= cpu_frac * cores * 100.0:
@@ -10,23 +10,24 @@ def classify(prev_thr, thr, cpu_pct, cores, cpu_frac=0.90, plateau_frac=0.10):
     return "headroom"
 
 def extract_throughput(path):
-    """Last JSON object in merged.json → aggregate_ops_per_sec or _events_per_sec, else 0.0."""
+    """Last JSON object line in merged.json → aggregate_ops_per_sec or _events_per_sec, else 0.0."""
     try:
         with open(path) as f:
             text = f.read()
     except FileNotFoundError:
         return 0.0
-    obj = None
-    for m in re.finditer(r'\{.*\}', text):
+    for line in reversed(text.splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
         try:
-            obj = json.loads(m.group(0))
+            obj = json.loads(line)
         except json.JSONDecodeError:
             continue
-    if not obj:
+        for k in ("aggregate_ops_per_sec", "aggregate_events_per_sec"):
+            if k in obj:
+                return float(obj[k])
         return 0.0
-    for k in ("aggregate_ops_per_sec", "aggregate_events_per_sec"):
-        if k in obj:
-            return float(obj[k])
     return 0.0
 
 def main():

@@ -25,6 +25,13 @@ class TestThroughput(unittest.TestCase):
         p.write('{"aggregate_events_per_sec": 120000.0}\n'); p.close()
         self.assertAlmostEqual(sat.extract_throughput(p.name), 120000.0)
         os.unlink(p.name)
+    def test_last_object_wins_multiple_objects(self):
+        # Regression: ensure we return the LAST JSON object's value, not the first or a merged swallow
+        p = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w")
+        p.write('coordinator log\n{"aggregate_ops_per_sec": 100.0}\n{"aggregate_ops_per_sec": 999.0}\n')
+        p.close()
+        self.assertAlmostEqual(sat.extract_throughput(p.name), 999.0)
+        os.unlink(p.name)
 
 if __name__ == "__main__":
     unittest.main()
