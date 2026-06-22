@@ -2,9 +2,9 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # gke-rawpower.sh — Phase 1: DS raw power (single-stream micro).
 #   reads × size × conn, appends (bytes only) × conn × payload, fan-out × subs,
-#   splice (1 MB binary), cold-tier read — at a FIXED 8-core/16 GB server,
-#   scaled until server-bound (the headroom guard). The engine lives in
-#   scripts/lib-bench.sh; this file is the Phase-1 MATRIX only.
+#   splice (1 MB binary), cold-tier read — at a single pinned server size
+#   (default 4-core/16 GB), scaled until server-bound (the headroom guard). The
+#   engine lives in scripts/lib-bench.sh; this file is the Phase-1 MATRIX only.
 #
 # Usage:  [DS_TARGET=local|remote] scripts/gke-rawpower.sh [fast|slow]
 #   fast — one CPU/dim point, 1 repeat, ≤1 pod-bump (smoke).
@@ -36,9 +36,9 @@ API_STYLE="${API_STYLE:-durable}"
 PROBE_HOSTPORT="${PROBE_HOSTPORT:-durable-streams:4438}"
 
 # ── profile knobs ────────────────────────────────────────────────────────────
-# Server is FIXED at 8 cores / 16 GB RAM — never swept. The CPU-budget sweep was
-# removed: this suite reports one canonical server size, not a scaling curve.
-SERVER_CPUS="8"; export SERVER_MEM="16Gi"
+# Server is pinned to ONE size — no CPU sweep. Default 4 cores / 16 GB; override
+# SERVER_CPUS / SERVER_MEM for a larger machine (pass a single value, not a list).
+SERVER_CPUS="${SERVER_CPUS:-4}"; export SERVER_MEM="${SERVER_MEM:-16Gi}"
 if [ "$PROFILE" = "fast" ]; then
   DURATION=15; REPEATS=1
   INIT_PARALLELISM="${PARALLELISM:-4}"; MAX_PODS=16; MAX_BUMPS=1

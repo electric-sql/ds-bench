@@ -36,8 +36,9 @@ TARGET="${TARGET:-http://durable-streams:4438}"
 API_STYLE="${API_STYLE:-durable}"
 PROBE_HOSTPORT="${PROBE_HOSTPORT:-durable-streams:4438}"
 
-# Server is FIXED at 8 cores / 16 GB RAM — never swept (no CPU-budget option).
-SERVER_CPUS="8"; export SERVER_MEM="16Gi"
+# Server pinned to ONE size — no sweep. Default 4 cores / 16 GB; override
+# SERVER_CPUS / SERVER_MEM for a larger machine (single value, not a list).
+SERVER_CPUS="${SERVER_CPUS:-4}"; export SERVER_MEM="${SERVER_MEM:-16Gi}"
 if [ "$PROFILE" = "fast" ]; then
   DURATION=15; REPEATS="${REPEATS:-1}"
   INIT_PARALLELISM="${PARALLELISM:-4}"; MAX_PODS=16; MAX_BUMPS="${MAX_BUMPS:-1}"

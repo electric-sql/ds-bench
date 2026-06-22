@@ -16,7 +16,9 @@ as `! gcloud auth login` in the agent prompt if you want its output captured.
   - `role=server` — `c4d-standard-16-lssd` + bundled Titanium NVMe SSD. The
     server-under-test AND in-cluster MinIO schedule here, so their disk I/O (fsync,
     offload) is on fast NVMe. 16 vCPU also leaves headroom for MinIO + the metrics
-    sidecar during the `SERVER_CPU=8` cell (the old 8-vCPU node had none).
+    sidecar alongside the server's cgroup budget (pinned, default 4 cores;
+    override SERVER_CPUS for a larger single size — the old 8-vCPU node had none
+    to spare).
   - `role=client` — `n2d-standard-16` ×2 (scalable). The `ds-bench` load-generator
     fleet runs here (CPU/network-bound).
 - **Object store = in-cluster MinIO on the NVMe node** (NOT GCS). Same MinIO/config

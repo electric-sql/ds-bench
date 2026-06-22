@@ -24,7 +24,7 @@ cd "$REPO_ROOT"
 . scripts/lib-bench.sh    # sources target-env.sh; defines K() + the engine
 
 PARALLELISM="${PARALLELISM:-4}"
-SERVER_CPUS="8"; export SERVER_MEM="16Gi"   # server FIXED at 8 cores / 16 GB — never swept
+SERVER_CPUS="${SERVER_CPUS:-4}"; export SERVER_MEM="${SERVER_MEM:-16Gi}"   # pinned single size: default 4c/16GB, override for a larger machine
 MAX_BUMPS="${MAX_BUMPS:-0}"            # accepted for env parity; no bump loop here
 REPEATS="${REPEATS:-1}"
 
