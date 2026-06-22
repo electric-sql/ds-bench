@@ -128,7 +128,13 @@ def fmt_cell(a):
     p99_s = f"{p99:.1f}ms" if p99 is not None else "n/a"
     cpu_s = f"{cpu:.1f}%" if cpu is not None else "n/a"
     par_s = par if par is not None else "n/a"
-    return f"{rate:,.0f} {unit} · p99 {p99_s} · cpu {cpu_s} (par={par_s})"
+    s = f"{rate:,.0f} {unit} · p99 {p99_s} · cpu {cpu_s} (par={par_s})"
+    cap = a.get("reason") or a.get("verdict")
+    if cap:
+        s += f" · {cap}"
+    if a.get("calibration_matched") == "false":
+        s += " ⚠reused"
+    return s
 
 
 def fmt_speedup(num_rate, base_rate):

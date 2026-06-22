@@ -14,7 +14,7 @@ MiB = 1024 * 1024
 
 __all__ = [
     "CLK_TCK", "MiB",
-    "load_merged", "load_samples", "load_verdict",
+    "load_merged", "load_samples", "load_verdict", "parse_verdict",
     "cpu_pct_from_samples", "disk_write_mbps_from_samples", "rss_max_mib", "load_rep",
     "_median", "_cv_pct", "aggregate_cell",
     "_dash", "fmt_ops", "fmt_mb", "fmt_mib", "fmt_ms", "fmt_pct", "fmt_cv",
@@ -84,6 +84,21 @@ def load_verdict(rep_dir: pathlib.Path):
         return {}
 
 
+def parse_verdict(path):
+    """Return all key=value lines from a verdict.txt as a dict (str->str)."""
+    out = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line:
+                    k, _, val = line.partition("=")
+                    out[k.strip()] = val.strip()
+    except FileNotFoundError:
+        pass
+    return out
+
+
 # ── metric helpers ───────────────────────────────────────────────────────────
 
 def cpu_pct_from_samples(samples):
@@ -148,10 +163,12 @@ def load_rep(rep_dir: pathlib.Path):
         "cpu_pct":      cpu_pct_from_samples(samples),
         "disk_mbps":    disk_write_mbps_from_samples(samples),
         "rss_max_mib":  rss_max_mib(samples),
-        "verdict":      v.get("verdict"),
-        "collect_error": mg("error"),   # coordinator marker: e.g. no_client_results_uploaded
-        "parallelism":  v.get("parallelism"),
-        "cpu_cores":    v.get("server_cpu_cores"),
+        "verdict":              v.get("verdict"),
+        "collect_error":        mg("error"),   # coordinator marker: e.g. no_client_results_uploaded
+        "parallelism":          v.get("parallelism"),
+        "cpu_cores":            v.get("server_cpu_cores"),
+        "reason":               v.get("reason"),
+        "calibration_matched":  v.get("calibration_matched"),
     }
 
 
@@ -223,8 +240,10 @@ def aggregate_cell(cell_dir: pathlib.Path):
         "disk_mbps": disk_med,
         "verdict": verdict,
         "collect_error": next((r.get("collect_error") for r in reps if r.get("collect_error")), None),
-        "parallelism": reps[-1].get("parallelism"),
-        "cpu_cores": reps[-1].get("cpu_cores"),
+        "parallelism":          reps[-1].get("parallelism"),
+        "cpu_cores":            reps[-1].get("cpu_cores"),
+        "reason":               reps[-1].get("reason"),
+        "calibration_matched":  reps[-1].get("calibration_matched"),
         "n_reps": len(reps),
     }
 
