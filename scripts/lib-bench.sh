@@ -253,10 +253,11 @@ _run_cell_one() {
   RUN_ID="${SWEEP_RUN_ID}-${cell_name}-r${repeat}-p${pods}"
   export PARALLELISM="$pods"
   BENCH_CMD="$bench_cmd"; OUT_PREFIX="$out_prefix"; MERGE_CMD="$merge_cmd"
-  reset_sidecar_samples
-  run_fleet_and_coordinator
-  fetch_coordinator_merged "${cell_dir}/merged.json"
-  collect_sidecar "$cell_dir"
+  { reset_sidecar_samples
+    run_fleet_and_coordinator
+    fetch_coordinator_merged "${cell_dir}/merged.json"
+    collect_sidecar "$cell_dir"
+  } >&2
   local cpu_pct="0"
   if [ -f "${cell_dir}/samples.csv" ]; then
     cpu_pct="$(compute_server_cpu_pct "${cell_dir}/samples.csv")"
