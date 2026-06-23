@@ -27,9 +27,10 @@
 # matched cgroup budget), best-case for each system. It is NOT a multi-node /
 # replicated comparison — e.g. Ursula here is single-node, not a 3-voter quorum.
 #
-# KNOWN LIMITATION: the cpu_pct column (server CPU%, from a metrics sidecar) is
-# instrumented for durable-streams ONLY. Ursula and S2 are not instrumented and
-# report cpu_pct=0 — by design; we don't read their server CPU.
+# KNOWN LIMITATION: the cpu_pct AND mem_peak_mb/mem_drift_mb columns (server CPU%
+# and RSS, from a metrics sidecar) are instrumented for durable-streams ONLY.
+# Ursula and S2 are not instrumented and report 0 — by design; we don't read
+# their server CPU/memory.
 #
 # Prereqs:  a cluster from scripts/cluster-up.sh (CLIENT_NODES sized for the
 #           fan-out) + images pushed (scripts/gke-push-images.sh). Does NOT
@@ -88,7 +89,7 @@ export SWEEP_RUN_ID="bench-${TS}"
 export RESULTS_ROOT="results/bench/bench-${TS}"
 mkdir -p "$RESULTS_ROOT"
 SUM="$RESULTS_ROOT/summary.tsv"
-printf 'system\tvariant\tworkload\tparams\tpods\trep\tthr_or_evps\tp99_ms\tcpu_pct\n' > "$SUM"
+printf 'system\tvariant\tworkload\tparams\tpods\trep\tthr_or_evps\tp99_ms\tcpu_pct\tmem_peak_mb\tmem_drift_mb\n' > "$SUM"
 
 echo "═══ gke-bench → $RESULTS_ROOT ═══"
 echo "  systems  : $SYSTEMS"
@@ -133,7 +134,7 @@ supports() { local sys="$1" wl="$2"; [ "$sys" = s2 ] && [ "$wl" = replay ] && re
 # Records mean throughput/ev-s + p99 + cpu to the summary.
 run_one() {  # sys var workload params bench_cmd_fn pods label
   local sys="$1" var="$2" wl="$3" params="$4" pods="$5" cell="$6" bench_cmd="$7" merge="$8"
-  local rep cd thr p99 cpu cmd
+  local rep cd thr p99 cpu cmd mem_peak mem_drift
   for rep in $(seq 1 "$BENCH_REPS"); do
     deploy_system "$sys" "$var" || { echo "[$cell] deploy failed (rep $rep) — skipping (system may be unbuilt-to-scale)"; continue; }
     # Substitute the target/api/namespace placeholders now that deploy set them.
@@ -143,10 +144,11 @@ run_one() {  # sys var workload params bench_cmd_fn pods label
       run_cell "$rcell" "$cmd" "$wl" "$merge" "$SERVER_CPU" >&2 || true
     cd="$RESULTS_ROOT/$rcell/rep1"
     cpu="$(compute_server_cpu_pct "$cd/samples.csv" 2>/dev/null || echo 0)"
+    read -r mem_peak mem_drift < <(compute_server_mem_mb "$cd/samples.csv" 2>/dev/null || echo "0 0")
     thr="$(python3 scripts/saturation.py --merged "$cd/merged.json" --prev-thr 0 --cpu "$cpu" --cores 1 2>/dev/null | awk '{print $2}')"
     p99="$(grep -oE '"p99_ms"[: ]*[0-9.]+' "$cd/merged.json" 2>/dev/null | grep -oE '[0-9.]+$' | head -1)"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$sys" "$var" "$wl" "$params" "$pods" "$rep" "${thr:-0}" "${p99:-NA}" "${cpu:-0}" | tee -a "$SUM"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$sys" "$var" "$wl" "$params" "$pods" "$rep" "${thr:-0}" "${p99:-NA}" "${cpu:-0}" "${mem_peak:-0}" "${mem_drift:-0}" | tee -a "$SUM"
   done
 }
 
