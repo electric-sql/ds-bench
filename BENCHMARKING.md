@@ -12,14 +12,14 @@ One runner — **`scripts/gke-bench.sh`** — runs the whole comparison: a grid 
 
 | Workload | Sweep | Systems / configs | Reps | Metric |
 |---|---|---|---|---|
-| **write** (multi-stream) | 1k / 10k / 100k streams | durable `strict`·`strict-iouring`·`wal`·`fast`, ursula `memory`, s2 | 2 | ops/s + p99 |
-| **sse** (multi-fanout) | 1 stream × {1,10,100,1000} subs (Ursula-style) | durable `fast`, ursula `memory`, s2 | 1 | delivery p99 |
-| **replay** (catch-up) | 1000 clients × 200 events | durable `fast`, ursula `memory` (s2 excluded) | 2 | p99 |
+| **write** (multi-stream) | 1k / 10k / 100k streams | durable `strict`·`strict-iouring`·`wal`, ursula `memory`, s2 | 2 | ops/s + p99 |
+| **sse** (multi-fanout) | 1 stream × {1,10,100,1000} subs (Ursula-style) | durable `wal`, ursula `memory`, s2 | 1 | delivery p99 |
+| **replay** (catch-up) | 1000 clients × 200 events | durable `wal`, ursula `memory` (s2 excluded) | 2 | p99 |
 | **sustained** | 10 / 50 / 100 / 150 streams | durable only | 2 | ops/s + p99 + RSS drift |
 
 The table reflects the default `SYSTEMS`; for a durability-matched write comparison add `ursula:disk` (fsync per commit) and compare durable's fsync modes against it, with `ursula:memory` as ursula's best case. The full set of `system:variant` cells (including the opt-in `wal-cache`/`strict-cache`/`ursula:disk` variants and the exact server flags each deploys) is the [SYSTEMS variant catalog](#systems-variant-catalog-every-cell-deploy_system-can-deploy) in the Configuration reference below.
 
-Durability mode only affects the **write** path, so the read workloads (sse, replay) run a single durable config (`fast`). Clients are provisioned well above the bottleneck within the cluster's pool: the write/replay fleet is many light pods (`FLEET_CPU`, `PER_POD`), and SSE runs on **one well-provisioned pod** (`SSE_FLEET_CPU` ≈ a full client node) so the writer + subscribers share one wall clock → clean delivery p99, no cross-pod skew.
+Durability mode only affects the **write** path, so the read workloads (sse, replay) run a single durable config (`wal`). Clients are provisioned well above the bottleneck within the cluster's pool: the write/replay fleet is many light pods (`FLEET_CPU`, `PER_POD`), and SSE runs on **one well-provisioned pod** (`SSE_FLEET_CPU` ≈ a full client node) so the writer + subscribers share one wall clock → clean delivery p99, no cross-pod skew.
 
 The engine (deploy server, run client fleet, merge HDR results, calibrate/pin, sidecar metrics) is shared in **`scripts/lib-bench.sh`**; target selection (context, image refs, node selectors) is in **`scripts/target-env.sh`**.
 
@@ -96,7 +96,7 @@ Worked example — three clusters in three sibling zones, launched in parallel (
 # cluster A — durable variants
 DS_TARGET=remote ZONE=europe-west4-a CLUSTER=bench-durable scripts/cluster-up.sh
 DS_TARGET=remote ZONE=europe-west4-a CLUSTER=bench-durable \
-  SYSTEMS='durable:strict durable:wal durable:fast' scripts/gke-bench.sh &
+  SYSTEMS='durable:strict durable:wal' scripts/gke-bench.sh &
 
 # cluster B — ursula (durability-matched + best case)
 DS_TARGET=remote ZONE=europe-west4-b CLUSTER=bench-ursula scripts/cluster-up.sh
@@ -184,12 +184,12 @@ All knobs are environment variables (export before the command); defaults in par
 | `SERVER_MACHINE` | `kind` (local) / `c4d-standard-8-lssd` (remote) | server node machine type; also a calibration-key component. The effective default lives in `target-env.sh`, which is sourced into `cluster-up.sh` before its own fallback, so they must agree (both `c4d-standard-8-lssd`). **Cost vs rigor:** c4d-8-lssd and c4d-16-lssd bundle the **same single Titanium NVMe** (identical disk — the thing that matters for durability), and the durable server is 4-CPU-pinned, so node size does **not** change durable's numbers. c4d-16's spare vCPUs buy MinIO burst headroom (for 200-pod fleets) and measurement isolation; c4d-8 is the cheaper default for ~64-pod fleets. Pass `SERVER_MACHINE=c4d-standard-16-lssd` when you scale to 200-pod fleets. |
 | `SERVER_MEM` | `16Gi` | server pod memory limit (cgroup OOM ceiling; drives fan-out subscriber capacity) |
 | `LOCAL_SSD_COUNT` | `1` | striped local SSDs for *non-`-lssd`* machine types (e.g. `n2d-standard-8`); `-lssd` machines bundle a fixed Local SSD and ignore this |
-| `URSULA_WAL` | `disk` | Ursula Raft WAL backend: `disk` (durable) or `memory` (Ursula's analog of durable's fast/non-durable mode) |
+| `URSULA_WAL` | `disk` | Ursula Raft WAL backend: `disk` (durable, fsync per commit) or `memory` (no fsync — Ursula's best case) |
 
 ### Matrix dimensions — `gke-bench.sh`
 | var | default | meaning |
 |---|---|---|
-| `SYSTEMS` | `durable:strict durable:strict-iouring durable:wal durable:fast ursula:memory s2:_` | `system:variant` cells, run in order (primary system first) |
+| `SYSTEMS` | `durable:strict durable:strict-iouring durable:wal ursula:memory s2:_` | `system:variant` cells, run in order (primary system first) |
 | `WORKLOADS` | `write sse replay sustained` | which workloads to run |
 | `WRITE_CARDS` | `1000 10000 100000` | stream counts for the write sweep |
 | `SSE_STREAMS` | `1` | SSE fan-out streams (M) |
@@ -218,24 +218,23 @@ All knobs are environment variables (export before the command); defaults in par
 
 ### SYSTEMS variant catalog (every cell `deploy_system` can deploy)
 
-`SYSTEMS` is a space-separated list of `system:variant` cells. The full set `deploy_system()` (`scripts/gke-bench.sh`) understands is below; the default `SYSTEMS` runs `durable:strict durable:strict-iouring durable:wal durable:fast ursula:memory s2:_`, and the `-cache` + `ursula:disk` variants are opt-in (add them to `SYSTEMS`). `ursula`'s variant string is the `[raft.wal] backend` value (set via `URSULA_WAL`, injected into `gke/ursula.yaml`).
+`SYSTEMS` is a space-separated list of `system:variant` cells. The full set `deploy_system()` (`scripts/gke-bench.sh`) understands is below; the default `SYSTEMS` runs `durable:strict durable:strict-iouring durable:wal ursula:memory s2:_`, and the `-cache` + `ursula:disk` variants are opt-in (add them to `SYSTEMS`). `ursula`'s variant string is the `[raft.wal] backend` value (set via `URSULA_WAL`, injected into `gke/ursula.yaml`).
 
 | `system:variant` | Deploys (server flags) | When to use |
 |---|---|---|
 | `durable:strict` | `--durability strict --splice-appends` | Per-stream group-commit fsync — durable's fsync-durability baseline (concurrent writers coalesce into one fsync). |
 | `durable:strict-iouring` | `--durability strict --strict-io-uring --splice-appends` | Same fsync durability as `strict`, but the per-stream `fdatasync`s ride one shared io_uring ring instead of `spawn_blocking`. Isolates the io_uring fsync-executor delta. Server must be built `--features strict-uring`; falls back to `spawn_blocking` if io_uring is unavailable. |
-| `durable:wal` | `--durability wal --wal-shards N --splice-appends` | Sharded WAL committer (`N` = `WAL_SHARDS`, runner default 4). The alternative fsync-durability path; compare write ops/p99 vs `strict` across cardinality. |
-| `durable:fast` | `--durability fast --splice-appends` | Acks on the page-cache write — **no fsync** (not crash-durable). Durable's best-case write ceiling and the analog of `ursula:memory`. The reads workloads (sse/replay) run on this config because the read path is mode-independent. |
-| `durable:wal-cache` | `--durability wal --wal-shards N --tail-cache-bytes B --splice-appends` | `wal` + the resident tail read-cache ON (`B` = `TAIL_CACHE_BYTES`, runner default 65536). `--tail-cache-bytes` is a **standalone read-path flag** independent of durability mode — the read path is identical across `strict`/`wal`/`fast`, so the cache delta is mode-agnostic and affects only reads/SSE, never writes. Measures the tail-cache read delta. |
+| `durable:wal` | `--durability wal --wal-shards N --splice-appends` | Sharded WAL committer (`N` = `WAL_SHARDS`, runner default 4). The alternative fsync-durability path; compare write ops/p99 vs `strict` across cardinality. The reads workloads (sse/replay) run on this config because the read path is mode-independent. |
+| `durable:wal-cache` | `--durability wal --wal-shards N --tail-cache-bytes B --splice-appends` | `wal` + the resident tail read-cache ON (`B` = `TAIL_CACHE_BYTES`, runner default 65536). `--tail-cache-bytes` is a **standalone read-path flag** independent of durability mode — the read path is identical across `strict`/`wal`, so the cache delta is mode-agnostic and affects only reads/SSE, never writes. Measures the tail-cache read delta. |
 | `durable:strict-cache` | `--durability strict --tail-cache-bytes B --splice-appends` | `strict` + the same resident tail read-cache. Same read-cache delta as `wal-cache` (the variant only labels which durability mode it rides on); nothing changes on the write path. |
-| `ursula:memory` | `[raft.wal] backend = "memory"` | In-memory Raft WAL, **no fsync** — ursula's best case. Compare against `durable:fast`. |
+| `ursula:memory` | `[raft.wal] backend = "memory"` | In-memory Raft WAL, **no fsync** — ursula's best case. Compare against durable's durable modes (`strict`/`wal`) to show ursula's durability cost. |
 | `ursula:disk` | `[raft.wal] backend = "disk"` | Disk Raft WAL, fsync per commit. **The durability-matched comparison** for durable's fsync modes (`strict`/`strict-iouring`/`wal`); use `ursula:memory` as ursula's best case alongside it. |
 | `s2:_` | `gke/s2lite.yaml` (S2 Lite, `--api-style s2 --basin benchmark`) | S2 Lite, object-store-native (writes through SlateDB to MinIO). Compared on write + SSE only (no replay). |
 
 ### Server flags — durable-streams (set per cell by `deploy_system`)
 | flag / knob | default | meaning |
 |---|---|---|
-| `--durability {strict\|wal\|fast}` | per `SYSTEMS` variant | write-path durability mode; `strict-iouring` = `strict` + `--strict-io-uring` |
+| `--durability {strict\|wal}` | per `SYSTEMS` variant | write-path durability mode; `strict-iouring` = `strict` + `--strict-io-uring` |
 | `--splice-appends` | on (every durable variant) | zero-copy splice(2) for binary appends; a CPU lever (~½–⅓ append CPU) |
 | `WAL_SHARDS` (`--wal-shards`) | `4` (runner) | WAL shard count, passed only for `wal`/`wal-cache` variants. The server's own default when unset is the CPU core count on a fresh data dir. |
 | `TAIL_CACHE_BYTES` (`--tail-cache-bytes`) | `65536` (runner) | resident tail-cache cap; passed only for the `wal-cache` and `strict-cache` variants. The server default is `0` (off) on Linux and `64 KiB` on macOS. |

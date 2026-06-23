@@ -5,7 +5,7 @@
 # Runs a reproducible benchmark matrix across streaming systems under a single,
 # documented methodology on a GKE cluster (1 server node + a client fleet pool).
 #
-#   SYSTEMS    durable:strict  durable:wal  durable:fast   (our Rust server)
+#   SYSTEMS    durable:strict  durable:wal   (our Rust server; modes: strict|wal)
 #              ursula:disk     ursula:memory               (Raft; memory = best case)
 #              s2:_                                         (S2-lite, object-store)
 #   WORKLOADS  write     — multi-stream append throughput (ops/s + p99)
@@ -58,7 +58,7 @@ SERVER_CPU="${SERVER_CPUS%% *}"
 # comparison systems (Ursula, S2, base-Node), which are likelier to need re-runs
 # or to fail. A failed cell/system is non-fatal — the matrix continues.
 # Format: "system:variant".
-SYSTEMS="${SYSTEMS:-durable:strict durable:strict-iouring durable:wal durable:fast ursula:memory s2:_}"
+SYSTEMS="${SYSTEMS:-durable:strict durable:strict-iouring durable:wal ursula:memory s2:_}"
 WORKLOADS="${WORKLOADS:-write sse replay sustained}"
 WRITE_CARDS="${WRITE_CARDS:-1000 10000 100000}"   # stream counts for the write sweep
 # SSE fan-out is a 2-D sweep: streams (M) × TOTAL subscribers (T). Per-stream
@@ -185,14 +185,14 @@ for sysvar in $SYSTEMS; do
   for wl in $WORKLOADS; do
     supports "$sys" "$wl" || { echo "  (skip $wl — unsupported on $sys)"; continue; }
     # Durability mode only changes the WRITE path; SSE/replay are read paths and are
-    # byte-identical across modes, so run reads on ONE durable config (fast) — the
+    # byte-identical across modes, so run reads on ONE durable config (wal) — the
     # other durable variants would just repeat the same read result. EXCEPT the
     # *-cache variants (strict-cache/wal-cache): the resident tail read-cache DOES
     # change the read path, so they MUST run reads (that IS the cache A/B). write
     # and sustained are write-path workloads → run on every durable variant.
     [ "$sys" = durable ] && [ "$wl" != write ] && [ "$wl" != sustained ] \
-      && [ "$var" != fast ] && [ "$var" != strict-cache ] && [ "$var" != wal-cache ] && \
-      { echo "  (skip $wl on durable:$var — reads are mode-independent; covered by durable:fast)"; continue; }
+      && [ "$var" != wal ] && [ "$var" != strict-cache ] && [ "$var" != wal-cache ] && \
+      { echo "  (skip $wl on durable:$var — reads are mode-independent; covered by durable:wal)"; continue; }
     case "$wl" in
       write)
         for n in $WRITE_CARDS; do
