@@ -27,6 +27,10 @@
 # matched cgroup budget), best-case for each system. It is NOT a multi-node /
 # replicated comparison — e.g. Ursula here is single-node, not a 3-voter quorum.
 #
+# KNOWN LIMITATION: the cpu_pct column (server CPU%, from a metrics sidecar) is
+# instrumented for durable-streams ONLY. Ursula and S2 are not instrumented and
+# report cpu_pct=0 — by design; we don't read their server CPU.
+#
 # Prereqs:  a cluster from scripts/cluster-up.sh (CLIENT_NODES sized for the
 #           fan-out) + images pushed (scripts/gke-push-images.sh). Does NOT
 #           create or tear down the cluster.
@@ -60,12 +64,12 @@ WRITE_CARDS="${WRITE_CARDS:-1000 10000 100000}"   # stream counts for the write 
 # the M×T fan-out is exact (the fleet replicates per-pod, so >1 pod would multiply it).
 SSE_STREAMS="${SSE_STREAMS:-1 5 10}"
 SSE_TOTAL_SUBS="${SSE_TOTAL_SUBS:-1 10 100 1000}"
-# SSE client scale-out: the fan-out is SHARDED across pods (multi_fanout reads
-# DS_BENCH_INSTANCE/DS_BENCH_SHARDS), so a fixed M×T splits over ceil(T/SSE_SUBS_PER_POD)
-# pods — each pod drives ≤SSE_SUBS_PER_POD subscribers so the CLIENT never caps the
-# server. SSE_FLEET_CPU sizes each SSE pod (vs the lighter global FLEET_CPU).
-SSE_SUBS_PER_POD="${SSE_SUBS_PER_POD:-125}"
-SSE_FLEET_CPU="${SSE_FLEET_CPU:-2}"
+# SSE runs on ONE well-provisioned client pod (FLEET_CPU=SSE_FLEET_CPU): the writer
+# and all subscribers share a single process, so delivery latency is measured against
+# ONE wall clock — no cross-pod NTP skew — matching Ursula's published fan-out bench.
+# Throughput here is writer-paced, so a single pod doesn't cap it. (multi_fanout still
+# supports DS_BENCH_SHARDS sharding for a future SSE-throughput-ceiling test.)
+SSE_FLEET_CPU="${SSE_FLEET_CPU:-4}"
 REPLAY_CONF="${REPLAY_CONF:-1000:200}"            # clients:pre_events for catch-up
 export REPEATS="${REPEATS:-3}"
 BENCH_REPS="$REPEATS"   # lib-bench run_cell does `REPEATS=1` in calibrate mode (mutates the
@@ -164,11 +168,8 @@ for sysvar in $SYSTEMS; do
           for t in $SSE_TOTAL_SUBS; do
             [ "$t" -lt "$m" ] && continue          # need ≥1 subscriber per stream
             s=$(( t / m ))                          # subscribers per stream
-            # Shard the fan-out across ceil(T/SSE_SUBS_PER_POD) pods (≥1), capped.
-            ssepods=$(( (t + SSE_SUBS_PER_POD - 1) / SSE_SUBS_PER_POD ))
-            [ "$ssepods" -lt 1 ] && ssepods=1
-            [ "$ssepods" -gt "$MAX_FLEET_PODS" ] && ssepods="$MAX_FLEET_PODS"
-            FLEET_CPU="$SSE_FLEET_CPU" run_one "$sys" "$var" sse "streams=$m,subs_per=$s,total=$t" "$ssepods" "${sys}-${var}-sse-m${m}t${t}" \
+            # ONE pod: writer + all subscribers co-located → single-clock latency.
+            FLEET_CPU="$SSE_FLEET_CPU" run_one "$sys" "$var" sse "streams=$m,subs_per=$s,total=$t" 1 "${sys}-${var}-sse-m${m}t${t}" \
               "multi-fanout --target __T__ --api-style __A__ __NS__ --streams ${m} --subscribers-per-stream ${s} --writer-rate 50 --duration-secs ${DURATION} --warmup-secs ${WARMUP_SECS} --settle-secs ${SETTLE_SECS}" \
               "ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix multi-fanout-"
           done
