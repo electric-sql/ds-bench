@@ -62,8 +62,12 @@ esac
 SERVER_MEM="${SERVER_MEM:-16Gi}"
 
 # Per-fleet-pod cpu RESERVATION (scheduling only; no cpu limit in bench-job.yaml).
-# Default 2 (back-compat). Lower it to pack more pods/node for high fan-out.
-FLEET_CPU="${FLEET_CPU:-2}"
+# Default 0.5: gke-bench's methodology is MANY LIGHT pods so the SERVER is the
+# bottleneck. At 2, a 64-pod fleet reserves 128 cores = an entire 8-node client
+# pool with no headroom → pod scheduling races → some reps run the server on ~1
+# core (cpu ~100%) and under-report throughput. 0.5 keeps the fleet schedulable
+# with headroom so every rep drives the server fully.
+FLEET_CPU="${FLEET_CPU:-0.5}"
 
 # Ursula Raft WAL backend: "disk" (durable, default) | "memory" (no disk WAL =
 # Ursula's analog of durable-streams' fast/non-durable mode).
