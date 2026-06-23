@@ -125,6 +125,11 @@ deploy_system() {  # system variant
       # wal-cache: wal mode with the resident tail cache ON (64 KiB) — for the
       # tail-cache vs always-sendfile comparison (vs plain `wal` = cache off on Linux).
       [ "$var" = wal-cache ] && args="--durability wal --wal-shards ${WAL_SHARDS:-4} --tail-cache-bytes ${TAIL_CACHE_BYTES:-65536}"
+      # strict-cache: strict durability + the resident tail cache ON. --tail-cache-bytes
+      # is a standalone READ-path flag (store::set_tail_cache_bytes), independent of the
+      # durability mode — the read path is identical across strict/wal/fast, so the cache
+      # delta is the same whichever mode it rides on; this variant just labels it strict.
+      [ "$var" = strict-cache ] && args="--durability strict --tail-cache-bytes ${TAIL_CACHE_BYTES:-65536}"
       # Linux-optimal: zero-copy splice(2) for the binary (octet-stream) bench
       # appends — a CPU lever (~½–⅓ append CPU); applies to every durable variant.
       args="$args --splice-appends"
