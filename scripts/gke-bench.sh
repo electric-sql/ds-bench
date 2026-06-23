@@ -186,9 +186,12 @@ for sysvar in $SYSTEMS; do
     supports "$sys" "$wl" || { echo "  (skip $wl — unsupported on $sys)"; continue; }
     # Durability mode only changes the WRITE path; SSE/replay are read paths and are
     # byte-identical across modes, so run reads on ONE durable config (fast) — the
-    # other durable variants would just repeat the same read result. write AND
-    # sustained are write-path workloads → run on every durable variant.
-    [ "$sys" = durable ] && [ "$wl" != write ] && [ "$wl" != sustained ] && [ "$var" != fast ] && \
+    # other durable variants would just repeat the same read result. EXCEPT the
+    # *-cache variants (strict-cache/wal-cache): the resident tail read-cache DOES
+    # change the read path, so they MUST run reads (that IS the cache A/B). write
+    # and sustained are write-path workloads → run on every durable variant.
+    [ "$sys" = durable ] && [ "$wl" != write ] && [ "$wl" != sustained ] \
+      && [ "$var" != fast ] && [ "$var" != strict-cache ] && [ "$var" != wal-cache ] && \
       { echo "  (skip $wl on durable:$var — reads are mode-independent; covered by durable:fast)"; continue; }
     case "$wl" in
       write)
