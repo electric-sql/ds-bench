@@ -125,34 +125,19 @@ cpu_pct. Aggregate across reps (median + CV%) with the shared helpers in
 `scripts/render_common.py` (`load_rep` / `aggregate_cell`), which read each cell's
 `rep1/{merged.json,samples.csv,verdict.txt}`.
 
-## 6. Combined report
+## 6. Report
 
-Assemble one document from the three phase reports so two clusters compare directly.
-Include, at the top, the run context so it is reproducible:
+Render the one consolidated table from `summary.tsv` (§5) and lead with the run context
+so it's reproducible:
 
-- `DS_TARGET`, cluster shape (local kind single node / GKE n2d-standard-8 + clients),
-  server commit (`git -C ../durable-streams rev-parse --short HEAD`), date, profiles run.
-- Phase 1 headline: reads/s vs SERVER_CPU (scaling), append throughput, fan-out p99.
-- Phase 2: multi-stream writes/s vs N, multi-fanout events/s + p99.
-- Phase 3: **RSS start→end / drift** (flat = no leak), throughput/p99 vs N.
-- Honesty notes: which cells are `client_capped` (lower bounds), object tier =
-  in-cluster MinIO (not cloud S3), 1 vs 3 repeats.
+- `DS_TARGET`, cluster shape, server commit (`git -C ../durable-streams rev-parse --short HEAD`),
+  date, the systems/workloads run.
+- Headlines: write ops/s + p99 by cardinality; SSE delivery p99 by subscriber count; replay p99.
+- Honesty notes: cells marked `client_capped` are lower bounds; the object tier is
+  in-cluster MinIO (not cloud S3); `cpu_pct` is durable-only; reps (write/replay 2, SSE 1).
 
-Suggested path: `docs/combined-report-<target>-<date>.md`. To compare local vs cloud,
-produce one per target and diff the headline tables. Concretely, after step 5:
-
-```bash
-TARGET=${DS_TARGET:-local}; DATE=$(date +%Y%m%d)
-OUT="docs/combined-report-${TARGET}-${DATE}.md"
-{
-  echo "# DS-rust benchmark — combined report (${TARGET})"
-  echo "- server commit: $(git -C ../durable-streams rev-parse --short HEAD) · target: ${TARGET} · date: ${DATE}"
-  echo; echo "---"; cat docs/phase1-report.md
-  echo; echo "---"; cat docs/phase2-report.md
-  echo; echo "---"; cat docs/phase3-report.md
-} > "$OUT"
-echo "wrote $OUT"
-```
+Suggested path: `docs/combined-report-<target>-<date>.md` — produce one per target to diff
+local vs cloud.
 
 ### Known server limits (now fixed — confirm they stay fixed)
 
@@ -169,49 +154,22 @@ Two limits bounded earlier runs; both are fixed in the server and worth re-confi
 The `slow` matrices keep conservative caps (N≤200, conns≤256) as safe defaults — raise
 them once you've re-confirmed the fixes hold, to chase true (non-capped) ceilings.
 
-## Calibrate-then-pin
+## Pod counts & client provisioning
 
-The phase runners measure at a **pinned** client pod-count per cell, recorded in
-`calibration/pins.json` and keyed by server-image-digest + machine + cpu/mem.
+`gke-bench.sh` runs each cell at a **fixed, computed** client pod count
+(`MODE=calibrate MAX_BUMPS=0` — no headroom bumping):
 
-1. After building a new server image, calibrate once:
-   `MODE=calibrate DS_TARGET=remote scripts/gke-scaleout.sh slow`
-   then `git add calibration/pins.json && git commit`.
-2. Measure (default) — pinned, reproducible:
-   `DS_TARGET=remote scripts/gke-scaleout.sh slow`
-   Fails fast if the running image has no calibration.
-3. Reuse a previous image's calibration on a new build:
-   `REUSE_CALIBRATION=latest DS_TARGET=remote scripts/gke-scaleout.sh slow`
-   Reports flag every cell as `⚠ reused` (image mismatch).
+- **write / replay** — `ceil(N / PER_POD)` light fleet pods (`FLEET_CPU` each, default
+  0.5), capped at `MAX_FLEET_PODS`. Many light pods keep the load generator well above
+  the server's needs (client-unbound). Lower `PER_POD` / raise `MAX_FLEET_PODS` to add
+  client pods, bounded by the cluster's `clients` node pool.
+- **sse** — **one** well-provisioned pod at `SSE_FLEET_CPU` (≈ a full client node), so
+  writer + subscribers share one wall clock (clean delivery p99).
 
-Saturation during calibration = server CPU ≥ 90%×cores **or** <10% throughput gain
-on doubling pods; the leanest fleet at ~peak (the knee) is pinned. Reports show the
-cap reason (`cpu`/`plateau`/`max_pods`) and whether the calibration matched.
-
-### Manual validation (requires a local kind cluster)
-
-The following commands verify the full calibrate→measure→fail-fast cycle. Run them
-when a local kind cluster is available (after `scripts/cluster-up.sh && scripts/build-images.sh`):
-
-```bash
-export DS_TARGET=local
-
-# calibrate writes a pin:
-MODE=calibrate scripts/gke-scaleout.sh fast
-test -s calibration/pins.json && python3 scripts/pins.py list
-
-# measure consumes it (no bumping):
-scripts/gke-scaleout.sh fast
-
-# fail-fast proof: a bogus key has no pin →
-MODE=measure SERVER_MEM=999Gi scripts/gke-scaleout.sh fast
-echo "exit=$?  (expect non-zero: no calibration)"
-```
-
-Expected outcomes:
-- `MODE=calibrate` prints `calibrated … → <key>` and `pins.py list` shows the entry.
-- Default measure run prints `measured … matched=true`.
-- The bogus-mem run exits non-zero with the "no calibration … run MODE=calibrate" message.
+The pinned count + the running image digest land in `calibration/pins.json` (keyed by
+server-image-digest + machine + cpu/mem). Each cell's `verdict.txt` records whether the
+server was the bottleneck (`server_bound`, a trustworthy ceiling) or the client capped
+it (`client_capped`, a lower bound — add client pods).
 
 ## 7. Tear down
 
@@ -292,11 +250,12 @@ All knobs are environment variables (export before the command); defaults in par
 
 ---
 
-## io_uring backend (Linux)
+## io_uring (Linux) — seccomp requirements
 
-A drop-in `durable-streams-server` built on raw io_uring (same binary name, flags, port 4438,
-`/v1/stream` paths, `--tier s3`). The harness is unchanged — only io_uring syscalls must be
-permitted at runtime.
+The `durable:strict-iouring` variant runs the server built `--features strict-uring` with
+`--strict-io-uring` (a shared io_uring ring batching strict-mode `fdatasync`s; it falls back
+to `spawn_blocking` if io_uring is unavailable). The harness is unchanged — only the io_uring
+syscalls must be permitted at runtime:
 
 - **Remote (GKE):** the server pod sets `securityContext.seccompProfile.type: Unconfined`
   (`gke/durable-streams.yaml`) — Docker 25 / containerd's default seccomp blocks
@@ -323,7 +282,7 @@ permitted at runtime.
 ```bash
 export DS_TARGET=local
 scripts/cluster-up.sh && scripts/build-images.sh
-PARALLELISM=2 MAX_BUMPS=0 scripts/gke-rawpower.sh fast
-python3 scripts/render-rawpower.py results/rawpower/$(ls -t results/rawpower | head -1)
+SYSTEMS='durable:wal' WORKLOADS='write' WRITE_CARDS='1000' REPEATS=1 \
+  CLUSTER=ds-bench scripts/gke-bench.sh
 scripts/cluster-down.sh
 ```
