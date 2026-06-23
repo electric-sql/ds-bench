@@ -181,8 +181,9 @@ for sysvar in $SYSTEMS; do
     supports "$sys" "$wl" || { echo "  (skip $wl — unsupported on $sys)"; continue; }
     # Durability mode only changes the WRITE path; SSE/replay are read paths and are
     # byte-identical across modes, so run reads on ONE durable config (fast) — the
-    # other durable variants would just repeat the same read result.
-    [ "$sys" = durable ] && [ "$wl" != write ] && [ "$var" != fast ] && \
+    # other durable variants would just repeat the same read result. write AND
+    # sustained are write-path workloads → run on every durable variant.
+    [ "$sys" = durable ] && [ "$wl" != write ] && [ "$wl" != sustained ] && [ "$var" != fast ] && \
       { echo "  (skip $wl on durable:$var — reads are mode-independent; covered by durable:fast)"; continue; }
     case "$wl" in
       write)
