@@ -1,6 +1,0 @@
-cell=reads-cold-cpu2-size1m-conn64
-repeat=1
-parallelism=2
-server_cpu_cores=2
-server_cpu_pct=1.9
-verdict=client_capped

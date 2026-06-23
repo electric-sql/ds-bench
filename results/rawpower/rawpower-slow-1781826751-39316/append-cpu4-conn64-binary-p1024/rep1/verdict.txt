@@ -1,6 +1,0 @@
-cell=append-cpu4-conn64-binary-p1024
-repeat=1
-parallelism=2
-server_cpu_cores=4
-server_cpu_pct=12.0
-verdict=client_capped

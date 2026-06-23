@@ -1,6 +1,0 @@
-cell=append-splice-cpu4-conn256-binary-1m
-repeat=1
-parallelism=2
-server_cpu_cores=4
-server_cpu_pct=52.5
-verdict=client_capped

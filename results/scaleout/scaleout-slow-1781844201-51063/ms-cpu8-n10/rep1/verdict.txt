@@ -1,6 +1,0 @@
-cell=ms-cpu8-n10
-repeat=1
-parallelism=2
-server_cpu_cores=8
-server_cpu_pct=204.9
-verdict=client_capped

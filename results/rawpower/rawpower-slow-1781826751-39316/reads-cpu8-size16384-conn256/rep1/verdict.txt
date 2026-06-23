@@ -1,6 +1,0 @@
-cell=reads-cpu8-size16384-conn256
-repeat=1
-parallelism=2
-server_cpu_cores=8
-server_cpu_pct=503.1
-verdict=client_capped
