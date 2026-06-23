@@ -14,16 +14,25 @@ cluster** (measurement-grade, multi-node) — selected by one variable,
 
 ## 0. Concepts
 
-| Phase | Script | What it measures |
-|---|---|---|
-| **1 — raw power** | `scripts/gke-rawpower.sh` | reads × size × conn, appends (bytes only) × conn × payload, fan-out × subs, splice, cold-tier — vs SERVER_CPU {2,4,8} |
-| **2 — scale-out** | `scripts/gke-scaleout.sh` | multi-stream writes (sweep N streams) + multi-fanout (M×S) |
-| **3 — sustained** | `scripts/gke-sustained.sh` | steady load over time → server **RSS drift / memory stability** + throughput/p99 vs stream count |
+One runner — **`scripts/gke-bench.sh`** — runs the whole comparison: a grid of
+SYSTEMS × WORKLOADS, each cell a fresh deploy + warm-up + settle + measure, written to
+`results/bench/bench-<ts>/summary.tsv`.
 
-The engine (deploy server, run client fleet, merge HDR results, headroom guard,
-sidecar metrics) is shared in **`scripts/lib-bench.sh`**; each phase script is just
-its matrix. Target selection (context, image refs, node selectors) is in
-**`scripts/target-env.sh`**. Renderers turn the raw result dirs into Markdown tables.
+| Workload | Sweep | Systems / configs | Reps | Metric |
+|---|---|---|---|---|
+| **write** (multi-stream) | 1k / 10k / 100k streams | durable `strict`·`strict-iouring`·`wal`·`fast`, ursula `memory`, s2 | 2 | ops/s + p99 |
+| **sse** (multi-fanout) | 1 stream × {1,10,100,1000} subs (Ursula-style) | durable `fast`, ursula `memory`, s2 | 1 | delivery p99 |
+| **replay** (catch-up) | 1000 clients × 200 events | durable `fast`, ursula `memory` (s2 excluded) | 2 | p99 |
+
+Durability mode only affects the **write** path, so the read workloads (sse, replay) run a
+single durable config (`fast`). Clients are provisioned well above the bottleneck within
+the cluster's pool: the write/replay fleet is many light pods (`FLEET_CPU`, `PER_POD`),
+and SSE runs on **one well-provisioned pod** (`SSE_FLEET_CPU` ≈ a full client node) so the
+writer + subscribers share one wall clock → clean delivery p99, no cross-pod skew.
+
+The engine (deploy server, run client fleet, merge HDR results, calibrate/pin, sidecar
+metrics) is shared in **`scripts/lib-bench.sh`**; target selection (context, image refs,
+node selectors) is in **`scripts/target-env.sh`**.
 
 ### `DS_TARGET`
 
@@ -37,9 +46,9 @@ Optional: `KIND_CLUSTER` (default `ds-bench`); for remote, `PROJECT`/`ZONE`/`CLU
 
 ### Where things land
 
-- Raw per-cell data: `results/{rawpower,scaleout,sustained}/<run-id>/<cell>/...`
-  (`merged.json` = merged HDR/throughput, `samples.csv` = server RSS/CPU, `verdict.txt`).
-- Rendered phase reports + the combined report: `docs/` (you write these in step 6).
+- Per-cell data: `results/bench/bench-<ts>/<cell>-r<rep>/rep1/...` (`merged.json` =
+  merged HDR/throughput, `samples.csv` = server RSS/CPU, `verdict.txt`).
+- Consolidated: `results/bench/bench-<ts>/summary.tsv` (one row per cell × rep).
 
 ---
 
@@ -75,49 +84,46 @@ scripts/build-images.sh
 ```
 
 Builds `ds-bench:dev` (workload client) and `durable-streams:dev` (server, from the
-**current `../durable-streams` checkout**) and loads them into the cluster. Iterating on
-the server? `git -C ../durable-streams checkout <branch>` then re-run this — that is the
-inner dev loop.
+**current `../durable-streams` checkout**, with `FEATURES=tier,strict-uring` so the
+`durable:strict-iouring` variant exercises the io_uring fsync executor) and loads them
+into the cluster. Iterating on the server? `git -C ../durable-streams checkout <branch>`
+then re-run this — that is the inner dev loop.
 
-## 4. Run the phases
+## 4. Run the matrix
 
-Same commands for local and remote. Each phase has a **`fast`** profile (one small
-point — smoke) and a **`slow`** profile (the full matrix).
-
-```bash
-# Phase 1 — raw power
-scripts/gke-rawpower.sh fast        # smoke: SERVER_CPU=2, one point per dim
-scripts/gke-rawpower.sh slow        # full: CPU {2,4,8} × all dims
-
-# Phase 2 — scale-out
-scripts/gke-scaleout.sh fast
-scripts/gke-scaleout.sh slow
-
-# Phase 3 — sustained (system = durable; ursula/s2 are remote-only comparisons)
-scripts/gke-sustained.sh durable sustained          # default stream sweep 10 50 100 150
-scripts/gke-sustained.sh durable sustained 10 100   # custom stream counts
-```
-
-Each prints its results dir (`results/<phase>/<run-id>/`).
-
-**Env knobs** (all phases): `PARALLELISM` (client pods per cell), `REPEATS`,
-`MAX_BUMPS` (headroom-guard pod doublings; `0` = fixed parallelism), `FLEET_TIMEOUT`,
-`COORD_TIMEOUT`. Phase 3 also: `SERVER_CPUS RATE DURATION SETUP_CONCURRENCY M S`.
-Example, a quick fixed-load local run: `PARALLELISM=2 MAX_BUMPS=0 REPEATS=1 scripts/gke-rawpower.sh fast`.
-
-> **Headroom guard / `verdict.txt`.** A cell is `server_bound` (trustworthy ceiling)
-> only if the server consumed ≥90% of its CPU budget; otherwise `client_capped` (a
-> lower bound — add client pods / `PARALLELISM` to push harder). The renderers mark this.
-
-## 5. Render each phase
+One command for local and remote — `scripts/gke-bench.sh` runs the full
+SYSTEMS × WORKLOADS grid (§0), deploying each cell fresh, warming up + settling,
+measuring, and appending to `results/bench/bench-<ts>/summary.tsv`.
 
 ```bash
-python3 scripts/render-rawpower.py  results/rawpower/<run-id>   > docs/phase1-report.md
-python3 scripts/render-scaleout.py  results/scaleout/<run-id>   > docs/phase2-report.md
-python3 scripts/render-sustained.py results/sustained/<run-id>  > docs/phase3-report.md
+# full matrix (local)
+DS_TARGET=local CLUSTER=ds-bench scripts/gke-bench.sh
+
+# remote (GKE)
+DS_TARGET=remote PROJECT=<gcp> ZONE=<zone> CLUSTER=<cluster> scripts/gke-bench.sh
+
+# quick smoke — one system × one workload × one rep
+SYSTEMS='durable:wal' WORKLOADS='write' WRITE_CARDS='1000' REPEATS=1 \
+  DS_TARGET=local CLUSTER=ds-bench scripts/gke-bench.sh
 ```
 
-(Run a renderer with no newer args to print to stdout; redirect to a file to keep it.)
+**Knobs** (override any): `SYSTEMS`, `WORKLOADS` (`write sse replay`), `WRITE_CARDS`,
+`SSE_STREAMS`/`SSE_TOTAL_SUBS`, `REPLAY_CONF`, `REPEATS` (default 3),
+`WARMUP_SECS`/`SETTLE_SECS`/`DURATION`, `FLEET_CPU` (write fleet), `SSE_FLEET_CPU`,
+`PER_POD` (target streams/pod), `WAL_SHARDS`, `TAIL_CACHE_BYTES`.
+
+> **Calibrate / `verdict.txt`.** Write cells run client-unbound at a pinned pod count
+> (calibrate-then-pin, below). A cell is `server_bound` (trustworthy ceiling) only if the
+> server consumed ≥90% of its CPU budget; otherwise `client_capped` (a lower bound — add
+> `PER_POD`/pods). SSE runs on one well-provisioned pod by design (delivery-latency test).
+
+## 5. Read the results
+
+Each run writes `results/bench/bench-<ts>/summary.tsv` — one row per
+`(system, variant, workload, params, pods, rep)` with throughput/ev-s, p99, and
+cpu_pct. Aggregate across reps (median + CV%) with the shared helpers in
+`scripts/render_common.py` (`load_rep` / `aggregate_cell`), which read each cell's
+`rep1/{merged.json,samples.csv,verdict.txt}`.
 
 ## 6. Combined report
 

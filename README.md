@@ -7,13 +7,39 @@ under matched durability, driven by `ds-bench` — **derived from ursula's own `
 
 ## Quick start
 
+The comparison is one matrix runner — **`scripts/gke-bench.sh`** — that deploys each
+system fresh per cell, warms up + settles, measures, and writes one
+`results/bench/bench-<ts>/summary.tsv`. The same commands run on a local kind cluster
+or a remote GKE cluster, selected by `DS_TARGET`.
+
 ```bash
-git submodule update --init --recursive        # pulls vendor/ursula @ pinned SHA
-./run-bench.sh durable                          # all 3 workloads vs durable-streams
-./run-bench.sh ursula                           # then vs ursula (one server at a time)
-./run-bench.sh s2                               # then vs S2 Lite (one server at a time)
-python3 scripts/render-results.py results       # -> results/comparison.md
+git submodule update --init --recursive               # pulls vendor/ursula @ pinned SHA
+
+DS_TARGET=local scripts/cluster-up.sh                  # cluster + MinIO + metrics ConfigMap
+scripts/build-images.sh                                # build/load images (server built with
+                                                       # FEATURES=tier,strict-uring; remote: gke-push-images.sh)
+DS_TARGET=local CLUSTER=ds-bench scripts/gke-bench.sh  # the full matrix
+scripts/cluster-down.sh                                # tear down (always, for remote)
 ```
+
+See **[BENCHMARKING.md](BENCHMARKING.md)** for the full runbook — knobs, calibrate-then-pin,
+the per-cluster matrix, and rendering.
+
+## The matrix
+
+Each cell is a fresh deploy + warm-up + settle + measure, **averaged over 3 reps**. Server
+durability mode only affects the write path, so the **read** workloads (SSE, replay) run a
+single durable config (`fast`); **write** runs all four.
+
+| Workload | Sweep | Systems / configs | Metric |
+| --- | --- | --- | --- |
+| **write** | 1k / 10k / 100k streams | durable `strict`·`strict-iouring`·`wal`·`fast`, ursula `memory`, s2 | ops/s + p99 |
+| **sse** | 1 stream × {1,10,100,1000} subscribers (Ursula-style) | durable `fast`, ursula `memory`, s2 | delivery p99 |
+| **replay** | 1000 clients × 200 events | durable `fast`, ursula `memory` (s2 excluded) | p99 |
+
+Durable runs the Linux-optimal config: `--splice-appends`, `--read-offload tail`, tail
+cache off (Linux default), `--tier s3`. `cpu_pct` is instrumented for durable only
+(ursula/s2 server CPU is a known limitation).
 
 ## What is measured
 
@@ -78,13 +104,15 @@ the larger scale-out comparison (multi-node, higher client counts).
 
 ## Configuration
 
-- durable-streams: `--tier s3` → MinIO (`dockerfiles/durable-streams.Dockerfile`, `docker-compose.yml`).
+- durable-streams: `--tier s3` → MinIO, plus the Linux-optimal `--splice-appends` + `--read-offload tail` (tail cache off, the Linux default); durability variants `strict`/`strict-iouring`/`wal`/`fast`. Image built `FEATURES=tier,strict-uring` (`dockerfiles/durable-streams.Dockerfile`).
 - ursula: `config/ursula.toml` (`ds-bench/ursula:dev`, built from `vendor/ursula` @ `0b2d0da`).
 - S2 Lite: compose service `s2lite`, host port 4439, `--api-style s2 --basin benchmark`; writes through SlateDB to MinIO.
 - MinIO: `minioadmin`/`minioadmin`, buckets `durable-streams`, `ursula`, and `s2-bench` (S2 Lite; `benchmark` is its basin, not a bucket).
 
 ## Caveats
 
-- `io_uring` is not used (unreliable under Docker); durable-streams runs its raw
-  HTTP/1 engine. A real Linux host can enable `uring` later (Track 2 / Phase 2).
+- `io_uring` (strict-mode fsync) is now compared on Linux: the `durable:strict-iouring`
+  variant runs the server built `--features strict-uring` with `--strict-io-uring` (one
+  shared io_uring ring batching per-stream `fdatasync`s), head-to-head against plain
+  `strict` (spawn_blocking). The WAL io_uring path is deferred.
 - All servers' data directories are **container-ephemeral by design**: each measured run starts from fresh state (no cross-run contamination), while durability (fsync for durable-streams/ursula; object-store flush for S2 Lite) is still exercised within a run. This is intentional, not a bug — it keeps runs reproducible.

@@ -63,8 +63,11 @@ no remote GKE runs.
 - No warmup/settle flags (unlike write/sse) — the long steady window *is* the
   measurement; the snapshot series shows stabilization. The `sustained` subcommand has no
   `--warmup-secs`/`--settle-secs` args.
-- `supports()` is unchanged: all three systems implement the `sustained` subcommand
-  (`ApiStyle` covers durable/ursula/s2).
+- **`supports()` change: sustained is durable-only.** Although all three systems implement
+  the `sustained` subcommand, the workload's purpose is server **memory stability**, which
+  is only sidecar-instrumented for durable. Running it on ursula/s2 would produce rows with
+  meaningless `0` memory, so `supports()` returns false for sustained on `ursula` and `s2` —
+  those cells never run. (This mirrors the existing s2/replay skip.)
 - Row values: `thr_or_evps` = `aggregate_ops_per_sec`, `p99_ms` = latency p99 — both
   already produced from the merged JSON by the existing `run_one` parsing.
 

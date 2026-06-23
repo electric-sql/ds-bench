@@ -62,21 +62,23 @@ WRITE_CARDS="${WRITE_CARDS:-1000 10000 100000}"   # stream counts for the write 
 # subscribers = T/M (e.g. 10 streams × 1000 total = 100 subs/stream). Cells where
 # T<M (would be <1 sub/stream) are skipped. Each SSE cell runs on ONE fleet pod so
 # the M×T fan-out is exact (the fleet replicates per-pod, so >1 pod would multiply it).
-SSE_STREAMS="${SSE_STREAMS:-1 5 10}"
+# SSE = Ursula's published methodology: ONE stream, sweep the subscriber count.
+SSE_STREAMS="${SSE_STREAMS:-1}"
 SSE_TOTAL_SUBS="${SSE_TOTAL_SUBS:-1 10 100 1000}"
 # SSE runs on ONE well-provisioned client pod (FLEET_CPU=SSE_FLEET_CPU): the writer
 # and all subscribers share a single process, so delivery latency is measured against
 # ONE wall clock — no cross-pod NTP skew — matching Ursula's published fan-out bench.
 # Throughput here is writer-paced, so a single pod doesn't cap it. (multi_fanout still
 # supports DS_BENCH_SHARDS sharding for a future SSE-throughput-ceiling test.)
-SSE_FLEET_CPU="${SSE_FLEET_CPU:-4}"
+SSE_FLEET_CPU="${SSE_FLEET_CPU:-12}"   # ≈ a full n2d-16 client node for the single SSE pod
+SSE_REPS="${SSE_REPS:-1}"              # SSE delivery p99 is stable → 1 rep (no repetition)
 REPLAY_CONF="${REPLAY_CONF:-1000:200}"            # clients:pre_events for catch-up
-export REPEATS="${REPEATS:-3}"
+export REPEATS="${REPEATS:-2}"
 BENCH_REPS="$REPEATS"   # lib-bench run_cell does `REPEATS=1` in calibrate mode (mutates the
                         # global), so the rep loop must use OUR own count, not $REPEATS.
 export WARMUP_SECS="${WARMUP_SECS:-10}" SETTLE_SECS="${SETTLE_SECS:-5}" DURATION="${DURATION:-20}"
 export FLEET_CPU="${FLEET_CPU:-0.5}"
-PER_POD="${PER_POD:-500}"                          # target streams/pod (client-unbound); pods=ceil(N/PER_POD), capped
+PER_POD="${PER_POD:-250}"                          # target streams/pod (client-unbound, well-provisioned); pods=ceil(N/PER_POD), capped
 MAX_FLEET_PODS="${MAX_FLEET_PODS:-200}"
 export FLEET_TIMEOUT="${FLEET_TIMEOUT:-360}" COORD_TIMEOUT="${COORD_TIMEOUT:-180}"
 export MODE=calibrate MAX_BUMPS=0                  # calibrate+MAX_BUMPS=0 → run at exactly the pinned pod count
@@ -156,6 +158,11 @@ for sysvar in $SYSTEMS; do
   echo "════════════ SYSTEM ${sys}:${var} ════════════"
   for wl in $WORKLOADS; do
     supports "$sys" "$wl" || { echo "  (skip $wl — unsupported on $sys)"; continue; }
+    # Durability mode only changes the WRITE path; SSE/replay are read paths and are
+    # byte-identical across modes, so run reads on ONE durable config (fast) — the
+    # other durable variants would just repeat the same read result.
+    [ "$sys" = durable ] && [ "$wl" != write ] && [ "$var" != fast ] && \
+      { echo "  (skip $wl on durable:$var — reads are mode-independent; covered by durable:fast)"; continue; }
     case "$wl" in
       write)
         for n in $WRITE_CARDS; do
@@ -171,7 +178,7 @@ for sysvar in $SYSTEMS; do
             [ "$t" -lt "$m" ] && continue          # need ≥1 subscriber per stream
             s=$(( t / m ))                          # subscribers per stream
             # ONE pod: writer + all subscribers co-located → single-clock latency.
-            FLEET_CPU="$SSE_FLEET_CPU" run_one "$sys" "$var" sse "streams=$m,subs_per=$s,total=$t" 1 "${sys}-${var}-sse-m${m}t${t}" \
+            BENCH_REPS="$SSE_REPS" FLEET_CPU="$SSE_FLEET_CPU" run_one "$sys" "$var" sse "streams=$m,subs_per=$s,total=$t" 1 "${sys}-${var}-sse-m${m}t${t}" \
               "multi-fanout --target __T__ --api-style __A__ __NS__ --streams ${m} --subscribers-per-stream ${s} --writer-rate 50 --duration-secs ${DURATION} --warmup-secs ${WARMUP_SECS} --settle-secs ${SETTLE_SECS}" \
               "ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix multi-fanout-"
           done
