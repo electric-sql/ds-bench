@@ -42,7 +42,7 @@ else
       --node-labels=role=server --network benchmarking --subnetwork benchmarking \
       --enable-ip-alias --release-channel regular
     gcloud container node-pools create clients --cluster "$CLUSTER" --zone "$ZONE" --project "$PROJECT" \
-      --machine-type n2d-standard-16 --num-nodes "${CLIENT_NODES:-2}" --node-labels=role=client
+      --machine-type "${CLIENT_MACHINE:-n2d-standard-16}" --num-nodes "${CLIENT_NODES:-2}" --node-labels=role=client
   fi
   gcloud container clusters get-credentials "$CLUSTER" --zone "$ZONE" --project "$PROJECT"
   gcloud auth configure-docker europe-west1-docker.pkg.dev -q || true
