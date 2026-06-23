@@ -15,6 +15,7 @@ One runner — **`scripts/gke-bench.sh`** — runs the whole comparison: a grid 
 | **write** (multi-stream) | 1k / 10k / 100k streams | durable `strict`·`strict-iouring`·`wal`·`fast`, ursula `memory`, s2 | 2 | ops/s + p99 |
 | **sse** (multi-fanout) | 1 stream × {1,10,100,1000} subs (Ursula-style) | durable `fast`, ursula `memory`, s2 | 1 | delivery p99 |
 | **replay** (catch-up) | 1000 clients × 200 events | durable `fast`, ursula `memory` (s2 excluded) | 2 | p99 |
+| **sustained** | 10 / 50 / 100 / 150 streams | durable only | 2 | ops/s + p99 + RSS drift |
 
 Durability mode only affects the **write** path, so the read workloads (sse, replay) run a single durable config (`fast`). Clients are provisioned well above the bottleneck within the cluster's pool: the write/replay fleet is many light pods (`FLEET_CPU`, `PER_POD`), and SSE runs on **one well-provisioned pod** (`SSE_FLEET_CPU` ≈ a full client node) so the writer + subscribers share one wall clock → clean delivery p99, no cross-pod skew.
 
@@ -79,7 +80,7 @@ SYSTEMS='durable:wal' WORKLOADS='write' WRITE_CARDS='1000' REPEATS=1 \
   DS_TARGET=local CLUSTER=ds-bench scripts/gke-bench.sh
 ```
 
-**Knobs** (override any): `SYSTEMS`, `WORKLOADS` (`write sse replay`), `WRITE_CARDS`, `SSE_STREAMS`/`SSE_TOTAL_SUBS`, `REPLAY_CONF`, `REPEATS` (default 2), `WARMUP_SECS`/`SETTLE_SECS`/`DURATION`, `FLEET_CPU` (write fleet), `SSE_FLEET_CPU`, `PER_POD` (target streams/pod), `WAL_SHARDS`, `TAIL_CACHE_BYTES`. See the full Configuration reference below.
+**Knobs** (override any): `SYSTEMS`, `WORKLOADS` (`write sse replay sustained`), `WRITE_CARDS`, `SSE_STREAMS`/`SSE_TOTAL_SUBS`, `REPLAY_CONF`, `SUSTAINED_CARDS`/`SUSTAINED_RATE`/`SUSTAINED_DURATION`, `REPEATS` (default 2), `WARMUP_SECS`/`SETTLE_SECS`/`DURATION`, `FLEET_CPU` (write fleet), `SSE_FLEET_CPU`, `PER_POD` (target streams/pod), `WAL_SHARDS`, `TAIL_CACHE_BYTES`. See the full Configuration reference below.
 
 > **Calibrate / `verdict.txt`.** Write cells run client-unbound at a pinned pod count (calibrate-then-pin, below). A cell is `server_bound` (trustworthy ceiling) only if the server consumed ≥90% of its CPU budget; otherwise `client_capped` (a lower bound — add `PER_POD`/pods). SSE runs on one well-provisioned pod by design (delivery-latency test).
 
@@ -156,12 +157,15 @@ All knobs are environment variables (export before the command); defaults in par
 | var | default | meaning |
 |---|---|---|
 | `SYSTEMS` | `durable:strict durable:strict-iouring durable:wal durable:fast ursula:memory s2:_` | `system:variant` cells, run in order (primary system first) |
-| `WORKLOADS` | `write sse replay` | which workloads to run |
+| `WORKLOADS` | `write sse replay sustained` | which workloads to run |
 | `WRITE_CARDS` | `1000 10000 100000` | stream counts for the write sweep |
 | `SSE_STREAMS` | `1` | SSE fan-out streams (M) |
 | `SSE_TOTAL_SUBS` | `1 10 100 1000` | SSE total subscribers (T); subs/stream = T/M, cells with T<M skipped |
 | `REPLAY_CONF` | `1000:200` | replay `clients:pre_events` for catch-up |
-| `REPEATS` | `2` | measured reps per write/replay cell (reported as mean) |
+| `SUSTAINED_CARDS` | `10 50 100 150` | sustained stream counts (durable-only sweep) |
+| `SUSTAINED_RATE` | `10` | sustained per-stream ops/sec |
+| `SUSTAINED_DURATION` | `90` | sustained measurement duration (long, so RSS sidecar captures drift) |
+| `REPEATS` | `2` | measured reps per write/replay/sustained cell (reported as mean) |
 | `SSE_REPS` | `1` | measured reps per SSE cell (delivery p99 is stable → 1) |
 | `WARMUP_SECS` | `10` | uncounted warm-up seconds per cell |
 | `SETTLE_SECS` | `5` | idle settle seconds before the measured window |

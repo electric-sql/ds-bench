@@ -8,9 +8,11 @@
 #   SYSTEMS    durable:strict  durable:wal  durable:fast   (our Rust server)
 #              ursula:disk     ursula:memory               (Raft; memory = best case)
 #              s2:_                                         (S2-lite, object-store)
-#   WORKLOADS  write   — multi-stream append throughput (ops/s + p99)
-#              sse     — single-/multi-stream fan-out delivery latency (p99)
-#              replay  — catch-up / mass reconnect (p99 + snapshot bytes)
+#   WORKLOADS  write     — multi-stream append throughput (ops/s + p99)
+#              sse       — single-/multi-stream fan-out delivery latency (p99)
+#              replay    — catch-up / mass reconnect (p99 + snapshot bytes)
+#              sustained — steady low rate over a LONG window → server RSS drift /
+#                          latency stability over time (durable-only)
 #
 #   METHODOLOGY (applied to every cell):
 #     • CLEAN deploy   — a fresh server (empty data dir) per cell; no cross-cell
@@ -57,7 +59,7 @@ SERVER_CPU="${SERVER_CPUS%% *}"
 # or to fail. A failed cell/system is non-fatal — the matrix continues.
 # Format: "system:variant".
 SYSTEMS="${SYSTEMS:-durable:strict durable:strict-iouring durable:wal durable:fast ursula:memory s2:_}"
-WORKLOADS="${WORKLOADS:-write sse replay}"
+WORKLOADS="${WORKLOADS:-write sse replay sustained}"
 WRITE_CARDS="${WRITE_CARDS:-1000 10000 100000}"   # stream counts for the write sweep
 # SSE fan-out is a 2-D sweep: streams (M) × TOTAL subscribers (T). Per-stream
 # subscribers = T/M (e.g. 10 streams × 1000 total = 100 subs/stream). Cells where
@@ -74,6 +76,13 @@ SSE_TOTAL_SUBS="${SSE_TOTAL_SUBS:-1 10 100 1000}"
 SSE_FLEET_CPU="${SSE_FLEET_CPU:-12}"   # ≈ a full n2d-16 client node for the single SSE pod
 SSE_REPS="${SSE_REPS:-1}"              # SSE delivery p99 is stable → 1 rep (no repetition)
 REPLAY_CONF="${REPLAY_CONF:-1000:200}"            # clients:pre_events for catch-up
+# Sustained: steady low per-stream rate over a LONG window (RSS drift / latency
+# stability over time), swept over stream counts. Durable-only (memory is the point,
+# and only durable is sidecar-instrumented). Its own long DURATION, separate from
+# the short write/sse window above.
+SUSTAINED_CARDS="${SUSTAINED_CARDS:-10 50 100 150}"   # stream counts
+SUSTAINED_RATE="${SUSTAINED_RATE:-10}"                # per-stream ops/sec
+SUSTAINED_DURATION="${SUSTAINED_DURATION:-90}"        # long, so the RSS sidecar captures drift
 export REPEATS="${REPEATS:-2}"
 BENCH_REPS="$REPEATS"   # lib-bench run_cell does `REPEATS=1` in calibrate mode (mutates the
                         # global), so the rep loop must use OUR own count, not $REPEATS.
@@ -128,7 +137,13 @@ deploy_system() {  # system variant
 }
 
 # Does this system support this workload? (S2-lite has no catch-up/replay.)
-supports() { local sys="$1" wl="$2"; [ "$sys" = s2 ] && [ "$wl" = replay ] && return 1; return 0; }
+supports() {
+  local sys="$1" wl="$2"
+  [ "$sys" = s2 ] && [ "$wl" = replay ] && return 1
+  # sustained measures server MEMORY stability — only durable is sidecar-instrumented.
+  [ "$wl" = sustained ] && [ "$sys" != durable ] && return 1
+  return 0
+}
 
 # Run one cell: fresh deploy + (warmup/settle baked into bench_cmd) + REPEATS reps.
 # Records mean throughput/ev-s + p99 + cpu to the summary.
@@ -190,6 +205,13 @@ for sysvar in $SYSTEMS; do
         run_one "$sys" "$var" replay "clients=$cl,events=$ev" "$pods" "${sys}-${var}-replay-c${cl}" \
           "catch-up --target __T__ --api-style __A__ __NS__ --clients ${cl} --pre-events ${ev} --event-bytes 1024 --setup-concurrency 256" \
           "ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix catch-up-" ;;
+      sustained)
+        for n in $SUSTAINED_CARDS; do
+          pods="$(clamp_pods "$n")"; perpod=$(( (n + pods - 1) / pods ))
+          run_one "$sys" "$var" sustained "n=$n,rate=$SUSTAINED_RATE" "$pods" "${sys}-${var}-sustained-n${n}" \
+            "sustained --target __T__ --api-style __A__ __NS__ --streams ${perpod} --rate-per-stream ${SUSTAINED_RATE} --duration-secs ${SUSTAINED_DURATION} --snapshot-secs 5 --setup-concurrency 256" \
+            "ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix sustained-"
+        done ;;
     esac
   done
 done
