@@ -67,6 +67,16 @@ pub struct MultiStreamArgs {
     /// HTTP request timeout in seconds.
     #[arg(long, default_value_t = 30)]
     pub request_timeout_secs: u64,
+
+    /// Warm-up seconds: drive load (advancing the producer session, warming the
+    /// server's caches/allocator/WAL) but DO NOT count these ops. 0 = disabled.
+    #[arg(long, default_value_t = 0)]
+    pub warmup_secs: u64,
+
+    /// Settle/wait seconds: after warm-up, go idle so the create+warm-up burst
+    /// quiesces before the measured window starts. 0 = disabled.
+    #[arg(long, default_value_t = 0)]
+    pub settle_secs: u64,
 }
 
 #[derive(Serialize)]
@@ -120,8 +130,12 @@ pub async fn run(args: MultiStreamArgs) -> Result<MultiStreamResult> {
     let errors = Arc::new(Mutex::new(BTreeMap::<String, u64>::new()));
     let hist = Arc::new(Mutex::new(new_histogram()));
 
-    let deadline = Instant::now() + Duration::from_secs(args.duration_secs);
-    let start = Instant::now();
+    // Three phases on ONE continuous producer session (seq advances throughout,
+    // so no dedup collisions): warm-up (uncounted) → settle (idle) → measure (counted).
+    let base = Instant::now();
+    let warmup_end = base + Duration::from_secs(args.warmup_secs);
+    let measure_start = warmup_end + Duration::from_secs(args.settle_secs);
+    let deadline = measure_start + Duration::from_secs(args.duration_secs);
 
     let mut workers = Vec::with_capacity(args.streams);
     for idx in 0..args.streams {
@@ -143,6 +157,8 @@ pub async fn run(args: MultiStreamArgs) -> Result<MultiStreamResult> {
                 payload,
                 producer_id,
                 rate,
+                warmup_end,
+                measure_start,
                 deadline,
                 ok,
                 bp,
@@ -158,7 +174,6 @@ pub async fn run(args: MultiStreamArgs) -> Result<MultiStreamResult> {
         let _ = w.await;
     }
 
-    let elapsed = start.elapsed();
     let counts = Counts {
         ok: ok.load(Ordering::Relaxed),
         backpressure: bp.load(Ordering::Relaxed),
@@ -176,7 +191,7 @@ pub async fn run(args: MultiStreamArgs) -> Result<MultiStreamResult> {
     let h = hist.lock().await;
     let latency = summarize(&h);
     crate::dist::emit_hdr(&h, &format!("multi-stream-{}", std::process::id()));
-    let elapsed_secs = elapsed.as_secs_f64();
+    let elapsed_secs = args.duration_secs as f64; // throughput over the MEASURE window only
     let aggregate = counts.ok as f64 / elapsed_secs.max(1e-9);
     let per_stream_mean = aggregate / args.streams.max(1) as f64;
 
@@ -207,6 +222,8 @@ async fn run_writer(
     payload: Arc<Vec<u8>>,
     producer_id: String,
     rate_per_stream: u64,
+    warmup_end: Instant,
+    measure_start: Instant,
     deadline: Instant,
     ok: Arc<AtomicU64>,
     bp: Arc<AtomicU64>,
@@ -225,6 +242,16 @@ async fn run_writer(
     let mut local = new_histogram();
     let use_producer = matches!(backend.kind, ApiStyle::Ursula | ApiStyle::Durable);
     while Instant::now() < deadline {
+        let now = Instant::now();
+        // SETTLE/WAIT phase: idle between warm-up and the measure window so the
+        // create + warm-up burst quiesces before we start counting.
+        if now >= warmup_end && now < measure_start {
+            tokio::time::sleep(measure_start.saturating_duration_since(now)).await;
+            continue;
+        }
+        // Count only in the measure window; warm-up still appends (advancing seq +
+        // warming the server) but is not counted.
+        let counting = now >= measure_start;
         if let Some(iv) = interval {
             let now = Instant::now();
             if now < next_at {
@@ -256,20 +283,26 @@ async fn run_writer(
             Ok(r) => {
                 let status = r.status();
                 if status.is_success() {
-                    ok.fetch_add(1, Ordering::Relaxed);
-                    record(&mut local, started);
-                    seq += 1;
+                    if counting {
+                        ok.fetch_add(1, Ordering::Relaxed);
+                        record(&mut local, started);
+                    }
+                    seq += 1; // advance in BOTH warm-up and measure → one continuous session
                 } else if status.as_u16() == 503 || status.as_u16() == 429 {
-                    bp.fetch_add(1, Ordering::Relaxed);
+                    if counting {
+                        bp.fetch_add(1, Ordering::Relaxed);
+                    }
                     tokio::time::sleep(Duration::from_millis(20)).await;
-                } else {
+                } else if counting {
                     err.fetch_add(1, Ordering::Relaxed);
                     record_error(&errors, format!("http_status_{}", status.as_u16())).await;
                 }
             }
             Err(e) => {
-                err.fetch_add(1, Ordering::Relaxed);
-                record_error(&errors, reqwest_error_chain(&e)).await;
+                if counting {
+                    err.fetch_add(1, Ordering::Relaxed);
+                    record_error(&errors, reqwest_error_chain(&e)).await;
+                }
             }
         }
     }

@@ -26,7 +26,7 @@ data:
     # [raft.peers] intentionally omitted -> Topology::SingleNode
 
     [raft.wal]
-    backend = "disk"
+    backend = "${URSULA_WAL}"
     path = "/var/lib/ursula/data"
 
     [storage.cold]

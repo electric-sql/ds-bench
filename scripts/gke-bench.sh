@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# ============================================================================
+# gke-bench.sh — the ONE durable-streams benchmark matrix runner.
+#
+# Runs a reproducible benchmark matrix across streaming systems under a single,
+# documented methodology on a GKE cluster (1 server node + a client fleet pool).
+#
+#   SYSTEMS    durable:strict  durable:wal  durable:fast   (our Rust server)
+#              ursula:disk     ursula:memory               (Raft; memory = best case)
+#              s2:_                                         (S2-lite, object-store)
+#   WORKLOADS  write   — multi-stream append throughput (ops/s + p99)
+#              sse     — single-/multi-stream fan-out delivery latency (p99)
+#              replay  — catch-up / mass reconnect (p99 + snapshot bytes)
+#
+#   METHODOLOGY (applied to every cell):
+#     • CLEAN deploy   — a fresh server (empty data dir) per cell; no cross-cell
+#                        stream accumulation.
+#     • WARM-UP + WAIT — the client drives load for WARMUP_SECS (uncounted,
+#                        warming caches/WAL/consensus), idles SETTLE_SECS, then
+#                        measures only the steady window. (write+sse; replay is a
+#                        one-shot reconnect → clean-deploy + settle instead.)
+#     • REPS           — REPEATS measured runs per cell, reported as mean.
+#     • CLIENT-UNBOUND — many light fleet pods (low FLEET_CPU) so the SERVER is
+#                        the bottleneck, not the load generator.
+#
+# This is a SINGLE-CONFIG comparison in OUR environment (local-NVMe server,
+# matched cgroup budget), best-case for each system. It is NOT a multi-node /
+# replicated comparison — e.g. Ursula here is single-node, not a 3-voter quorum.
+#
+# Prereqs:  a cluster from scripts/cluster-up.sh (CLIENT_NODES sized for the
+#           fan-out) + images pushed (scripts/gke-push-images.sh). Does NOT
+#           create or tear down the cluster.
+#
+# Usage:    PROJECT=vaxine ZONE=.. CLUSTER=.. [knobs below] scripts/gke-bench.sh
+# Output:   results/bench/bench-<ts>/summary.tsv  (+ per-cell merged/samples/hdr)
+# ============================================================================
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+REPO_ROOT="$(pwd)"; export REPO_ROOT
+export DS_TARGET="${DS_TARGET:-remote}" PROJECT="${PROJECT:-vaxine}"
+# ZONE/CLUSTER only required for remote target
+[ "${DS_TARGET}" = "remote" ] && { export ZONE="${ZONE:?set ZONE}" CLUSTER="${CLUSTER:?set CLUSTER}"; } || { export ZONE="${ZONE:-local}" CLUSTER="${CLUSTER:-ds-bench}"; }
+export SERVER_CPUS="${SERVER_CPUS:-4}" SERVER_MEM="${SERVER_MEM:-16Gi}"
+# shellcheck source=scripts/lib-bench.sh
+. scripts/lib-bench.sh
+SERVER_CPU="${SERVER_CPUS%% *}"
+
+# ── knobs (all overridable) ─────────────────────────────────────────────────
+# SYSTEMS run in ORDER. List the PRIMARY system (our Rust durable-streams) FIRST
+# so its stable headline numbers are collected and parked before the secondary /
+# comparison systems (Ursula, S2, base-Node), which are likelier to need re-runs
+# or to fail. A failed cell/system is non-fatal — the matrix continues.
+# Format: "system:variant".
+SYSTEMS="${SYSTEMS:-durable:strict durable:wal durable:fast ursula:memory s2:_}"
+WORKLOADS="${WORKLOADS:-write sse replay}"
+WRITE_CARDS="${WRITE_CARDS:-1000 10000 100000}"   # stream counts for the write sweep
+# SSE fan-out is a 2-D sweep: streams (M) × TOTAL subscribers (T). Per-stream
+# subscribers = T/M (e.g. 10 streams × 1000 total = 100 subs/stream). Cells where
+# T<M (would be <1 sub/stream) are skipped. Each SSE cell runs on ONE fleet pod so
+# the M×T fan-out is exact (the fleet replicates per-pod, so >1 pod would multiply it).
+SSE_STREAMS="${SSE_STREAMS:-1 5 10}"
+SSE_TOTAL_SUBS="${SSE_TOTAL_SUBS:-1 10 100 1000}"
+# SSE client scale-out: the fan-out is SHARDED across pods (multi_fanout reads
+# DS_BENCH_INSTANCE/DS_BENCH_SHARDS), so a fixed M×T splits over ceil(T/SSE_SUBS_PER_POD)
+# pods — each pod drives ≤SSE_SUBS_PER_POD subscribers so the CLIENT never caps the
+# server. SSE_FLEET_CPU sizes each SSE pod (vs the lighter global FLEET_CPU).
+SSE_SUBS_PER_POD="${SSE_SUBS_PER_POD:-125}"
+SSE_FLEET_CPU="${SSE_FLEET_CPU:-2}"
+REPLAY_CONF="${REPLAY_CONF:-1000:200}"            # clients:pre_events for catch-up
+export REPEATS="${REPEATS:-3}"
+BENCH_REPS="$REPEATS"   # lib-bench run_cell does `REPEATS=1` in calibrate mode (mutates the
+                        # global), so the rep loop must use OUR own count, not $REPEATS.
+export WARMUP_SECS="${WARMUP_SECS:-10}" SETTLE_SECS="${SETTLE_SECS:-5}" DURATION="${DURATION:-20}"
+export FLEET_CPU="${FLEET_CPU:-0.5}"
+PER_POD="${PER_POD:-500}"                          # target streams/pod (client-unbound); pods=ceil(N/PER_POD), capped
+MAX_FLEET_PODS="${MAX_FLEET_PODS:-200}"
+export FLEET_TIMEOUT="${FLEET_TIMEOUT:-360}" COORD_TIMEOUT="${COORD_TIMEOUT:-180}"
+export MODE=calibrate MAX_BUMPS=0                  # calibrate+MAX_BUMPS=0 → run at exactly the pinned pod count
+
+TS="$(date +%s)"
+export SWEEP_RUN_ID="bench-${TS}"
+export RESULTS_ROOT="results/bench/bench-${TS}"
+mkdir -p "$RESULTS_ROOT"
+SUM="$RESULTS_ROOT/summary.tsv"
+printf 'system\tvariant\tworkload\tparams\tpods\trep\tthr_or_evps\tp99_ms\tcpu_pct\n' > "$SUM"
+
+echo "═══ gke-bench → $RESULTS_ROOT ═══"
+echo "  systems  : $SYSTEMS"
+echo "  workloads: $WORKLOADS"
+echo "  method   : clean-deploy + warmup ${WARMUP_SECS}s + settle ${SETTLE_SECS}s + measure ${DURATION}s × ${REPEATS} reps, fleet_cpu=${FLEET_CPU}"
+ensure_metrics_configmap
+# cold-tier buckets (ursula/s2 write to object store)
+K exec deploy/minio -- sh -c 'mc alias set local http://localhost:9000 minioadmin minioadmin >/dev/null 2>&1; mc mb -p local/ursula local/s2-bench local/durable-streams local/bench-results >/dev/null 2>&1; true' >/dev/null 2>&1 || true
+
+# ── per-system deploy (fresh) + addressing ──────────────────────────────────
+# Sets globals: T_TARGET T_API T_PROBE T_NS (namespace flag). Returns 1 on failure.
+deploy_system() {  # system variant
+  local sys="$1" var="$2"
+  K delete deploy/durable-streams ursula s2lite --ignore-not-found --wait=true >/dev/null 2>&1 || true
+  case "$sys" in
+    durable)
+      local args="--durability ${var}"
+      [ "$var" = wal ] && args="--durability wal --wal-shards ${WAL_SHARDS:-4}"
+      [ "$var" = wal-iouring ] && args="--durability wal --wal-shards ${WAL_SHARDS:-4} --wal-io-uring"
+      # wal-cache: wal mode with the resident tail cache ON (64 KiB) — for the
+      # tail-cache vs always-sendfile comparison (vs plain `wal` = cache off on Linux).
+      [ "$var" = wal-cache ] && args="--durability wal --wal-shards ${WAL_SHARDS:-4} --tail-cache-bytes ${TAIL_CACHE_BYTES:-65536}"
+      SERVER_KIND=durable SERVER_EXTRA_ARGS="$args" PROBE_HOSTPORT="durable-streams:4438" deploy_server "$SERVER_CPU" >&2 || return 1
+      T_TARGET="http://durable-streams:4438"; T_API="durable"; T_PROBE="durable-streams:4438"; T_NS="" ;;
+    ursula)
+      SERVER_KIND=ursula URSULA_WAL="$var" PROBE_HOSTPORT="ursula:4437" deploy_server "$SERVER_CPU" >&2 || return 1
+      T_TARGET="http://ursula:4437"; T_API="ursula"; T_PROBE="ursula:4437"; T_NS="--bucket benchmark" ;;
+    s2)
+      K apply -f gke/s2lite.yaml >&2 && K rollout status deploy/s2lite --timeout=600s >&2 || return 1
+      T_TARGET="http://s2lite:80"; T_API="s2"; T_PROBE="s2lite:80"; T_NS="--basin benchmark" ;;
+    *) echo "unknown system '$sys'" >&2; return 1 ;;
+  esac
+}
+
+# Does this system support this workload? (S2-lite has no catch-up/replay.)
+supports() { local sys="$1" wl="$2"; [ "$sys" = s2 ] && [ "$wl" = replay ] && return 1; return 0; }
+
+# Run one cell: fresh deploy + (warmup/settle baked into bench_cmd) + REPEATS reps.
+# Records mean throughput/ev-s + p99 + cpu to the summary.
+run_one() {  # sys var workload params bench_cmd_fn pods label
+  local sys="$1" var="$2" wl="$3" params="$4" pods="$5" cell="$6" bench_cmd="$7" merge="$8"
+  local rep cd thr p99 cpu cmd
+  for rep in $(seq 1 "$BENCH_REPS"); do
+    deploy_system "$sys" "$var" || { echo "[$cell] deploy failed (rep $rep) — skipping (system may be unbuilt-to-scale)"; continue; }
+    # Substitute the target/api/namespace placeholders now that deploy set them.
+    cmd="${bench_cmd//__T__/$T_TARGET}"; cmd="${cmd//__A__/$T_API}"; cmd="${cmd//__NS__/$T_NS}"
+    local rcell="${cell}-r${rep}"
+    INIT_PARALLELISM="$pods" MAX_PODS="$pods" \
+      run_cell "$rcell" "$cmd" "$wl" "$merge" "$SERVER_CPU" >&2 || true
+    cd="$RESULTS_ROOT/$rcell/rep1"
+    cpu="$(compute_server_cpu_pct "$cd/samples.csv" 2>/dev/null || echo 0)"
+    thr="$(python3 scripts/saturation.py --merged "$cd/merged.json" --prev-thr 0 --cpu "$cpu" --cores 1 2>/dev/null | awk '{print $2}')"
+    p99="$(grep -oE '"p99_ms"[: ]*[0-9.]+' "$cd/merged.json" 2>/dev/null | grep -oE '[0-9.]+$' | head -1)"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$sys" "$var" "$wl" "$params" "$pods" "$rep" "${thr:-0}" "${p99:-NA}" "${cpu:-0}" | tee -a "$SUM"
+  done
+}
+
+clamp_pods() { local n="$1" p; p=$(( (n + PER_POD - 1) / PER_POD )); [ "$p" -lt 2 ] && p=2; [ "$p" -gt "$MAX_FLEET_PODS" ] && p="$MAX_FLEET_PODS"; echo "$p"; }
+
+# ── the matrix ──────────────────────────────────────────────────────────────
+for sysvar in $SYSTEMS; do
+  sys="${sysvar%%:*}"; var="${sysvar#*:}"
+  echo "════════════ SYSTEM ${sys}:${var} ════════════"
+  for wl in $WORKLOADS; do
+    supports "$sys" "$wl" || { echo "  (skip $wl — unsupported on $sys)"; continue; }
+    case "$wl" in
+      write)
+        for n in $WRITE_CARDS; do
+          pods="$(clamp_pods "$n")"; perpod=$(( (n + pods - 1) / pods ))
+          # NS resolved at deploy; reference via $T_NS inside bench (deploy runs first per rep).
+          run_one "$sys" "$var" write "n=$n" "$pods" "${sys}-${var}-write-n${n}" \
+            "multi-stream --target __T__ --api-style __A__ __NS__ --streams ${perpod} --duration-secs ${DURATION} --payload-bytes 256 --setup-concurrency 256 --warmup-secs ${WARMUP_SECS} --settle-secs ${SETTLE_SECS}" \
+            "ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix multi-stream-"
+        done ;;
+      sse)
+        for m in $SSE_STREAMS; do
+          for t in $SSE_TOTAL_SUBS; do
+            [ "$t" -lt "$m" ] && continue          # need ≥1 subscriber per stream
+            s=$(( t / m ))                          # subscribers per stream
+            # Shard the fan-out across ceil(T/SSE_SUBS_PER_POD) pods (≥1), capped.
+            ssepods=$(( (t + SSE_SUBS_PER_POD - 1) / SSE_SUBS_PER_POD ))
+            [ "$ssepods" -lt 1 ] && ssepods=1
+            [ "$ssepods" -gt "$MAX_FLEET_PODS" ] && ssepods="$MAX_FLEET_PODS"
+            FLEET_CPU="$SSE_FLEET_CPU" run_one "$sys" "$var" sse "streams=$m,subs_per=$s,total=$t" "$ssepods" "${sys}-${var}-sse-m${m}t${t}" \
+              "multi-fanout --target __T__ --api-style __A__ __NS__ --streams ${m} --subscribers-per-stream ${s} --writer-rate 50 --duration-secs ${DURATION} --warmup-secs ${WARMUP_SECS} --settle-secs ${SETTLE_SECS}" \
+              "ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix multi-fanout-"
+          done
+        done ;;
+      replay)
+        cl="${REPLAY_CONF%%:*}"; ev="${REPLAY_CONF##*:}"; pods="$(clamp_pods "$cl")"
+        run_one "$sys" "$var" replay "clients=$cl,events=$ev" "$pods" "${sys}-${var}-replay-c${cl}" \
+          "catch-up --target __T__ --api-style __A__ __NS__ --clients ${cl} --pre-events ${ev} --event-bytes 1024 --setup-concurrency 256" \
+          "ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix catch-up-" ;;
+    esac
+  done
+done
+
+echo ""; echo "═══════ DONE → $SUM ═══════"; column -t "$SUM" 2>/dev/null || cat "$SUM"
+echo "(cluster $CLUSTER still up — tear down when finished)"

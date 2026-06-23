@@ -57,12 +57,20 @@ esac
 # Server pod memory limit (the cgroup OOM ceiling — drives fan-out subscriber capacity).
 SERVER_MEM="${SERVER_MEM:-16Gi}"
 
+# Per-fleet-pod cpu RESERVATION (scheduling only; no cpu limit in bench-job.yaml).
+# Default 2 (back-compat). Lower it to pack more pods/node for high fan-out.
+FLEET_CPU="${FLEET_CPU:-2}"
+
+# Ursula Raft WAL backend: "disk" (durable, default) | "memory" (no disk WAL =
+# Ursula's analog of durable-streams' fast/non-durable mode).
+URSULA_WAL="${URSULA_WAL:-disk}"
+
 # Vars referenced by envsubst in the manifests + by the runners.
 export DS_TARGET KCTX IMG_SERVER IMG_URSULA IMG_DSBENCH IMG_METRICS PULL_POLICY \
        NODESEL_SERVER NODESEL_CLIENT PROJECT ZONE CLUSTER KIND_CLUSTER REG \
-       SERVER_MEM SERVER_MACHINE
+       SERVER_MEM SERVER_MACHINE FLEET_CPU URSULA_WAL
 
 # Every manifest envsubst must whitelist these so the image/policy/selector
 # placeholders resolve. Runners reference $MANIFEST_VARS in their envsubst calls.
-MANIFEST_VARS='${IMG_SERVER} ${IMG_URSULA} ${IMG_DSBENCH} ${IMG_METRICS} ${PULL_POLICY} ${NODESEL_SERVER} ${NODESEL_CLIENT} ${SERVER_MEM}'
+MANIFEST_VARS='${IMG_SERVER} ${IMG_URSULA} ${IMG_DSBENCH} ${IMG_METRICS} ${PULL_POLICY} ${NODESEL_SERVER} ${NODESEL_CLIENT} ${SERVER_MEM} ${FLEET_CPU} ${URSULA_WAL}'
 export MANIFEST_VARS

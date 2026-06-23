@@ -80,7 +80,7 @@ deploy_server() {
 
   elif echo "$extra_args" | grep -q -- "--tier local"; then
     local tmp_tier
-    tmp_tier="$(mktemp /tmp/ds-tier-XXXXXX.txt)"
+    tmp_tier="$(mktemp /tmp/ds-tier-XXXXXX)"
     printf '            - "--tier"\n'               >> "$tmp_tier"
     printf '            - "local"\n'                >> "$tmp_tier"
     printf '            - "--tier-local-dir"\n'     >> "$tmp_tier"
@@ -96,7 +96,7 @@ deploy_server() {
 
   else
     local tmp_inject
-    tmp_inject="$(mktemp /tmp/ds-inject-XXXXXX.txt)"
+    tmp_inject="$(mktemp /tmp/ds-inject-XXXXXX)"
     for flag in $extra_args; do
       printf '            - "%s"\n' "$flag" >> "$tmp_inject"
     done

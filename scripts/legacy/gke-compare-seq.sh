@@ -56,7 +56,9 @@ trap 'DS_TARGET=remote PROJECT="$PROJECT" CLUSTER="$CLUSTER" ZONE="$ZONE" bash s
 spec_for() {
   case "$1" in
     strict)    echo "--durability strict|durable|http://durable-streams:4438|durable|durable-streams:4438" ;;
+    fast)      echo "--durability fast|durable|http://durable-streams:4438|durable|durable-streams:4438" ;;
     relaxed)   echo "--durability relaxed|durable|http://durable-streams:4438|durable|durable-streams:4438" ;;
+    wal)       echo "--durability wal|durable|http://durable-streams:4438|durable|durable-streams:4438" ;;
     reference) echo "|durable|http://durable-streams:4438|durable|durable-streams:4438" ;;
     *) echo ""; return 1 ;;
   esac

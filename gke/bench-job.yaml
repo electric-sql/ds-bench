@@ -35,6 +35,7 @@ spec:
           args:
             - >
               DS_BENCH_INSTANCE="$JOB_COMPLETION_INDEX"
+              DS_BENCH_SHARDS="${PARALLELISM}"
               ds-bench ${BENCH_CMD}
               > /out/${OUT_PREFIX}-${JOB_COMPLETION_INDEX}.json &&
               mc alias set local http://minio:9000 minioadmin minioadmin &&
@@ -44,7 +45,10 @@ spec:
           resources:
             requests:
               memory: "512Mi"
-              cpu: "2"
+              # cpu is the scheduling RESERVATION only (no cpu limit below, so a
+              # busy pod still bursts to the node's cores). Lower FLEET_CPU packs
+              # more (lighter) pods per node — the high-fan-out / low-density knob.
+              cpu: "${FLEET_CPU}"
             limits:
               memory: "4Gi"
               # no CPU limit on purpose — the load generator bursts to the node's

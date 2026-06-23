@@ -61,6 +61,20 @@ pub struct MultiFanoutArgs {
     #[arg(long, default_value_t = 10)]
     pub subscribers_per_stream: usize,
 
+    /// Distributed-fleet shard index (this pod's ordinal), 0..shard_count.
+    /// This pod writes streams where `stream_idx % shard_count == shard_index`
+    /// and runs the subscriber slots where `global_sub_idx % shard_count ==
+    /// shard_index`, so a FIXED M×S fan-out is split across `shard_count` pods
+    /// (true client scale-out) instead of replicated. Default 0.
+    #[arg(long, default_value_t = 0)]
+    pub shard_index: usize,
+
+    /// Number of fleet shards (pods) the fan-out is split across. 1 = single
+    /// pod (no sharding). Streams/subscribers stay fixed; client load divides
+    /// by shard_count. Default 1.
+    #[arg(long, default_value_t = 1)]
+    pub shard_count: usize,
+
     /// Writer events per second per stream.
     #[arg(long, default_value_t = 50)]
     pub writer_rate: u64,
@@ -68,6 +82,15 @@ pub struct MultiFanoutArgs {
     /// Wall-clock duration to drive load, in seconds.
     #[arg(long, default_value_t = 30)]
     pub duration_secs: u64,
+
+    /// Warm-up seconds: drive the fan-out but DON'T record delivery latencies
+    /// (warms the broadcast path / caches). 0 = disabled.
+    #[arg(long, default_value_t = 0)]
+    pub warmup_secs: u64,
+
+    /// Settle seconds after warm-up, before the measured window. 0 = disabled.
+    #[arg(long, default_value_t = 0)]
+    pub settle_secs: u64,
 
     /// Payload size in bytes per append (min 49).
     #[arg(long, default_value_t = 256)]
@@ -115,10 +138,31 @@ pub async fn run(args: MultiFanoutArgs) -> Result<MultiFanoutResult> {
         args.api_style.as_str(),
     );
     backend.ensure_namespace().await?;
-    create_streams(&backend, args.streams, args.setup_concurrency).await?;
+    // Shard from the fleet env when present (the indexed Job sets DS_BENCH_INSTANCE
+    // = pod ordinal and DS_BENCH_SHARDS = pod count), else the CLI args (manual /
+    // single-process runs). This lets a FIXED M×S fan-out split across the fleet's
+    // pods with no per-pod command rewriting; PARALLELISM=1 → shard 0 of 1 (no-op).
+    let k = std::env::var("DS_BENCH_SHARDS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(args.shard_count)
+        .max(1);
+    let shard = std::env::var("DS_BENCH_INSTANCE")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(args.shard_index)
+        .min(k - 1);
+    tracing::info!("multi-fanout shard {shard}/{k}");
+    create_streams(&backend, args.streams, k, shard, args.setup_concurrency).await?;
 
-    let total_subscribers = args.streams * args.subscribers_per_stream;
-    let total_writers = args.streams; // 1 writer per stream
+    // This shard's slice of the global M streams × S subscribers. Writers are
+    // assigned by stream (stream_idx % k == shard); subscribers by GLOBAL slot
+    // index (g % k == shard). Both the writer and the (dominant) read load thus
+    // divide across the k pods while the server still sees the full M×S fan-out.
+    let count_cong = |n: usize| if shard >= n { 0 } else { (n - 1 - shard) / k + 1 };
+    let total_subscribers = count_cong(args.streams * args.subscribers_per_stream);
+    let total_writers = count_cong(args.streams); // 1 writer per OWNED stream
 
     // Barrier: all subscribers connect, then subscribers + writers all release
     // together so writers never send before any subscriber is live.
@@ -135,7 +179,10 @@ pub async fn run(args: MultiFanoutArgs) -> Result<MultiFanoutResult> {
     let events_received = Arc::new(AtomicU64::new(0));
 
     let idle = Duration::from_secs(args.request_timeout_secs.max(10));
-    let duration_secs = args.duration_secs;
+    // The writer drives the FULL window (warm-up + settle + measure); subscribers
+    // record delivery latencies only in the final `measure_secs` window.
+    let measure_secs = args.duration_secs;
+    let duration_secs = args.warmup_secs + args.settle_secs + args.duration_secs;
     let rate = args.writer_rate.max(1);
 
     let mut handles = Vec::with_capacity(total_subscribers + total_writers);
@@ -144,13 +191,16 @@ pub async fn run(args: MultiFanoutArgs) -> Result<MultiFanoutResult> {
     for stream_idx in 0..args.streams {
         let stream = stream_name(stream_idx);
         for sub_local_idx in 0..args.subscribers_per_stream {
+            let sub_global_idx = stream_idx * args.subscribers_per_stream + sub_local_idx;
+            if sub_global_idx % k != shard {
+                continue; // this subscriber slot belongs to another shard
+            }
             let backend = backend.clone();
             let stream = stream.clone();
             let barrier = ready_barrier.clone();
             let deadline_cell = deadline_cell.clone();
             let recv = events_received.clone();
             let hist = hist.clone();
-            let sub_global_idx = stream_idx * args.subscribers_per_stream + sub_local_idx;
             handles.push(tokio::spawn(async move {
                 if let Err(e) = run_subscriber_task(
                     &backend,
@@ -161,6 +211,7 @@ pub async fn run(args: MultiFanoutArgs) -> Result<MultiFanoutResult> {
                     recv,
                     hist,
                     idle,
+                    measure_secs,
                 )
                 .await
                 {
@@ -174,8 +225,11 @@ pub async fn run(args: MultiFanoutArgs) -> Result<MultiFanoutResult> {
 
     let start = Instant::now();
 
-    // --- Writer tasks (1 per stream; each waits at the barrier before first append) ---
+    // --- Writer tasks (1 per OWNED stream; each waits at the barrier before first append) ---
     for stream_idx in 0..args.streams {
+        if stream_idx % k != shard {
+            continue; // this stream is written by another shard
+        }
         let backend = backend.clone();
         let stream = stream_name(stream_idx);
         let barrier = ready_barrier.clone();
@@ -283,26 +337,42 @@ async fn run_subscriber_task(
     recv: Arc<AtomicU64>,
     hist: Arc<Mutex<Histogram<u64>>>,
     idle: Duration,
+    measure_secs: u64,
 ) -> Result<()> {
     let (url, headers) = backend.sse_url_for(idx, stream);
 
     // Attempt SSE connect — capture outcome but do NOT return yet.
     // The barrier MUST be crossed exactly once on BOTH success and failure paths
     // so that a failed subscriber does not leave all writers/subscribers hanging.
-    let connect_result = backend
-        .client
-        .get(&url)
-        .headers(headers)
-        .send()
-        .await
-        .with_context(|| format!("GET {url}"))
-        .and_then(|resp| {
-            if resp.status().is_success() {
-                Ok(resp)
-            } else {
-                anyhow::bail!("SSE open: {} {}", resp.status(), url)
+    // RETRY: under fleet sharding the target stream may be created by a DIFFERENT
+    // pod, so it can briefly 404 until that owner's setup lands. Retry (cheap,
+    // capped) until it opens or the connect deadline elapses.
+    let connect_deadline = Instant::now() + Duration::from_secs(60);
+    let connect_result = loop {
+        let attempt = backend
+            .client
+            .get(&url)
+            .headers(headers.clone())
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))
+            .and_then(|resp| {
+                if resp.status().is_success() {
+                    Ok(resp)
+                } else {
+                    anyhow::bail!("SSE open: {} {}", resp.status(), url)
+                }
+            });
+        match attempt {
+            Ok(resp) => break Ok(resp),
+            Err(e) => {
+                if Instant::now() >= connect_deadline {
+                    break Err(e);
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
             }
-        });
+        }
+    };
 
     // SSE connection attempted — cross the barrier unconditionally so writers
     // are never left hanging.  Successful subscribers are already listening;
@@ -351,7 +421,13 @@ async fn run_subscriber_task(
                         let lat_ns = now_ns.saturating_sub(sent_ns);
                         let us_u128 = lat_ns / 1000;
                         let us = us_u128.min(u128::from(local.high())) as u64;
-                        if us > 0 {
+                        // Record only in the measure window (now ≥ deadline −
+                        // measure_secs); warm-up/settle deliveries are discarded.
+                        if us > 0
+                            && dl.is_some_and(|end| {
+                                Instant::now() + Duration::from_secs(measure_secs) >= end
+                            })
+                        {
                             let _ = local.record(us);
                         }
                     }
@@ -371,10 +447,22 @@ async fn run_subscriber_task(
 
 // ── Setup helpers ────────────────────────────────────────────────────────────
 
-async fn create_streams(backend: &Backend, count: usize, concurrency: usize) -> Result<()> {
+/// Create only this shard's OWNED streams: indices `shard_index, shard_index +
+/// shard_count, …` up to `count`. Each stream has exactly one owner shard, so
+/// across the fleet every stream is created exactly once. Subscribers on other
+/// shards reach these streams once the owner has created them (the subscriber
+/// connect retries — see `run_subscriber_task`).
+async fn create_streams(
+    backend: &Backend,
+    count: usize,
+    shard_count: usize,
+    shard_index: usize,
+    concurrency: usize,
+) -> Result<()> {
     use futures::stream::FuturesUnordered;
     let mut pending: FuturesUnordered<_> = FuturesUnordered::new();
-    let mut next = 0usize;
+    let step = shard_count.max(1);
+    let mut next = shard_index; // first owned index
     let max = concurrency.max(1);
     let push_one = |i: usize, pending: &mut FuturesUnordered<_>| {
         let backend = backend.clone();
@@ -387,13 +475,13 @@ async fn create_streams(backend: &Backend, count: usize, concurrency: usize) -> 
     };
     while next < count && pending.len() < max {
         push_one(next, &mut pending);
-        next += 1;
+        next += step;
     }
     while let Some(joined) = pending.next().await {
         joined??;
         if next < count {
             push_one(next, &mut pending);
-            next += 1;
+            next += step;
         }
     }
     Ok(())
