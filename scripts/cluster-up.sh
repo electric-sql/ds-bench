@@ -24,7 +24,12 @@ else
     echo "GKE cluster '${CLUSTER}' already exists"
   else
     echo "=== gcloud create cluster ${CLUSTER} (+ clients pool) ==="
-    SERVER_MACHINE="${SERVER_MACHINE:-c4d-standard-16-lssd}"
+    # c4d-8-lssd and c4d-16-lssd bundle the SAME single Titanium NVMe, so the
+    # disk (the thing that matters for durability) is identical. The durable
+    # server reserves only 500m (bursts to its 4-CPU limit), so 8 vCPU fits it +
+    # MinIO + system. Pairs with ~64-pod fleets (MAX_FLEET_PODS). Override to
+    # c4d-standard-16-lssd for 200-pod fleets / maximum measure isolation.
+    SERVER_MACHINE="${SERVER_MACHINE:-c4d-standard-8-lssd}"
     # 4th-gen Titanium "-lssd" machines bundle a fixed Local SSD (the count is set
     # by the machine type — gcloud rejects an explicit count). Older N2D-style
     # types let you stripe N×375 GB devices via LOCAL_SSD_COUNT.

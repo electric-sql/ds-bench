@@ -29,12 +29,16 @@ spec:
           volumeMounts:
             - { name: data, mountPath: /data }
           resources:
-            # MinIO is the HDR-result store AND the object tier; at high
-            # cardinality the whole fleet uploads results at once. 500m was a
-            # bottleneck (200 pods → dial timeouts → corrupted collection), so
-            # give it real CPU — it sits on the server node (c4d-16, server uses
-            # only 4) so there is headroom. No CPU limit → bursts above the request.
-            requests: { memory: "2Gi", cpu: "4" }
+            # MinIO is the HDR-result store AND the object tier; at high cardinality
+            # the whole fleet uploads results at once. 500m bottlenecked (200 pods →
+            # dial timeouts → corrupted collection). It shares the server node with
+            # the durable server, which reserves only 500m and bursts to its 4-CPU
+            # limit ONLY during the measure window — which is sequential with (never
+            # overlaps) result-collection. So request 2 (a real floor that keeps
+            # durable's measure window isolated) with NO CPU limit, and MinIO bursts
+            # into the idle node during collection. Pairs with the c4d-8-lssd server
+            # node + ~64-pod fleets (MAX_FLEET_PODS in gke-bench.sh).
+            requests: { memory: "2Gi", cpu: "2" }
             limits: { memory: "8Gi" }
       volumes:
         - name: data

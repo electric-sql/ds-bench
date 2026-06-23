@@ -89,7 +89,11 @@ BENCH_REPS="$REPEATS"   # lib-bench run_cell does `REPEATS=1` in calibrate mode 
 export WARMUP_SECS="${WARMUP_SECS:-10}" SETTLE_SECS="${SETTLE_SECS:-5}" DURATION="${DURATION:-20}"
 export FLEET_CPU="${FLEET_CPU:-0.5}"
 PER_POD="${PER_POD:-250}"                          # target streams/pod (client-unbound, well-provisioned); pods=ceil(N/PER_POD), capped
-MAX_FLEET_PODS="${MAX_FLEET_PODS:-200}"
+# 64 keeps the load generator client-unbound for a 4-CPU server while not swamping
+# the single MinIO result-store at collection time (200 simultaneous HDR uploads →
+# dial timeouts → corrupted high-cardinality cells). Pairs with the c4d-8-lssd server
+# node. Raise to 200 only with a c4d-16-lssd server (MinIO burst headroom).
+MAX_FLEET_PODS="${MAX_FLEET_PODS:-64}"
 export FLEET_TIMEOUT="${FLEET_TIMEOUT:-360}" COORD_TIMEOUT="${COORD_TIMEOUT:-180}"
 export MODE=calibrate MAX_BUMPS=0                  # calibrate+MAX_BUMPS=0 → run at exactly the pinned pod count
 
