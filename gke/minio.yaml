@@ -29,8 +29,13 @@ spec:
           volumeMounts:
             - { name: data, mountPath: /data }
           resources:
-            requests: { memory: "1Gi", cpu: "500m" }
-            limits: { memory: "4Gi" }
+            # MinIO is the HDR-result store AND the object tier; at high
+            # cardinality the whole fleet uploads results at once. 500m was a
+            # bottleneck (200 pods → dial timeouts → corrupted collection), so
+            # give it real CPU — it sits on the server node (c4d-16, server uses
+            # only 4) so there is headroom. No CPU limit → bursts above the request.
+            requests: { memory: "2Gi", cpu: "4" }
+            limits: { memory: "8Gi" }
       volumes:
         - name: data
           emptyDir: { medium: "" }
