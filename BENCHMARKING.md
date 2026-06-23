@@ -17,6 +17,8 @@ One runner — **`scripts/gke-bench.sh`** — runs the whole comparison: a grid 
 | **replay** (catch-up) | 1000 clients × 200 events | durable `fast`, ursula `memory` (s2 excluded) | 2 | p99 |
 | **sustained** | 10 / 50 / 100 / 150 streams | durable only | 2 | ops/s + p99 + RSS drift |
 
+The table reflects the default `SYSTEMS`; for a durability-matched write comparison add `ursula:disk` (fsync per commit) and compare durable's fsync modes against it, with `ursula:memory` as ursula's best case. The full set of `system:variant` cells (including the opt-in `wal-cache`/`strict-cache`/`ursula:disk` variants and the exact server flags each deploys) is the [SYSTEMS variant catalog](#systems-variant-catalog-every-cell-deploy_system-can-deploy) in the Configuration reference below.
+
 Durability mode only affects the **write** path, so the read workloads (sse, replay) run a single durable config (`fast`). Clients are provisioned well above the bottleneck within the cluster's pool: the write/replay fleet is many light pods (`FLEET_CPU`, `PER_POD`), and SSE runs on **one well-provisioned pod** (`SSE_FLEET_CPU` ≈ a full client node) so the writer + subscribers share one wall clock → clean delivery p99, no cross-pod skew.
 
 The engine (deploy server, run client fleet, merge HDR results, calibrate/pin, sidecar metrics) is shared in **`scripts/lib-bench.sh`**; target selection (context, image refs, node selectors) is in **`scripts/target-env.sh`**.
@@ -84,6 +86,33 @@ SYSTEMS='durable:wal' WORKLOADS='write' WRITE_CARDS='1000' REPEATS=1 \
 
 > **Calibrate / `verdict.txt`.** Write cells run client-unbound at a pinned pod count (calibrate-then-pin, below). A cell is `server_bound` (trustworthy ceiling) only if the server consumed ≥90% of its CPU budget; otherwise `client_capped` (a lower bound — add `PER_POD`/pods). SSE runs on one well-provisioned pod by design (delivery-latency test).
 
+### Running the matrix across multiple clusters (parallelization)
+
+`gke-bench.sh` drives **one cluster**, and within that cluster `deploy_system` **redeploys the single server in place** for each cell — so only one server runs per cluster at a time. To run different SYSTEMS *concurrently* you must put them on **different clusters**: cluster-up each one with a distinct `CLUSTER`/`ZONE`, run `gke-bench.sh` on each with a `SYSTEMS` **subset**, then render all the per-run `summary.tsv` files together. A full durable-vs-ursula-vs-s2 comparison parallelizes cleanly this way — split the systems across clusters and launch them at once. Each run writes its own `results/bench/bench-<ts>/summary.tsv`; the renderer (§5) consumes any set of those.
+
+Worked example — three clusters in three sibling zones, launched in parallel (each its own `cluster-up.sh` first):
+
+```bash
+# cluster A — durable variants
+DS_TARGET=remote ZONE=europe-west4-a CLUSTER=bench-durable scripts/cluster-up.sh
+DS_TARGET=remote ZONE=europe-west4-a CLUSTER=bench-durable \
+  SYSTEMS='durable:strict durable:wal durable:fast' scripts/gke-bench.sh &
+
+# cluster B — ursula (durability-matched + best case)
+DS_TARGET=remote ZONE=europe-west4-b CLUSTER=bench-ursula scripts/cluster-up.sh
+DS_TARGET=remote ZONE=europe-west4-b CLUSTER=bench-ursula \
+  SYSTEMS='ursula:memory ursula:disk' scripts/gke-bench.sh &
+
+# cluster C — s2
+DS_TARGET=remote ZONE=europe-west4-c CLUSTER=bench-s2 scripts/cluster-up.sh
+DS_TARGET=remote ZONE=europe-west4-c CLUSTER=bench-s2 \
+  SYSTEMS='s2:_' scripts/gke-bench.sh &
+
+wait    # then render all three summary.tsv together (§5), and tear down each cluster (§7)
+```
+
+Each cluster is independently cluster-up'd and torn down (pass the **same `CLUSTER`/`ZONE`** to its teardown). Because the runner redeploys the server per cell, putting two SYSTEMS subsets on the **same** cluster would serialize them (and the second would tear down the first's server) — so concurrency comes from cluster fan-out, not from one cluster.
+
 ## 5. Read the results
 
 Each run writes `results/bench/bench-<ts>/summary.tsv` — one row per `(system, variant, workload, params, pods, rep)` with throughput/ev-s, p99, and cpu_pct. Aggregate across reps (median + CV%) with the shared helpers in `scripts/render_common.py` (`load_rep` / `aggregate_cell`), which read each cell's `rep1/{merged.json,samples.csv,verdict.txt}`.
@@ -109,10 +138,14 @@ Two limits bounded earlier runs; both are fixed in the server and worth re-confi
 
 `gke-bench.sh` runs each cell at a **fixed, computed** client pod count (`MODE=calibrate MAX_BUMPS=0` — no headroom bumping):
 
-- **write / replay** — `ceil(N / PER_POD)` light fleet pods (`FLEET_CPU` each, default 0.5), capped at `MAX_FLEET_PODS` (default 200, floor 2). Many light pods keep the load generator well above the server's needs (client-unbound). Lower `PER_POD` / raise `MAX_FLEET_PODS` to add client pods, bounded by the cluster's `clients` node pool.
+- **write / replay** — `ceil(N / PER_POD)` light fleet pods (`FLEET_CPU` each, default 0.5), capped at `MAX_FLEET_PODS` (default 64, floor 2). Many light pods keep the load generator well above the server's needs (client-unbound). Lower `PER_POD` / raise `MAX_FLEET_PODS` to add client pods, bounded by the cluster's `clients` node pool **and by MinIO** (see the coupling note below).
 - **sse** — **one** well-provisioned pod at `SSE_FLEET_CPU` (≈ a full client node), so writer + subscribers share one wall clock (clean delivery p99).
 
 The pinned count + the running image digest land in `calibration/pins.json` (keyed by server-image-digest + machine + cpu/mem). Each cell's `verdict.txt` records whether the server was the bottleneck (`server_bound`, a trustworthy ceiling) or the client capped it (`client_capped`, a lower bound — add client pods).
+
+### Fleet cap ↔ MinIO ↔ server node (read this before raising `MAX_FLEET_PODS`)
+
+The single MinIO pod is **both** the HDR-result store **and** the object tier, and it shares the server node. At high cardinality the *whole fleet* uploads its HDR results to MinIO at the same instant, so too many pods swamp a small MinIO: connections hit dial-timeouts and that cell's results come back corrupted or zero throughput — which silently poisons exactly the high-cardinality cells you care about. This is why `MAX_FLEET_PODS` defaults to **64**: 64 keeps the load generator client-unbound for the 4-CPU server while staying under what MinIO at 2 CPU (`gke/minio.yaml` requests `cpu: "2"`, no CPU limit so it bursts into the idle node during collection) can absorb at upload time. 64 pairs with the **c4d-standard-8-lssd** server node that `cluster-up.sh` creates by default. To push 200-pod fleets you must give MinIO more CPU **and** move to the **c4d-standard-16-lssd** server node for the headroom — raising `MAX_FLEET_PODS` alone, on the small node, is what reproduces the dial-timeout corruption. The pod count, MinIO size, and server-node size are one coupled knob, not three independent ones.
 
 ## 7. Tear down
 
@@ -148,7 +181,7 @@ All knobs are environment variables (export before the command); defaults in par
 | `CLUSTER` | `ds-bench` | remote GKE cluster name (required by gke-bench.sh for remote) |
 | `IMG_SERVER` | `durable-streams:dev` (local) / `<REG>/durable-streams:dev` (remote) | server image ref; override to compare distinct server image tags |
 | `CLIENT_NODES` | `2` | client node-pool size (remote). More machines = more load-gen capacity, but beyond the server's real bottleneck adding these does nothing. |
-| `SERVER_MACHINE` | `kind` (local) / `c4d-standard-16-lssd` (remote) | server node machine type; also a calibration-key component |
+| `SERVER_MACHINE` | `kind` (local) / `c4d-standard-8-lssd` (remote) | server node machine type; also a calibration-key component. The effective default lives in `target-env.sh`, which is sourced into `cluster-up.sh` before its own fallback, so they must agree (both `c4d-standard-8-lssd`). **Cost vs rigor:** c4d-8-lssd and c4d-16-lssd bundle the **same single Titanium NVMe** (identical disk — the thing that matters for durability), and the durable server is 4-CPU-pinned, so node size does **not** change durable's numbers. c4d-16's spare vCPUs buy MinIO burst headroom (for 200-pod fleets) and measurement isolation; c4d-8 is the cheaper default for ~64-pod fleets. Pass `SERVER_MACHINE=c4d-standard-16-lssd` when you scale to 200-pod fleets. |
 | `SERVER_MEM` | `16Gi` | server pod memory limit (cgroup OOM ceiling; drives fan-out subscriber capacity) |
 | `LOCAL_SSD_COUNT` | `1` | striped local SSDs for *non-`-lssd`* machine types (e.g. `n2d-standard-8`); `-lssd` machines bundle a fixed Local SSD and ignore this |
 | `URSULA_WAL` | `disk` | Ursula Raft WAL backend: `disk` (durable) or `memory` (Ursula's analog of durable's fast/non-durable mode) |
@@ -179,9 +212,25 @@ All knobs are environment variables (export before the command); defaults in par
 | `FLEET_CPU` | `0.5` | per-fleet-pod CPU reservation (write/replay); many light pods keep the client unbound |
 | `SSE_FLEET_CPU` | `12` | CPU for the single SSE pod (≈ a full n2d-standard-16 client node) |
 | `PER_POD` | `250` | target streams/pod; fleet pods = `ceil(N/PER_POD)` |
-| `MAX_FLEET_PODS` | `200` | cap on fleet pods (floor 2) |
+| `MAX_FLEET_PODS` | `64` | cap on fleet pods (floor 2). Tied to MinIO + the server node — see the coupling note below. Default 64 pairs with the c4d-8-lssd server + MinIO at 2 CPU; raise toward 200 only with a bigger MinIO (more CPU) and the c4d-16-lssd server. |
 | `FLEET_TIMEOUT` | `360` | seconds before a hung fleet is abandoned (tolerant — keeps the matrix going) |
 | `COORD_TIMEOUT` | `180` | seconds before a hung coordinator is abandoned |
+
+### SYSTEMS variant catalog (every cell `deploy_system` can deploy)
+
+`SYSTEMS` is a space-separated list of `system:variant` cells. The full set `deploy_system()` (`scripts/gke-bench.sh`) understands is below; the default `SYSTEMS` runs `durable:strict durable:strict-iouring durable:wal durable:fast ursula:memory s2:_`, and the `-cache` + `ursula:disk` variants are opt-in (add them to `SYSTEMS`). `ursula`'s variant string is the `[raft.wal] backend` value (set via `URSULA_WAL`, injected into `gke/ursula.yaml`).
+
+| `system:variant` | Deploys (server flags) | When to use |
+|---|---|---|
+| `durable:strict` | `--durability strict --splice-appends` | Per-stream group-commit fsync — durable's fsync-durability baseline (concurrent writers coalesce into one fsync). |
+| `durable:strict-iouring` | `--durability strict --strict-io-uring --splice-appends` | Same fsync durability as `strict`, but the per-stream `fdatasync`s ride one shared io_uring ring instead of `spawn_blocking`. Isolates the io_uring fsync-executor delta. Server must be built `--features strict-uring`; falls back to `spawn_blocking` if io_uring is unavailable. |
+| `durable:wal` | `--durability wal --wal-shards N --splice-appends` | Sharded WAL committer (`N` = `WAL_SHARDS`, runner default 4). The alternative fsync-durability path; compare write ops/p99 vs `strict` across cardinality. |
+| `durable:fast` | `--durability fast --splice-appends` | Acks on the page-cache write — **no fsync** (not crash-durable). Durable's best-case write ceiling and the analog of `ursula:memory`. The reads workloads (sse/replay) run on this config because the read path is mode-independent. |
+| `durable:wal-cache` | `--durability wal --wal-shards N --tail-cache-bytes B --splice-appends` | `wal` + the resident tail read-cache ON (`B` = `TAIL_CACHE_BYTES`, runner default 65536). `--tail-cache-bytes` is a **standalone read-path flag** independent of durability mode — the read path is identical across `strict`/`wal`/`fast`, so the cache delta is mode-agnostic and affects only reads/SSE, never writes. Measures the tail-cache read delta. |
+| `durable:strict-cache` | `--durability strict --tail-cache-bytes B --splice-appends` | `strict` + the same resident tail read-cache. Same read-cache delta as `wal-cache` (the variant only labels which durability mode it rides on); nothing changes on the write path. |
+| `ursula:memory` | `[raft.wal] backend = "memory"` | In-memory Raft WAL, **no fsync** — ursula's best case. Compare against `durable:fast`. |
+| `ursula:disk` | `[raft.wal] backend = "disk"` | Disk Raft WAL, fsync per commit. **The durability-matched comparison** for durable's fsync modes (`strict`/`strict-iouring`/`wal`); use `ursula:memory` as ursula's best case alongside it. |
+| `s2:_` | `gke/s2lite.yaml` (S2 Lite, `--api-style s2 --basin benchmark`) | S2 Lite, object-store-native (writes through SlateDB to MinIO). Compared on write + SSE only (no replay). |
 
 ### Server flags — durable-streams (set per cell by `deploy_system`)
 | flag / knob | default | meaning |
@@ -189,7 +238,7 @@ All knobs are environment variables (export before the command); defaults in par
 | `--durability {strict\|wal\|fast}` | per `SYSTEMS` variant | write-path durability mode; `strict-iouring` = `strict` + `--strict-io-uring` |
 | `--splice-appends` | on (every durable variant) | zero-copy splice(2) for binary appends; a CPU lever (~½–⅓ append CPU) |
 | `WAL_SHARDS` (`--wal-shards`) | `4` (runner) | WAL shard count, passed only for `wal`/`wal-cache` variants. The server's own default when unset is the CPU core count on a fresh data dir. |
-| `TAIL_CACHE_BYTES` (`--tail-cache-bytes`) | `65536` (runner, `wal-cache` only) | resident tail-cache cap; passed only for the `wal-cache` variant. The server default is `0` (off) on Linux and `64 KiB` on macOS. |
+| `TAIL_CACHE_BYTES` (`--tail-cache-bytes`) | `65536` (runner) | resident tail-cache cap; passed only for the `wal-cache` and `strict-cache` variants. The server default is `0` (off) on Linux and `64 KiB` on macOS. |
 
 The cold-tier backend (`--tier {s3\|local}`) is left at the server default (`s3` → in-cluster MinIO) for these cells.
 

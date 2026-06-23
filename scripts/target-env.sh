@@ -44,9 +44,13 @@ case "$DS_TARGET" in
     PULL_POLICY="Always"
     NODESEL_SERVER='{ "role": "server" }'
     NODESEL_CLIENT='{ "role": "client" }'
-    # Server node machine type — also the calibration-key component. Keep in sync
-    # with cluster-up.sh's create default so pins reflect the real machine.
-    SERVER_MACHINE="${SERVER_MACHINE:-c4d-standard-16-lssd}"
+    # Server node machine type — also the calibration-key component. This is the
+    # EFFECTIVE default: target-env.sh is sourced into cluster-up.sh before its own
+    # fallback, so the value here wins. c4d-8-lssd: same single Titanium NVMe as the
+    # 16 (identical disk), durable server is 4-CPU-pinned so node size doesn't change
+    # its numbers, ~½ the cost. Override to c4d-standard-16-lssd for 200-pod fleets
+    # (MinIO burst headroom) / maximum measure isolation.
+    SERVER_MACHINE="${SERVER_MACHINE:-c4d-standard-8-lssd}"
     ;;
   *)
     echo "DS_TARGET must be 'local' or 'remote' (got: '$DS_TARGET')" >&2
