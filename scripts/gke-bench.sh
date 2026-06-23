@@ -55,7 +55,7 @@ SERVER_CPU="${SERVER_CPUS%% *}"
 # comparison systems (Ursula, S2, base-Node), which are likelier to need re-runs
 # or to fail. A failed cell/system is non-fatal — the matrix continues.
 # Format: "system:variant".
-SYSTEMS="${SYSTEMS:-durable:strict durable:wal durable:fast ursula:memory s2:_}"
+SYSTEMS="${SYSTEMS:-durable:strict durable:strict-iouring durable:wal durable:fast ursula:memory s2:_}"
 WORKLOADS="${WORKLOADS:-write sse replay}"
 WRITE_CARDS="${WRITE_CARDS:-1000 10000 100000}"   # stream counts for the write sweep
 # SSE fan-out is a 2-D sweep: streams (M) × TOTAL subscribers (T). Per-stream
@@ -106,10 +106,12 @@ deploy_system() {  # system variant
       local args="--durability ${var}"
       [ "$var" = strict-iouring ] && args="--durability strict --strict-io-uring"
       [ "$var" = wal ] && args="--durability wal --wal-shards ${WAL_SHARDS:-4}"
-      [ "$var" = wal-iouring ] && args="--durability wal --wal-shards ${WAL_SHARDS:-4} --wal-io-uring"
       # wal-cache: wal mode with the resident tail cache ON (64 KiB) — for the
       # tail-cache vs always-sendfile comparison (vs plain `wal` = cache off on Linux).
       [ "$var" = wal-cache ] && args="--durability wal --wal-shards ${WAL_SHARDS:-4} --tail-cache-bytes ${TAIL_CACHE_BYTES:-65536}"
+      # Linux-optimal: zero-copy splice(2) for the binary (octet-stream) bench
+      # appends — a CPU lever (~½–⅓ append CPU); applies to every durable variant.
+      args="$args --splice-appends"
       SERVER_KIND=durable SERVER_EXTRA_ARGS="$args" PROBE_HOSTPORT="durable-streams:4438" deploy_server "$SERVER_CPU" >&2 || return 1
       T_TARGET="http://durable-streams:4438"; T_API="durable"; T_PROBE="durable-streams:4438"; T_NS="" ;;
     ursula)
