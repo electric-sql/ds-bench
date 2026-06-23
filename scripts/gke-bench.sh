@@ -100,6 +100,7 @@ deploy_system() {  # system variant
   case "$sys" in
     durable)
       local args="--durability ${var}"
+      [ "$var" = strict-iouring ] && args="--durability strict --strict-io-uring"
       [ "$var" = wal ] && args="--durability wal --wal-shards ${WAL_SHARDS:-4}"
       [ "$var" = wal-iouring ] && args="--durability wal --wal-shards ${WAL_SHARDS:-4} --wal-io-uring"
       # wal-cache: wal mode with the resident tail cache ON (64 KiB) — for the
