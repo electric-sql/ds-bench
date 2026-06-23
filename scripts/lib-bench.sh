@@ -245,7 +245,9 @@ compute_server_mem_mb() {
     { rl=$2; if ($2>peak) peak=$2 }
     END {
       if (r0=="") { print "0 0"; exit }
-      printf "%.0f %.0f\n", peak/1048576, (rl - r0)/1048576
+      drift = (rl - r0) / 1048576
+      if (drift > -0.5 && drift < 0.5) drift = 0
+      printf "%.0f %.0f\n", peak/1048576, drift
     }' "$1"
 }
 

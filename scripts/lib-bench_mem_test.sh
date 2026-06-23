@@ -38,4 +38,9 @@ check empty \
   $'ts_ms,rss_bytes,cpu_ticks,write_bytes\n' \
   "0 0"
 
+# sub-MiB negative drift: start=100MiB, end=300KB lower, peak=100MiB -> peak=100 drift=-0.28MiB rounds to 0 (not -0)
+check negative_sub_mib \
+  $'ts_ms,rss_bytes,cpu_ticks,write_bytes\n1000,104857600,0,0\n2000,104557600,0,0\n' \
+  "100 0"
+
 $PASS && { echo "PASS"; exit 0; } || { echo "FAILED"; exit 1; }
