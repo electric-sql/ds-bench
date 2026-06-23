@@ -234,6 +234,21 @@ compute_server_cpu_pct() {
   ' "$csv"
 }
 
+# compute_server_mem_mb SAMPLES_CSV — prints "PEAK_MB DRIFT_MB" from rss_bytes (col 2).
+#   peak  = max(rss)               (high-water mark, MiB)
+#   drift = rss(last) - rss(first) (growth over the window, MiB; may be negative)
+# Sidecar-instrumented for durable only; "0 0" when there are no data rows.
+compute_server_mem_mb() {
+  awk -F',' '
+    NR==1 { next }
+    NR==2 { r0=$2; rl=$2; peak=$2; next }
+    { rl=$2; if ($2>peak) peak=$2 }
+    END {
+      if (r0=="") { print "0 0"; exit }
+      printf "%.0f %.0f\n", peak/1048576, (rl - r0)/1048576
+    }' "$1"
+}
+
 # run_cell CELL_NAME BENCH_CMD OUT_PREFIX MERGE_CMD SERVER_CPU_CORES
 #   Dispatches per MODE (default: measure):
 #     calibrate — bumps parallelism to the saturation knee and pins the result via
