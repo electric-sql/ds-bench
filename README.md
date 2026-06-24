@@ -50,8 +50,9 @@ subscribers stream it, measuring the per-event end-to-end delivery latency as th
   (defaults to `gcloud config get-value project`), `AR_LOCATION` (default `europe-west1`),
   `AR_REPO` (default `ds-bench`), `ZONE`, and machine types (`SERVER_MACHINE`,
   `CLIENT_MACHINE`) for your environment.
-- The server source (`durable-streams`) checked out alongside this repo for image builds;
-  `vendor/ursula` is a pinned submodule (`git submodule update --init --recursive`).
+- The `durable-streams` server source checked out alongside this repo, only if you build its
+  image yourself. ursula and S2 use upstream-published images
+  (`ghcr.io/tonbo-io/ursula`, `ghcr.io/s2-streamstore/s2`) — no source to vendor.
 
 ## Quick start (local kind)
 
