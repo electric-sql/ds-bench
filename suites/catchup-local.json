@@ -1,0 +1,8 @@
+{
+  "suite": "catchup-local",
+  "workload": "catchup",
+  "cluster": {},
+  "catchup": { "clients": 20, "per_client_stream": true, "event_bytes": 1024, "snapshot_bytes": 0, "pods": 1, "setup_concurrency": 8, "repeats": 1 },
+  "modes": ["wal"],
+  "stream_counts": [200, 1000]
+}

@@ -86,31 +86,35 @@ cmd_run() {
 run_mode() {
   local mode="$1"
   local workload; workload="$(_suite 's.workload')"
-  local region; region="$(_suite 's.cluster["region"]')"
-  # Cluster name + zone default to bench-<mode> / region-{a,b,c}, but a suite may
-  # override cluster.cluster_name and cluster.zone so a same-mode run (e.g. a
-  # ladder-extension of wal) gets its OWN cluster and can run in PARALLEL with
-  # another wal run instead of colliding on bench-wal.
-  local cluster; cluster="$(_suite 's.cluster.get("cluster_name") or "bench-'"$mode"'"')"
-  local zone; zone="$(_suite 's.cluster.get("zone") or ""')"
-  if [ -z "$zone" ]; then
-    local zoneidx; case "$mode" in wal) zoneidx=a;; ursula) zoneidx=b;; s2) zoneidx=c;; *) zoneidx=a;; esac
-    zone="${region}-${zoneidx}"
+  local cluster
+  if [ "${DS_TARGET:-remote}" = "local" ]; then
+    # Local kind: one shared cluster, the kind context in the default kubeconfig, no
+    # node pools. Server runs with fewer CPUs (the kind node is a single Docker VM).
+    cluster="${KIND_CLUSTER:-ds-bench}"
+    DS_TARGET=local bash scripts/cluster-up.sh
+    export DS_TARGET=local CLUSTER="$cluster" KCTX="kind-${cluster}"
+    export SERVER_CPUS="${SERVER_CPUS:-2}" SERVER_MEM="${SERVER_MEM:-2Gi}"
+  else
+    # Remote GKE: its OWN cluster per mode (parallel-safe), keyed KUBECONFIG. cluster
+    # name + zone default to bench-<mode> / region-{a,b,c}; a suite may override
+    # cluster.cluster_name / cluster.zone so a same-mode run gets its own cluster.
+    local region; region="$(_suite 's.cluster["region"]')"
+    cluster="$(_suite 's.cluster.get("cluster_name") or "bench-'"$mode"'"')"
+    local zone; zone="$(_suite 's.cluster.get("zone") or ""')"
+    if [ -z "$zone" ]; then
+      local zoneidx; case "$mode" in wal) zoneidx=a;; ursula) zoneidx=b;; s2) zoneidx=c;; *) zoneidx=a;; esac
+      zone="${region}-${zoneidx}"
+    fi
+    export KUBECONFIG="$REPO_ROOT/.bench-state/kc-${cluster}"
+    CLUSTER="$cluster" ZONE="$zone" SERVER_MACHINE="$(_suite 's.cluster["server_machine"]')" \
+      CLIENT_MACHINE="$(_suite 's.cluster["client_machine"]')" CLIENT_NODES="$(_suite 's.cluster["client_nodes"]')" \
+      DS_TARGET=remote bash scripts/cluster-up.sh
+    _record_cluster "$cluster" "$zone"   # so teardown only touches what we created
+    export DS_TARGET=remote PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
+    export ZONE="$zone" CLUSTER="$cluster" KCTX="gke_${PROJECT}_${zone}_${cluster}"
+    export SERVER_CPUS="${SERVER_CPUS:-4}"
   fi
-  # Key KUBECONFIG by cluster (not mode) so parallel same-mode runs don't clobber it.
-  export KUBECONFIG="$REPO_ROOT/.bench-state/kc-${cluster}"
-
-  # ensure cluster + record it (so teardown only touches what we created)
-  CLUSTER="$cluster" ZONE="$zone" SERVER_MACHINE="$(_suite 's.cluster["server_machine"]')" \
-    CLIENT_MACHINE="$(_suite 's.cluster["client_machine"]')" CLIENT_NODES="$(_suite 's.cluster["client_nodes"]')" \
-    DS_TARGET=remote bash scripts/cluster-up.sh
-  _record_cluster "$cluster" "$zone"
-
-  # engine env (mirrors gke-bench.sh's preamble; the walker reuses lib-bench's engine)
-  export DS_TARGET=remote PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
-  export ZONE="$zone" CLUSTER="$cluster"
-  export KCTX="gke_${PROJECT}_${zone}_${cluster}"
-  export SERVER_CPUS="${SERVER_CPUS:-4}"; export SERVER_CPU="${SERVER_CPUS%% *}"
+  export SERVER_CPU="${SERVER_CPUS%% *}"
   # fleet_cpu/setup/payload come from the saturation block (write) OR the sustained
   # block (sustained suites have no saturation block); warmup/measure are write-only.
   export FLEET_CPU="$(_suite 's.saturation.get("fleet_cpu", s.sustained.get("fleet_cpu", 0.5))')"

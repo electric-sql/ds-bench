@@ -50,14 +50,18 @@ with no cluster.
 DS_TARGET=local scripts/cluster-up.sh     # kind cluster + MinIO + metrics ConfigMap
 DS_TARGET=local scripts/build-images.sh   # build server + ds-bench images, load into kind
 
-scripts/bench suites/write-throughput-wal.json run      # run a workload
-scripts/bench suites/write-throughput-wal.json report   # (re)generate its report
+# `*-local` suites use small ladders/counts that fit a single kind node:
+DS_TARGET=local scripts/bench suites/write-throughput-local.json run     # run a workload
+DS_TARGET=local scripts/bench suites/catchup-local.json run              # another workload
+scripts/bench suites/write-throughput-local.json report                  # (re)generate its report
 
 DS_TARGET=local scripts/cluster-down.sh   # tear down
 ```
 
-`run` provisions a cluster, executes the sweep, writes `results/<suite>/`, and tears down on
-clean completion (`BENCH_KEEP_CLUSTER=1` to keep it). Re-running resumes / skips finished cells.
+`DS_TARGET=local` runs everything against the kind cluster (no cloud, no teardown of kind).
+The full `suites/*.json` are sized for a multi-node GKE cluster; for kind use the `*-local`
+suites (or copy one and shrink `stream_counts` / `pod_ladder` / `clients`). `run` writes
+`results/<suite>/`; re-running resumes / skips finished cells.
 
 ## Remote (GKE)
 

@@ -1,0 +1,8 @@
+{
+  "suite": "write-throughput-local",
+  "cluster": {},
+  "saturation": { "plateau_pct": 10, "fleet_cpu": 0.1, "repeats": 1, "warmup_secs": 3, "measure_secs": 5, "setup_concurrency": 8, "payload_bytes": 256 },
+  "modes": ["wal"],
+  "stream_counts": [10, 100],
+  "pod_ladder": { "10": [1, 2], "100": [2, 4] }
+}
