@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pure saturation classifier + throughput reader for the calibration bump loop."""
+"""Pure saturation classifier + throughput reader for the saturation walk."""
 import argparse, json, re
 
 def classify(prev_thr, thr, cpu_pct, cores, cpu_frac=0.90, plateau_frac=0.10):

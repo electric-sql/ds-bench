@@ -8,9 +8,8 @@
 # (DS_TARGET=local kind | remote GKE) and defines K() + the deploy / fleet /
 # coordinator / headroom / collect engine.
 #
-# A runner's job shrinks to: set its config + its matrix, then call the engine.
-#   Config a runner must set before calling run_cell:
-#     SERVER_CPUS DURATION REPEATS INIT_PARALLELISM MAX_PODS MAX_BUMPS
+#   Config a caller sets before calling run_cell / _run_cell_one:
+#     SERVER_CPUS REPEATS INIT_PARALLELISM
 #     SWEEP_RUN_ID RESULTS_ROOT TARGET API_STYLE [PROBE_HOSTPORT]
 #
 # Contracts:
@@ -147,16 +146,6 @@ collect_sidecar() {
   fi
 }
 
-# server_calibration_key — calibration key for the CURRENTLY RUNNING server pod:
-# <image-digest12>-<machine>-cpu<cpus>-mem<mem>. Machine is "kind" when unset (local).
-server_calibration_key() {
-  local img machine
-  img="$(K get pod -l "$(server_label)" -o jsonpath='{.items[0].status.containerStatuses[0].imageID}' 2>/dev/null)"
-  machine="${SERVER_MACHINE:-kind}"
-  python3 "${REPO_ROOT}/scripts/pins.py" key --image "$img" \
-    --machine "$machine" --cpu "$SERVER_CPUS" --mem "$SERVER_MEM"
-}
-
 # clean_jobs — delete bench-fleet + bench-coordinator synchronously.
 clean_jobs() {
   # --cascade=foreground: block until the Jobs' PODS are gone too (default background
@@ -281,15 +270,9 @@ compute_server_mem_mb() {
     }' "$1"
 }
 
-# run_cell CELL_NAME BENCH_CMD OUT_PREFIX MERGE_CMD SERVER_CPU_CORES
-#   Dispatches per MODE (default: measure):
-#     calibrate — bumps parallelism to the saturation knee and pins the result via
-#                 pins.py (REPEATS forced to 1; safe to re-run).
-#     measure   — resolves the pinned pod-count for this cell/key, then runs
-#                 REPEATS-fixed reps (fail-fast if no pin; set REUSE_CALIBRATION=latest
-#                 to fall back to the most-recent matching calibration).
-#   Collects merged.json/samples.csv/verdict.txt per rep under
-#   ${RESULTS_ROOT}/<cell>/rep<N>/.
+# _run_cell_one — one measurement at a fixed pod count: deploy the fleet + coordinator,
+# fetch the merged HDR + sidecar samples into <cell_dir>, echo "<cpu_pct> <thr>" (the
+# only stdout line — all progress goes to stderr).
 _run_cell_one() {
   local cell_name="$1" bench_cmd="$2" out_prefix="$3" merge_cmd="$4" pods="$5" repeat="$6" cell_dir="$7"
   RUN_ID="${SWEEP_RUN_ID}-${cell_name}-r${repeat}-p${pods}"
@@ -310,89 +293,23 @@ _run_cell_one() {
   echo "${cpu_pct} ${thr:-0}"
 }
 
-# _run_cell_calibrate — bump until saturation_check says cpu/plateau (or caps), pin the knee.
-_run_cell_calibrate() {
-  local cell_name="$1" bench_cmd="$2" out_prefix="$3" merge_cmd="$4" cpu_cores="$5" cell_dir="$6" repeat="$7"
-  local pods="$INIT_PARALLELISM" prev_pods=0 prev_thr=0 bumps=0
-  local reason="max_pods" saturated="false" pin_pods="$pods" pin_thr=0
-  while true; do
-    echo "  [calibrate ${cell_name}] parallelism=${pods}"
-    read -r cpu_pct thr < <(_run_cell_one "$cell_name" "$bench_cmd" "$out_prefix" "$merge_cmd" "$pods" "$repeat" "$cell_dir")
-    # Classify via saturation.py's CLI (prints "<reason> <thr>"); take the reason.
-    # Uses shell-expanded $REPO_ROOT (not os.environ — phase scripts don't export it).
-    local cls
-    cls="$(python3 "${REPO_ROOT}/scripts/saturation.py" --merged "${cell_dir}/merged.json" \
-      --prev-thr "$prev_thr" --cpu "$cpu_pct" --cores "$cpu_cores" | awk '{print $1}')"
-    echo "    cpu%=${cpu_pct} thr=${thr} class=${cls}"
-    if [ "$cls" = "cpu" ]; then
-      reason="cpu"; saturated="true"; pin_pods="$pods"; pin_thr="$thr"; break
-    elif [ "$cls" = "plateau" ]; then
-      reason="plateau"; saturated="true"; pin_pods="$prev_pods"; pin_thr="$prev_thr"; break
-    fi
-    if [ "$bumps" -ge "$MAX_BUMPS" ] || [ $((pods * 2)) -gt "$MAX_PODS" ]; then
-      reason="max_pods"; saturated="false"; pin_pods="$pods"; pin_thr="$thr"; break
-    fi
-    prev_pods="$pods"; prev_thr="$thr"; bumps=$((bumps + 1)); pods=$((pods * 2))
-  done
-  local key; key="$(server_calibration_key)"
-  python3 "${REPO_ROOT}/scripts/pins.py" set "$key" "$cell_name" "$pin_pods" \
-    --reason "$reason" --saturated "$saturated" --ops "${pin_thr%.*}" \
-    --image "$(K get pod -l "$(server_label)" -o jsonpath='{.items[0].status.containerStatuses[0].imageID}' 2>/dev/null)" \
-    --machine "${SERVER_MACHINE:-kind}" --cpu "$SERVER_CPUS" --mem "$SERVER_MEM"
-  { echo "cell=${cell_name}"; echo "mode=calibrate"; echo "parallelism=${pin_pods}";
-    echo "server_cpu_cores=${cpu_cores}"; echo "reason=${reason}"; echo "saturated=${saturated}";
-    echo "calibration_key=${key}"; } > "${cell_dir}/verdict.txt"
-  echo "  calibrated ${cell_name}: pods=${pin_pods} reason=${reason} saturated=${saturated} → ${key}"
-}
-
-# _run_cell_measure — resolve the pin for this cell (own key, else REUSE=latest, else
-# fail fast), run REPEATS-fixed at the pinned pods, record provenance.
-_run_cell_measure() {
-  local cell_name="$1" bench_cmd="$2" out_prefix="$3" merge_cmd="$4" cpu_cores="$5" cell_dir="$6" repeat="$7"
-  local key used_key pin_pods matched="true"
-  key="$(server_calibration_key)"
-  if pin_pods="$(python3 "${REPO_ROOT}/scripts/pins.py" get "$key" "$cell_name" 2>/dev/null)"; then
-    used_key="$key"
-  elif [ "${REUSE_CALIBRATION:-}" = "latest" ]; then
-    used_key="$(python3 "${REPO_ROOT}/scripts/pins.py" latest "${SERVER_MACHINE:-kind}" "$SERVER_CPUS" "$SERVER_MEM" 2>/dev/null)" \
-      || { echo "ERROR: REUSE_CALIBRATION=latest but no calibration for machine=${SERVER_MACHINE:-kind} cpu=${SERVER_CPUS} mem=${SERVER_MEM}" >&2; exit 1; }
-    pin_pods="$(python3 "${REPO_ROOT}/scripts/pins.py" get "$used_key" "$cell_name" 2>/dev/null)" \
-      || { echo "ERROR: reused calibration ${used_key} has no cell ${cell_name}" >&2; exit 1; }
-    matched="false"
-    echo "    REUSE: pinning from ${used_key} (image mismatch vs ${key})"
-  else
-    echo "ERROR: no calibration for ${key} cell ${cell_name}; run MODE=calibrate or set REUSE_CALIBRATION=latest" >&2
-    exit 1
-  fi
-
-  echo "  [measure ${cell_name}] pinned parallelism=${pin_pods} (matched=${matched})"
-  local cpu_pct thr
-  read -r cpu_pct thr < <(_run_cell_one "$cell_name" "$bench_cmd" "$out_prefix" "$merge_cmd" "$pin_pods" "$repeat" "$cell_dir")
-  { echo "cell=${cell_name}"; echo "mode=measure"; echo "parallelism=${pin_pods}";
-    echo "server_cpu_cores=${cpu_cores}"; echo "server_cpu_pct=${cpu_pct}";
-    echo "calibration_key=${used_key}"; echo "running_key=${key}";
-    echo "calibration_matched=${matched}"; } > "${cell_dir}/verdict.txt"
-  echo "  measured ${cell_name}: pods=${pin_pods} cpu%=${cpu_pct} thr=${thr} matched=${matched}"
-}
-
+# run_cell CELL_NAME BENCH_CMD OUT_PREFIX MERGE_CMD SERVER_CPU_CORES — run a cell at a
+# FIXED pod count (INIT_PARALLELISM), REPEATS times, via _run_cell_one. Collects
+# merged.json/samples.csv/verdict.txt per rep under ${RESULTS_ROOT}/<cell>/rep<N>/.
 run_cell() {
   local cell_name="$1" bench_cmd="$2" out_prefix="$3" merge_cmd="$4" cpu_cores="$5"
-  local MODE="${MODE:-measure}"
-  if [ "$MODE" = "calibrate" ]; then REPEATS=1; fi
-
+  local pods="${INIT_PARALLELISM:-2}"
   echo ""
-  echo "=== cell: ${cell_name}  cpu=${cpu_cores}  repeats=${REPEATS} ==="
-
+  echo "=== cell: ${cell_name}  cpu=${cpu_cores}  pods=${pods}  repeats=${REPEATS:-1} ==="
   local repeat
-  for repeat in $(seq 1 "$REPEATS"); do
+  for repeat in $(seq 1 "${REPEATS:-1}"); do
     local cell_dir="${RESULTS_ROOT}/${cell_name}/rep${repeat}"
     mkdir -p "$cell_dir"
-
-    if [ "$MODE" = "calibrate" ]; then
-      _run_cell_calibrate "$cell_name" "$bench_cmd" "$out_prefix" "$merge_cmd" "$cpu_cores" "$cell_dir" "$repeat"
-    else
-      _run_cell_measure "$cell_name" "$bench_cmd" "$out_prefix" "$merge_cmd" "$cpu_cores" "$cell_dir" "$repeat"
-    fi
+    local cpu_pct thr
+    read -r cpu_pct thr < <(_run_cell_one "$cell_name" "$bench_cmd" "$out_prefix" "$merge_cmd" "$pods" "$repeat" "$cell_dir")
+    { echo "cell=${cell_name}"; echo "parallelism=${pods}";
+      echo "server_cpu_cores=${cpu_cores}"; echo "server_cpu_pct=${cpu_pct}"; } > "${cell_dir}/verdict.txt"
+    echo "  ${cell_name}: pods=${pods} cpu%=${cpu_pct} thr=${thr}"
   done
 }
 

@@ -50,7 +50,7 @@
 # ── sidecar container (append to spec.template.spec.containers) ──────────────
 
 - name: metrics
-  image: europe-west1-docker.pkg.dev/${PROJECT}/ds-bench/micro:dev
+  image: ${IMG_METRICS}   # a small image with bash + procps (defaults to ds-bench:dev)
   imagePullPolicy: Always
   command:
     - nice

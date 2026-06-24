@@ -29,7 +29,7 @@ case "$DS_TARGET" in
     PULL_POLICY="IfNotPresent"        # use the kind-loaded image; never reach for a registry
     NODESEL_SERVER="{}"               # single-node kind: schedule anywhere
     NODESEL_CLIENT="{}"
-    SERVER_MACHINE="${SERVER_MACHINE:-kind}"   # node label for the calibration key
+    SERVER_MACHINE="${SERVER_MACHINE:-kind}"   # server node machine type
     ;;
   remote)
     PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
@@ -43,7 +43,7 @@ case "$DS_TARGET" in
     IMG_SERVER="${IMG_SERVER:-${REG}/durable-streams:dev}"
     IMG_URSULA="${IMG_URSULA:-${REG}/ursula:dev}"
     IMG_DSBENCH="${REG}/ds-bench:dev"
-    IMG_METRICS="${REG}/micro:dev"
+    IMG_METRICS="${REG}/ds-bench:dev"   # ds-bench:dev carries bash+procps for the sidecar
     # Default Always (a runner pushes a fresh :dev each session). Overridable to
     # IfNotPresent for long saturation runs where the image is FIXED for the whole
     # run: the server restarts once per ladder rung, and re-pulling from AR every

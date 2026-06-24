@@ -84,8 +84,7 @@ SUSTAINED_CARDS="${SUSTAINED_CARDS:-10 50 100 150}"   # stream counts
 SUSTAINED_RATE="${SUSTAINED_RATE:-10}"                # per-stream ops/sec
 SUSTAINED_DURATION="${SUSTAINED_DURATION:-90}"        # long, so the RSS sidecar captures drift
 export REPEATS="${REPEATS:-2}"
-BENCH_REPS="$REPEATS"   # lib-bench run_cell does `REPEATS=1` in calibrate mode (mutates the
-                        # global), so the rep loop must use OUR own count, not $REPEATS.
+BENCH_REPS="$REPEATS"   # this matrix runs its own rep loop; keep our own count.
 export WARMUP_SECS="${WARMUP_SECS:-10}" SETTLE_SECS="${SETTLE_SECS:-5}" DURATION="${DURATION:-20}"
 export FLEET_CPU="${FLEET_CPU:-0.5}"
 PER_POD="${PER_POD:-250}"                          # target streams/pod (client-unbound, well-provisioned); pods=ceil(N/PER_POD), capped
@@ -95,7 +94,7 @@ PER_POD="${PER_POD:-250}"                          # target streams/pod (client-
 # node. Raise to 200 only with a c4d-16-lssd server (MinIO burst headroom).
 MAX_FLEET_PODS="${MAX_FLEET_PODS:-64}"
 export FLEET_TIMEOUT="${FLEET_TIMEOUT:-360}" COORD_TIMEOUT="${COORD_TIMEOUT:-180}"
-export MODE=calibrate MAX_BUMPS=0                  # calibrate+MAX_BUMPS=0 → run at exactly the pinned pod count
+# run_cell runs each cell at exactly INIT_PARALLELISM pods (set per cell by run_one).
 
 TS="$(date +%s)"
 export SWEEP_RUN_ID="bench-${TS}"

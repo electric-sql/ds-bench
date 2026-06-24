@@ -1,9 +1,5 @@
-# ursula (SINGLE NODE) for Phase 2b, on the NVMe role=server node.
-#
-# Per the USER DECISION, ursula runs at a SINGLE node only (multi-node deferred
-# to Phase 3). This is a plain Deployment mirroring config/ursula.toml — the
-# acceptable fallback to the Helm chart (which is fiddly: gateway/StatefulSet/TLS
-# and tuned for replicaCount 1/3/5). Single-node needs none of that.
+# ursula — single-node Deployment + an inline ursula-config ConfigMap. The storage
+# backend is selected at deploy time via the URSULA_WAL env (memory | disk).
 #
 # Matched durability: disk WAL Raft ([raft.wal] backend=disk) on the node's local
 # NVMe (emptyDir), cold tier → in-cluster MinIO `ursula` bucket (HMAC minioadmin).
