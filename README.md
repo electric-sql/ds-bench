@@ -1,7 +1,11 @@
-# ds-rust-bench — single-node streaming-server benchmarks
+# ds-rust-bench — a benchmarking system for durable streams
 
-Reproducible single-node comparison of three streaming servers — **durable-streams** (Rust),
-**ursula**, and **S2 (s2lite)** — across four workloads:
+A reproducible, single-node benchmark harness for durable-stream servers: declarative workload
+suites, a Kubernetes client fleet, and exact cross-fleet HDR-percentile merging — runnable on a
+local kind cluster or on GKE. Workloads are server-agnostic and run against any supported
+implementation.
+
+**Currently supported implementations:** **durable-streams** (Rust), **ursula**, **S2 (s2lite)**.
 
 | Workload | What it measures | Suites / entry |
 | --- | --- | --- |
@@ -10,7 +14,7 @@ Reproducible single-node comparison of three streaming servers — **durable-str
 | **catch-up / reconnect** | per-client catch-up latency + body size | `suites/catchup-{durable,ursula,s2}.json` |
 | **SSE fan-out** | per-event delivery latency vs subscriber count | `scripts/run-sse.sh` |
 
-Final results: **[`results/final/REPORT.md`](results/final/REPORT.md)**.
+A sample run across the supported implementations: **[`results/final/REPORT.md`](results/final/REPORT.md)**.
 
 The load generator is **`ds-bench`**, derived from ursula's `ursula-bench` (Apache-2.0): the
 per-client measurement logic is upstream's, unchanged; our additions are the multi-stream /
@@ -24,14 +28,17 @@ client fleet, merges per-pod HDR histograms into fleet-wide percentiles, records
 results under `results/<suite>/`, and tears down. Reports are regenerated from local results
 with no cluster.
 
-- **write throughput** ramps client pods up a per-cardinality ladder until throughput plateaus
-  (a *saturation walk*), then pins + confirms the peak.
-- **sustained** holds a fixed low rate for `duration_secs` and records latency + server RSS drift.
-- **catch-up** reproduces ursula's published reconnect methodology
-  ([ursula.tonbo.io/benchmark](https://ursula.tonbo.io/benchmark)): N clients each reconnect to
-  their **own** pre-populated stream and catch up via that system's native path — ursula
-  `GET /bootstrap` (snapshot+tail), durable `offset=-1`, and s2 `/records` (full-log replay).
-- **SSE fan-out** drives one writer + many subscribers and measures end-to-end delivery latency.
+- **write throughput** — concurrent appends across N streams; the client fleet ramps up a
+  per-cardinality pod ladder until server throughput plateaus (a *saturation walk*), then pins
+  and confirms the peak append/s and its tail latency.
+- **sustained** — a fixed append rate across N streams held for `duration_secs`; records latency
+  and server-memory (RSS) drift over the window.
+- **catch-up / reconnect** — a stream is pre-populated, then N clients reconnect and replay it
+  from the start simultaneously; records per-client catch-up latency, response body size, and
+  aggregate replay throughput. Each implementation replays via its native read path (snapshot+tail
+  or full-log).
+- **SSE fan-out** — one writer publishes to a stream while many subscribers stream it; records
+  per-event end-to-end delivery latency versus subscriber count.
 
 ## Prerequisites
 
@@ -75,16 +82,21 @@ CPU-pinned) and a Spot client pool. See `scripts/target-env.sh` for all overrida
 (registry, zone, machine types, pull policy). Remote clusters are billable — they tear down on
 clean completion; `scripts/teardown-watchdog.sh` is a deadline safety net.
 
-## Systems & configs
+## Supported implementations
+
+A workload runs against any supported server; the suite's `modes` + server image pick which one.
+Currently supported:
 
 - **durable-streams** — `--durability wal` (WAL-backed, sharded committer) or `--durability memory`
-  (no WAL). Separate suites: `write-throughput-wal.json`, `write-throughput-memory.json`.
-- **ursula** — single-node Raft; backend selected by `URSULA_WAL`:
-  `URSULA_WAL=memory scripts/bench suites/write-throughput-ursula.json run` (in-memory, no fsync)
-  vs `URSULA_WAL=disk …` (disk WAL, fsync per commit). Default `disk`.
-- **S2 (s2lite)** — object-store-backed (writes through to MinIO); `suites/write-throughput-s2.json`.
+  (no WAL). Suites: `write-throughput-wal.json`, `write-throughput-memory.json`.
+- **ursula** — single-node Raft; `URSULA_WAL` selects the backend —
+  `URSULA_WAL=memory scripts/bench suites/write-throughput-ursula.json run` (in-memory) vs
+  `URSULA_WAL=disk …` (disk WAL, fsync per commit). Default `disk`.
+- **S2 (s2lite)** — object-store-backed; `suites/write-throughput-s2.json`.
 
-All servers point at the same single-node MinIO; only one server runs during its own measurement.
+All servers point at the same single-node MinIO; only the system under test runs during its
+measurement. Adding an implementation is a deploy manifest, a `ds-bench` API style, and a few
+addressing lines in `deploy_mode` / `reset_state` (`scripts/lib-bench.sh`).
 
 ## Results & reproducing
 
@@ -107,17 +119,13 @@ catch-up/sustained runners, and the report renderers.
 
 ## Fairness & disclosure
 
-- **Equal:** one node each; identical workload parameters; all three servers share the same
-  single-node MinIO; only the system under test runs during its measurement. ds-bench uses
-  ursula-bench's per-client measurement logic unchanged.
-- **Matched durability:** ursula `disk` (Raft WAL, fsync per commit) vs durable-streams `wal`
-  (fsync per append, coalesced across concurrent writers) — apples-to-apples for durable writes;
-  `ursula:memory` / `durable:memory` are the non-durable best cases.
-- **S2 is architecturally different:** it writes through to object storage on the hot path
-  (every append makes a MinIO round-trip), so its write latency includes work the others defer
-  to background tiering. The benchmark surfaces this; it is not a tuned handicap.
-- **Single-node only:** this deliberately strips ursula's Raft *replication* (its headline
-  feature) — durable-streams has no multi-node mode yet. Published multi-node numbers are not
-  reused; everything here is generated by `ds-bench` on equal single-node hardware.
-- Data directories are container-ephemeral by design: each run starts fresh (no cross-run
+- **Equal footing:** one node per server, identical workload parameters, a shared single-node
+  MinIO, and only the system under test running during its measurement. Per-client measurement
+  logic is ursula-bench's, unchanged.
+- **Single-node only:** no replication is exercised; every number is generated by `ds-bench` on
+  equal hardware, not reused from any implementation's published results.
+- **Implementations differ architecturally** (e.g. an object-store-backed server makes a storage
+  round-trip on every append where others defer to background tiering). The benchmark surfaces
+  those differences rather than tuning them away — match `modes`/configs to compare like for like.
+- **Fresh state:** data directories are container-ephemeral — each run starts clean (no cross-run
   contamination) while still exercising durability within a run.

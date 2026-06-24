@@ -1,8 +1,9 @@
-# Streaming-server benchmarks — durable-streams vs ursula vs S2
+# Durable-streams benchmarks — sample run
 
-Single-node, best-case comparison of three streaming servers across four workloads:
-**write throughput**, **sustained load**, **catch-up / reconnect**, and **SSE fan-out**.
-Each workload is a declarative suite under `suites/`; see *Reproducing* at the end.
+A single-node run of the four workloads — **write throughput**, **sustained load**,
+**catch-up / reconnect**, **SSE fan-out** — across the currently-supported implementations
+(**durable-streams**, **ursula**, **S2**). Each workload is a declarative suite under `suites/`;
+see *Reproducing* at the end.
 
 **Setup.** Server pinned to 4 CPUs on one node; a Kubernetes client fleet drives load.
 256-byte event payloads (1 KiB for catch-up). Latencies are fleet-wide percentiles from
