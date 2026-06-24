@@ -1,12 +1,12 @@
 {
-  "suite": "write-throughput-memory",
+  "suite": "write-throughput-wal-zca",
   "cluster": {
     "server_machine": "c4d-standard-16-lssd",
     "client_machine": "n2d-standard-32",
     "client_nodes": 8,
     "region": "europe-west4",
-    "cluster_name": "bench-memory",
-    "zone": "europe-west4-a"
+    "cluster_name": "bench-walzca",
+    "zone": "europe-west4-b"
   },
   "saturation": {
     "plateau_pct": 5,
@@ -14,7 +14,7 @@
     "repeats": 3,
     "warmup_secs": 15,
     "measure_secs": 20,
-    "setup_concurrency": 16,
+    "setup_concurrency": 32,
     "payload_bytes": 256
   },
   "modes": [
@@ -35,18 +35,18 @@
       32
     ],
     "1000": [
+      4,
       8,
       16,
+      24,
+      32
+    ],
+    "10000": [
+      16,
+      24,
       32,
       48,
       64
-    ],
-    "10000": [
-      32,
-      64,
-      96,
-      128,
-      160
     ],
     "100000": [
       120,
@@ -58,8 +58,8 @@
   "server_configs": {
     "wal": [
       {
-        "label": "memory",
-        "args": "--durability memory"
+        "label": "wal",
+        "args": "--durability wal --wal-shards 4"
       }
     ]
   }
