@@ -28,3 +28,19 @@ class Suite:
         if key not in ladder:
             raise KeyError(f"no pod_ladder entry for stream_count {stream_count}")
         return list(ladder[key])
+
+    def configs_for(self, mode):
+        """Server-config variants for a mode (the sweep axis for finding the
+        optimal server config). Each is {"label", "args"} where args are extra
+        server flags (e.g. "--tail-cache-bytes 65536"). A mode with no
+        `server_configs` entry has one implicit baseline config = the mode name
+        with empty args. Distinct labels get their own results/<label>/cells.json,
+        so variants (e.g. wal vs wal-tailcache) appear side by side in the report."""
+        entries = self._d.get("server_configs", {}).get(mode)
+        if not entries:
+            return [{"label": mode, "args": ""}]
+        return [{"label": e["label"], "args": e.get("args", "")} for e in entries]
+
+    def labels(self):
+        """Ordered result labels across all modes (report columns / cells dirs)."""
+        return [c["label"] for m in self.modes for c in self.configs_for(m)]

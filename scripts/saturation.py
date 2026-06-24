@@ -53,6 +53,21 @@ def extract_throughput(path):
             return float(obj[k])
     return 0.0
 
+def cap_ladder(ladder, stream_count):
+    """Cap each ladder rung at the stream_count and dedup (preserving order).
+
+    A rung with more pods than streams would force streams/pod up to 1 and
+    over-provision the cell (total streams = pods × ceil(streams/pods) > the
+    intended count) — e.g. n=1 at 2 pods drives 2 streams. Capping pods ≤
+    stream_count keeps the cell at its labelled cardinality; dedup avoids a
+    repeated pod count (which would read as a false 0%-gain plateau)."""
+    out = []
+    for p in ladder:
+        c = min(p, stream_count)
+        if c >= 1 and c not in out:
+            out.append(c)
+    return out
+
 def step_decision(prev_thr, thr, plateau_pct):
     """Decide the walker's next move from consecutive ladder-rung throughputs.
 

@@ -41,7 +41,12 @@ case "$DS_TARGET" in
     IMG_URSULA="${IMG_URSULA:-${REG}/ursula:dev}"
     IMG_DSBENCH="${REG}/ds-bench:dev"
     IMG_METRICS="${REG}/micro:dev"
-    PULL_POLICY="Always"
+    # Default Always (a runner pushes a fresh :dev each session). Overridable to
+    # IfNotPresent for long saturation runs where the image is FIXED for the whole
+    # run: the server restarts once per ladder rung, and re-pulling from AR every
+    # time adds ~2 min/restart — IfNotPresent reuses the node-cached image (it still
+    # pulls if absent, e.g. on a scaled-up node, so it stays correct).
+    PULL_POLICY="${PULL_POLICY:-Always}"
     NODESEL_SERVER='{ "role": "server" }'
     NODESEL_CLIENT='{ "role": "client" }'
     # Server node machine type — also the calibration-key component. This is the

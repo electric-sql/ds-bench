@@ -2,7 +2,24 @@ import os, sys, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from saturation import step_decision
+from saturation import step_decision, cap_ladder
+
+
+class TestCapLadder(unittest.TestCase):
+    def test_no_cap_when_pods_below_streams(self):
+        self.assertEqual(cap_ladder([10, 16, 24, 32], 10000), [10, 16, 24, 32])
+
+    def test_caps_pods_above_streams(self):
+        # 8 > 5 -> capped to the stream count
+        self.assertEqual(cap_ladder([2, 4, 8], 5), [2, 4, 5])
+
+    def test_dedups_after_cap(self):
+        # n=1: [1,2] both cap to 1 -> single rung (no false 0%-gain plateau)
+        self.assertEqual(cap_ladder([1, 2], 1), [1])
+        self.assertEqual(cap_ladder([1, 2, 4], 1), [1])
+
+    def test_high_cardinality_unchanged(self):
+        self.assertEqual(cap_ladder([80, 100, 110], 100000), [80, 100, 110])
 
 
 class TestStepDecision(unittest.TestCase):

@@ -24,7 +24,12 @@ measure_pods() {
   local warmup="${WARMUP_SECS:-15}" settle="${SETTLE_SECS:-5}" dur="${MEASURE_SECS:-20}"
   local cell_dir; cell_dir="$(_sat_cell_dir "$pods" "$rep")"
   mkdir -p "$cell_dir"
-  local bench_cmd="multi-stream --target ${T_TARGET:?} --api-style ${T_API:?} ${T_NS:-} --streams ${perpod} --duration-secs ${dur} --payload-bytes 256 --setup-concurrency 256 --warmup-secs ${warmup} --settle-secs ${settle}"
+  # setup-concurrency throttles stream CREATION (decoupled from pod count / load):
+  # at high cardinality, pods × 256 concurrent creates overwhelmed the creation
+  # endpoint (the 100k creation_choke). A lower per-pod value keeps total concurrent
+  # creation bounded while pods still drive full load after setup.
+  local setup_conc="${SETUP_CONCURRENCY:-32}"
+  local bench_cmd="multi-stream --target ${T_TARGET:?} --api-style ${T_API:?} ${T_NS:-} --streams ${perpod} --duration-secs ${dur} --payload-bytes 256 --setup-concurrency ${setup_conc} --warmup-secs ${warmup} --settle-secs ${settle}"
   local merge_cmd="ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix multi-stream-"
   _run_cell_one "${mode}-write-n${sc}-p${pods}" "$bench_cmd" "write" "$merge_cmd" "$pods" "$rep" "$cell_dir"
 }
@@ -44,7 +49,9 @@ walk_cell() {
   export SAT_MODE="$mode" SAT_SC="$sc"
   local plateau; plateau="$(_sat_get s 's.saturation["plateau_pct"]')"
   local repeats; repeats="$(_sat_get s 's.saturation["repeats"]')"
-  local ladder;  ladder="$(_sat_get s "' '.join(map(str, s.ladder_for($sc)))")"
+  # Cap each rung at the stream count (+ dedup) so a low-cardinality cell never
+  # over-provisions (pods > streams would drive more streams than intended).
+  local ladder;  ladder="$(python3 -c "import sys;sys.path.insert(0,'scripts');from suite import Suite;from saturation import cap_ladder;s=Suite.load('$SUITE_FILE');print(' '.join(map(str,cap_ladder(s.ladder_for($sc),$sc))))")"
 
   local prev_pods=0 prev_thr=0 walk="[]" pods _cpu thr decision
   for pods in $ladder; do
@@ -59,6 +66,7 @@ walk_cell() {
       plateau)
         # saturated one rung back; confirm the pinned point with `repeats` reps
         local conf_p99; conf_p99="$(_confirm "$fn" "$mode" "$prev_pods" "$repeats")"
+        conf_p99="${conf_p99:-None}"   # never pass an empty string to _record
         _record "$cells_json" "$sc" "$digest" "$walk" "$prev_pods" "$prev_thr" "$conf_p99" True ok plateau
         return 0 ;;
       continue)
@@ -88,10 +96,18 @@ _record() {  # bridge to cells.py
   python3 -c "
 import sys; sys.path.insert(0,'scripts')
 import cells
-pp = None if sys.argv[5]=='None' else int(sys.argv[5])
-p99 = None if sys.argv[7]=='None' else float(sys.argv[7])
+# Tolerant parsing: a malformed pinned_pods/p99/throughput must NEVER crash the
+# record and drop an otherwise-good cell (a bad confirm-p99 silently lost cells).
+def _f(x, d=None):
+    try: return float(x)
+    except (ValueError, TypeError): return d
+def _i(x, d=None):
+    try: return int(x)
+    except (ValueError, TypeError): return d
+pp = None if sys.argv[5]=='None' else _i(sys.argv[5])
+p99 = None if sys.argv[7]=='None' else _f(sys.argv[7])
 cells.record(sys.argv[1], int(sys.argv[2]), image_digest=sys.argv[3],
-  walk=__import__('json').loads(sys.argv[4]), pinned_pods=pp, throughput=float(sys.argv[6]),
+  walk=__import__('json').loads(sys.argv[4]), pinned_pods=pp, throughput=(_f(sys.argv[6]) or 0.0),
   p99=p99, saturated=(sys.argv[8]=='True'), status=sys.argv[9], reason=sys.argv[10])
 " "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}"
 }

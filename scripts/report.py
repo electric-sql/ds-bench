@@ -9,18 +9,40 @@ import cells as cells_mod
 def build(suite_path, results_root):
     s = Suite.load(suite_path)
     rows = []
-    for mode in s.modes:
-        p = os.path.join(results_root, mode, "cells.json")
+    # One result series per LABEL (mode × server-config variant) — variants like
+    # wal vs wal-tailcache land in adjacent columns. `mode` field holds the label.
+    for label in s.labels():
+        p = os.path.join(results_root, label, "cells.json")
         if not os.path.exists(p):
             continue
         for c in cells_mod.all_cells(p):
-            rows.append({"mode": mode, "stream_count": c["stream_count"],
+            rows.append({"mode": label, "stream_count": c["stream_count"],
                          "pods": c.get("pinned_pods"), "throughput": c.get("throughput"),
                          "p99": c.get("p99"), "saturated": c.get("saturated"),
                          "status": c.get("status"), "reason": c.get("reason"),
                          "walk": c.get("walk")})
     rows.sort(key=lambda r: (r["stream_count"], r["mode"]))
     return rows, _markdown(s, rows)
+
+
+def suite_status(suite_path, results_root):
+    """Overall completion state of a suite's run, for auto-teardown decisions:
+      "complete"   — every (label × stream_count) cell present and status "ok".
+      "errors"     — all cells present but at least one status "error" (keep the
+                     cluster for investigation / resume).
+      "incomplete" — a cell is missing (run didn't finish; keep the cluster)."""
+    s = Suite.load(suite_path)
+    saw_error = False
+    for label in s.labels():
+        p = os.path.join(results_root, label, "cells.json")
+        by_sc = {c["stream_count"]: c for c in cells_mod.all_cells(p)} if os.path.exists(p) else {}
+        for sc in s.stream_counts:
+            c = by_sc.get(sc)
+            if c is None:
+                return "incomplete"
+            if c.get("status") == "error":
+                saw_error = True
+    return "errors" if saw_error else "complete"
 
 
 def _cell_str(r):
@@ -32,13 +54,14 @@ def _cell_str(r):
 
 
 def _markdown(s, rows):
+    labels = s.labels()
     out = [f"# {s.name} — write-throughput report", ""]
     out += ["## Throughput at saturation (ops/s)", ""]
-    header = "| streams | " + " | ".join(s.modes) + " |"
-    out += [header, "|" + "---|" * (len(s.modes) + 1)]
+    header = "| streams | " + " | ".join(labels) + " |"
+    out += [header, "|" + "---|" * (len(labels) + 1)]
     by = {(r["mode"], r["stream_count"]): r for r in rows}
     for sc in s.stream_counts:
-        cells_row = [_cell_str(by[(m, sc)]) if (m, sc) in by else "—" for m in s.modes]
+        cells_row = [_cell_str(by[(m, sc)]) if (m, sc) in by else "—" for m in labels]
         out.append(f"| {sc} | " + " | ".join(cells_row) + " |")
     out += ["", "† = not saturated (ladder exhausted) — treat as a lower bound.", ""]
     out += ["## Saturation walks (pods → ops/s)", ""]

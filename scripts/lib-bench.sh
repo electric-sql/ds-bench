@@ -372,6 +372,20 @@ run_cell() {
 # emptied too. Deployment/bucket names: wal=durable-streams, ursula=ursula,
 # s2=s2lite (bucket s2-bench). RESET_DRYRUN=1 echoes commands instead of running
 # them (for tests).
+# _wait_server_http <hostport> — block until the server returns 3 CONSECUTIVE HTTP
+# responses through its Service (any 2xx–5xx = listener serving), so a fleet never
+# races a freshly-restarted server whose old pod is still terminating / whose
+# Service endpoints haven't re-pointed yet (the GKE creation_choke). rollout status
+# only proves TCP readiness; this proves the server actually serves. Best-effort:
+# the throwaway curl pod's --rm/--attach is flaky on exit, but its in-pod loop still
+# performs the readiness WAIT regardless of the attach exit code.
+_wait_server_http() {
+  local hostport="$1"
+  K run "reset-probe-$$-${RANDOM}" --rm --attach --restart=Never \
+    --image=curlimages/curl:latest --overrides="{\"spec\":{\"nodeSelector\":${NODESEL_CLIENT}}}" --command -- \
+    /bin/sh -c "ok=0; for i in \$(seq 1 60); do code=\$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://${hostport}/ 2>/dev/null); case \"\$code\" in 2??|3??|4??|5??) ok=\$((ok+1));; *) ok=0;; esac; [ \"\$ok\" -ge 3 ] && exit 0; sleep 1; done; exit 1" </dev/null >/dev/null 2>&1 || true
+}
+
 reset_state() {
   local mode="$1" run
   if [ "${RESET_DRYRUN:-0}" = "1" ]; then run="echo"; else run=""; fi
@@ -382,15 +396,15 @@ reset_state() {
       $run kubectl --context "$KCTX" -n ds-bench exec deploy/minio -- sh -c \
         'mc alias set local http://localhost:9000 minioadmin minioadmin >/dev/null 2>&1; mc rm --recursive --force local/s2-bench/ 2>/dev/null; true' || true
       $run kubectl --context "$KCTX" -n ds-bench rollout restart deploy/s2lite
-      if [ -z "$run" ]; then kubectl --context "$KCTX" -n ds-bench rollout status deploy/s2lite --timeout=120s; fi
+      if [ -z "$run" ]; then kubectl --context "$KCTX" -n ds-bench rollout status deploy/s2lite --timeout=120s; _wait_server_http s2lite:80; fi
       ;;
     wal)
       $run kubectl --context "$KCTX" -n ds-bench rollout restart deploy/durable-streams
-      if [ -z "$run" ]; then kubectl --context "$KCTX" -n ds-bench rollout status deploy/durable-streams --timeout=120s; fi
+      if [ -z "$run" ]; then kubectl --context "$KCTX" -n ds-bench rollout status deploy/durable-streams --timeout=120s; _wait_server_http durable-streams:4438; fi
       ;;
     ursula)
       $run kubectl --context "$KCTX" -n ds-bench rollout restart deploy/ursula
-      if [ -z "$run" ]; then kubectl --context "$KCTX" -n ds-bench rollout status deploy/ursula --timeout=120s; fi
+      if [ -z "$run" ]; then kubectl --context "$KCTX" -n ds-bench rollout status deploy/ursula --timeout=120s; _wait_server_http ursula:4437; fi
       ;;
     *) echo "reset_state: unknown mode '$mode'" >&2; return 2 ;;
   esac
@@ -407,7 +421,12 @@ deploy_mode() {
   local mode="$1"
   case "$mode" in
     wal)
-      local args="--durability wal --wal-shards ${WAL_SHARDS:-4} --splice-appends"
+      # The (WAL-only) reference server needs NO durability flag: it always WALs,
+      # auto-picks wal-shards = core count on a fresh data-dir (reset_state wipes it
+      # each cell), and defaults tail-cache to 0 (off) on Linux. So the default is
+      # empty. WAL_SERVER_ARGS injects server knobs to SWEEP (e.g. "--wal-shards 8"
+      # or "--tail-cache-bytes 65536") when finding the optimal config.
+      local args="${WAL_SERVER_ARGS:-}"
       SERVER_KIND=durable SERVER_EXTRA_ARGS="$args" PROBE_HOSTPORT="durable-streams:4438" \
         deploy_server "$SERVER_CPU" >&2 || return 1
       T_TARGET="http://durable-streams:4438"; T_API="durable"; T_NS="" ;;
@@ -423,11 +442,12 @@ deploy_mode() {
   export T_TARGET T_API T_NS
 }
 
-# server_image_digest <mode> — echo a 12-char digest of the deployed server image,
-# so a changed image re-runs that cell (see cells.status_of). Deployment per mode:
-# wal=durable-streams, ursula=ursula, s2=s2lite.
+# server_image_digest <mode> [config_args] — echo a 12-char digest of the deployed
+# server image (+ the config's server args, so a changed image OR a changed config
+# re-runs that cell; see cells.status_of). Deployment per mode: wal=durable-streams,
+# ursula=ursula, s2=s2lite.
 server_image_digest() {
   local dep; case "$1" in wal) dep=durable-streams;; ursula) dep=ursula;; s2) dep=s2lite;; esac
-  K get "deploy/$dep" \
-    -o jsonpath='{.spec.template.spec.containers[0].image}' | sha256sum | cut -c1-12
+  local img; img="$(K get "deploy/$dep" -o jsonpath='{.spec.template.spec.containers[0].image}')"
+  printf '%s\n%s\n' "$img" "${2:-}" | sha256sum | cut -c1-12
 }

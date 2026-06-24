@@ -11,7 +11,7 @@
 set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$REPO_ROOT"
 
-usage() { echo "usage: scripts/bench <suite.json> {run|report|teardown}" >&2; exit 2; }
+usage() { echo "usage: scripts/bench <suite.json> {run|report|teardown|teardown-if-complete}" >&2; exit 2; }
 [ $# -lt 2 ] && usage
 SUITE_FILE="$1"; CMD="$2"
 [ -f "$SUITE_FILE" ] || { echo "no such suite: $SUITE_FILE" >&2; exit 2; }
@@ -28,15 +28,43 @@ cmd_teardown() {
     | while read -r name zone; do
         $RUN gcloud container clusters delete "$name" --zone "$zone" --quiet
       done
+  # Clear the state file after a REAL teardown (skip in dry-run) so a later re-run
+  # recreates cleanly rather than thinking the deleted cluster still exists.
+  [ -z "$RUN" ] && rm -f "$STATE"
+  return 0
 }
 
 cmd_report() { python3 scripts/report.py "$SUITE_FILE"; }
+
+# Tear down this suite's cluster(s) ONLY if the run finished cleanly and results
+# were collected. Errors/incompleteness keep the cluster up for investigation/
+# resume. BENCH_KEEP_CLUSTER=1 always keeps it.
+_maybe_teardown() {
+  if [ "${BENCH_KEEP_CLUSTER:-0}" = "1" ]; then
+    echo "[bench] BENCH_KEEP_CLUSTER=1 — leaving ${SUITE_NAME} cluster(s) up"; return 0
+  fi
+  local report_md="results/${SUITE_NAME}/report.md"
+  if [ ! -f "$report_md" ]; then
+    echo "[bench] results not collected (no ${report_md}) — leaving cluster(s) up"; return 0
+  fi
+  local st; st="$(python3 -c "import sys;sys.path.insert(0,'scripts');import report;print(report.suite_status('$SUITE_FILE','results/${SUITE_NAME}'))")"
+  case "$st" in
+    complete)
+      echo "[bench] ${SUITE_NAME} complete + results collected → tearing down cluster(s)"
+      cmd_teardown ;;
+    errors)
+      echo "[bench] ${SUITE_NAME} has error cells → leaving cluster(s) up (fix/re-run to resume; teardown happens once clean)" ;;
+    incomplete)
+      echo "[bench] ${SUITE_NAME} incomplete → leaving cluster(s) up (re-run to resume)" ;;
+  esac
+}
 
 cmd_run() {
   local modes; modes="$(_suite "' '.join(s.modes)")"
   for mode in $modes; do ( run_mode "$mode" ) & done
   wait
-  cmd_report
+  cmd_report          # collect + aggregate (per-cell artifacts already pulled locally)
+  _maybe_teardown     # teardown only if complete + report written
 }
 
 run_mode() {
@@ -61,6 +89,7 @@ run_mode() {
   export WARMUP_SECS="$(_suite 's.saturation["warmup_secs"]')"
   export MEASURE_SECS="$(_suite 's.saturation["measure_secs"]')"
   export SETTLE_SECS="${SETTLE_SECS:-5}"
+  export SETUP_CONCURRENCY="$(_suite 's.saturation.get("setup_concurrency", 32)')"
   export SWEEP_RUN_ID="${SUITE_NAME}-${mode}"
   local mode_root="results/${SUITE_NAME}/${mode}"
   export RESULTS_ROOT="$mode_root" SAT_RESULT_ROOT="$mode_root/cells"
@@ -72,15 +101,34 @@ run_mode() {
   # cold-tier buckets (ursula/s2 write to the object store)
   K exec deploy/minio -- sh -c 'mc alias set local http://localhost:9000 minioadmin minioadmin >/dev/null 2>&1; mc mb -p local/ursula local/s2-bench local/durable-streams local/bench-results >/dev/null 2>&1; true' >/dev/null 2>&1 || true
 
-  deploy_mode "$mode" || { echo "[$mode] deploy failed — skipping mode" >&2; return 1; }
-  local digest; digest="$(server_image_digest "$mode")"
+  # One result series per server-config variant (label). Variants share the mode's
+  # cluster: redeploy the server with the variant's args, then walk all stream-counts
+  # into results/<suite>/<label>/cells.json — so e.g. wal vs wal-tailcache compare
+  # side by side in the report. A mode with no server_configs has one baseline.
+  local nconf; nconf="$(_suite 'len(s.configs_for("'"$mode"'"))')"
+  local i
+  for ((i=0; i<nconf; i++)); do
+    local label args
+    label="$(_suite 's.configs_for("'"$mode"'")['"$i"']["label"]')"
+    args="$(_suite 's.configs_for("'"$mode"'")['"$i"']["args"]')"
+    local label_root="results/${SUITE_NAME}/${label}"
+    local label_cells="${label_root}/cells.json"
+    export RESULTS_ROOT="$label_root" SAT_RESULT_ROOT="$label_root/cells"
+    export WAL_SERVER_ARGS="$args"   # injected only for wal; ignored by ursula/s2
 
-  local sc st
-  for sc in $(_suite "' '.join(map(str,s.stream_counts))"); do
-    st="$(python3 -c "import sys;sys.path.insert(0,'scripts');import cells;print(cells.status_of('$cells_json',$sc,'$digest'))")"
-    [ "$st" = "saturated" ] && { echo "[$mode $sc] already saturated, skip"; continue; }
-    echo "[$mode $sc] walking ladder (status=$st)"
-    walk_cell "$mode" "$sc" "$cells_json" "$digest"
+    echo "[$mode/$label] deploy (args='${args}')"
+    deploy_mode "$mode" || { echo "[$mode/$label] deploy failed — skipping variant" >&2; continue; }
+    local digest; digest="$(server_image_digest "$mode" "$args")"
+
+    local sc st
+    for sc in $(_suite "' '.join(map(str,s.stream_counts))"); do
+      st="$(python3 -c "import sys;sys.path.insert(0,'scripts');import cells;print(cells.status_of('$label_cells',$sc,'$digest'))")"
+      [ "$st" = "saturated" ] && { echo "[$label $sc] already saturated, skip"; continue; }
+      echo "[$label $sc] walking ladder (status=$st)"
+      # base $mode (not $label) so reset_state + addressing resolve; per-label
+      # SAT_RESULT_ROOT + cells path keep variants from colliding.
+      walk_cell "$mode" "$sc" "$label_cells" "$digest"
+    done
   done
 }
 
@@ -96,5 +144,6 @@ case "$CMD" in
   run) cmd_run ;;
   report) cmd_report ;;
   teardown) cmd_teardown ;;
+  teardown-if-complete) _maybe_teardown ;;
   *) usage ;;
 esac

@@ -7,10 +7,11 @@ WORKDIR /src
 COPY . .
 WORKDIR /src/packages/server-rust
 # FEATURES is overridable so a bench/diagnostic image can add `telemetry`
-# (WAL_STATS to stdout + per-append OTel timers). Default includes `strict-uring`
-# so the `durable:strict-iouring` bench variant exercises the io_uring fsync
-# executor (Linux-only; harmless when --strict-io-uring isn't passed).
-ARG FEATURES=tier,strict-uring
+# (WAL_STATS to stdout + per-append OTel timers). The simplified WAL-only server
+# (`wal-v2`) dropped `strict-uring`; the only build feature the bench needs is
+# `tier` (S3 cold-tier → MinIO). `gcloud builds submit --tag` passes no build-arg,
+# so this default must match the server checkout.
+ARG FEATURES=tier
 RUN cargo build --release --features ${FEATURES}
 RUN cp target/release/durable-streams-server /durable-streams-server
 
