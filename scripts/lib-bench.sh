@@ -382,7 +382,8 @@ deploy_mode() {
         deploy_server "$SERVER_CPU" >&2 || return 1
       T_TARGET="http://ursula:4437"; T_API="ursula"; T_NS="--bucket benchmark" ;;
     s2)
-      K apply -f gke/s2lite.yaml >&2 && K rollout status deploy/s2lite --timeout=600s >&2 || return 1
+      envsubst "${MANIFEST_VARS}" < gke/s2lite.yaml | K apply -f - >&2 \
+        && K rollout status deploy/s2lite --timeout=600s >&2 || return 1
       T_TARGET="http://s2lite:80"; T_API="s2"; T_NS="--basin benchmark" ;;
     *) echo "deploy_mode: unknown mode '$mode'" >&2; return 1 ;;
   esac
