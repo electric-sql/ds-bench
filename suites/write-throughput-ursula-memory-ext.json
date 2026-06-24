@@ -1,0 +1,29 @@
+{
+  "suite": "write-throughput-ursula-memory-ext",
+  "cluster": {
+    "server_machine": "c4d-standard-16-lssd",
+    "client_machine": "n2d-standard-32",
+    "client_nodes": 12,
+    "region": "europe-west4",
+    "cluster_name": "bench-ursula-ext",
+    "zone": "europe-west4-b"
+  },
+  "saturation": {
+    "plateau_pct": 5,
+    "fleet_cpu": 2,
+    "repeats": 3,
+    "warmup_secs": 15,
+    "measure_secs": 20,
+    "setup_concurrency": 32
+  },
+  "modes": ["ursula"],
+  "stream_counts": [100000],
+  "pod_ladder": {
+    "100000": [110, 140, 170]
+  },
+  "server_configs": {
+    "ursula": [
+      { "label": "ursula-memory-ext", "args": "" }
+    ]
+  }
+}

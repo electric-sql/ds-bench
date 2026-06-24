@@ -1,0 +1,29 @@
+{
+  "suite": "write-throughput-walnewbin-ext",
+  "cluster": {
+    "server_machine": "c4d-standard-16-lssd",
+    "client_machine": "n2d-standard-32",
+    "client_nodes": 14,
+    "region": "europe-west4",
+    "cluster_name": "bench-walnewbin-ext",
+    "zone": "europe-west4-c"
+  },
+  "saturation": {
+    "plateau_pct": 5,
+    "fleet_cpu": 2,
+    "repeats": 3,
+    "warmup_secs": 15,
+    "measure_secs": 20,
+    "setup_concurrency": 32
+  },
+  "modes": ["wal"],
+  "stream_counts": [100000],
+  "pod_ladder": {
+    "100000": [110, 150, 190]
+  },
+  "server_configs": {
+    "wal": [
+      { "label": "wal-newbin-ext", "args": "--wal-shards 4" }
+    ]
+  }
+}

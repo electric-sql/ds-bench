@@ -95,15 +95,21 @@ def main():
     paths = sys.argv[1:] or sorted(glob.glob("suites/write-throughput-*.json"))
     all_rows, peaks = build_combined(paths)
     os.makedirs("results", exist_ok=True)
-    with open("results/combined.csv", "w", newline="") as f:
+    # COMBINED_OUT sets the output basename (default "combined" -> combined-report.md
+    # / combined.csv). Override to compare a subset WITHOUT clobbering an existing
+    # report, e.g. COMBINED_OUT=zerocopy-comparison.
+    base = os.environ.get("COMBINED_OUT", "combined")
+    md_path = f"results/{base}-report.md" if base == "combined" else f"results/{base}.md"
+    csv_path = f"results/{base}.csv"
+    with open(csv_path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["suite", "mode", "stream_count", "pods",
                                           "throughput", "p99", "saturated", "status", "reason"])
         w.writeheader()
         for r in all_rows:
             w.writerow({k: r.get(k) for k in w.fieldnames})
-    with open("results/combined-report.md", "w") as f:
+    with open(md_path, "w") as f:
         f.write(markdown(all_rows, peaks))
-    print("wrote results/combined-report.md, results/combined.csv")
+    print(f"wrote {md_path}, {csv_path}")
     print("configs:", ", ".join(f"{k}={int(v['throughput'])}" for k, v in peaks.items()))
 
 

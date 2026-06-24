@@ -1,0 +1,31 @@
+{
+  "suite": "write-throughput-zerocopy",
+  "cluster": {
+    "server_machine": "c4d-standard-16-lssd",
+    "client_machine": "n2d-standard-32",
+    "client_nodes": 8,
+    "region": "europe-west4"
+  },
+  "saturation": {
+    "plateau_pct": 5,
+    "fleet_cpu": 2,
+    "repeats": 3,
+    "warmup_secs": 15,
+    "measure_secs": 20,
+    "setup_concurrency": 32
+  },
+  "modes": ["wal"],
+  "stream_counts": [100, 1000, 10000, 100000],
+  "pod_ladder": {
+    "100":    [4, 8, 16, 24, 32],
+    "1000":   [4, 8, 16, 24, 32],
+    "10000":  [16, 24, 32, 48, 64],
+    "100000": [80, 100, 110]
+  },
+  "server_configs": {
+    "wal": [
+      { "label": "zerocopy",   "args": "--wal-shards 4 --zero-copy" },
+      { "label": "wal-newbin", "args": "--wal-shards 4" }
+    ]
+  }
+}

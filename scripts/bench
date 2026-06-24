@@ -26,7 +26,17 @@ cmd_teardown() {
   [ -f "$STATE" ] || { echo "no clusters recorded for $SUITE_NAME"; return 0; }
   python3 -c "import json;[print(c['name'],c['zone']) for c in json.load(open('$STATE'))['clusters']]" \
     | while read -r name zone; do
-        $RUN gcloud container clusters delete "$name" --zone "$zone" --quiet
+        if [ -n "$RUN" ]; then $RUN gcloud container clusters delete "$name" --zone "$zone" --quiet; continue; fi
+        # Real teardown: a delete fails while the cluster is PROVISIONING/RECONCILING
+        # (GKE rejects concurrent ops). Retry until the cluster is actually gone so a
+        # transient state never strands a billing cluster.
+        ok=0
+        for i in $(seq 1 30); do
+          if ! gcloud container clusters describe "$name" --zone "$zone" >/dev/null 2>&1; then ok=1; break; fi
+          gcloud container clusters delete "$name" --zone "$zone" --quiet >/dev/null 2>&1 && { ok=1; break; }
+          echo "  teardown $name: delete failed (likely RECONCILING) — retry $i" >&2; sleep 20
+        done
+        [ "$ok" = 1 ] || echo "  WARN: $name still present after retries — watchdog will catch it" >&2
       done
   # Clear the state file after a REAL teardown (skip in dry-run) so a later re-run
   # recreates cleanly rather than thinking the deleted cluster still exists.
@@ -68,11 +78,20 @@ cmd_run() {
 }
 
 run_mode() {
-  local mode="$1" cluster="bench-${mode}"
-  export KUBECONFIG="$REPO_ROOT/.bench-state/kc-${mode}"
+  local mode="$1"
   local region; region="$(_suite 's.cluster["region"]')"
-  local zoneidx; case "$mode" in wal) zoneidx=a;; ursula) zoneidx=b;; s2) zoneidx=c;; *) zoneidx=a;; esac
-  local zone="${region}-${zoneidx}"
+  # Cluster name + zone default to bench-<mode> / region-{a,b,c}, but a suite may
+  # override cluster.cluster_name and cluster.zone so a same-mode run (e.g. a
+  # ladder-extension of wal) gets its OWN cluster and can run in PARALLEL with
+  # another wal run instead of colliding on bench-wal.
+  local cluster; cluster="$(_suite 's.cluster.get("cluster_name") or "bench-'"$mode"'"')"
+  local zone; zone="$(_suite 's.cluster.get("zone") or ""')"
+  if [ -z "$zone" ]; then
+    local zoneidx; case "$mode" in wal) zoneidx=a;; ursula) zoneidx=b;; s2) zoneidx=c;; *) zoneidx=a;; esac
+    zone="${region}-${zoneidx}"
+  fi
+  # Key KUBECONFIG by cluster (not mode) so parallel same-mode runs don't clobber it.
+  export KUBECONFIG="$REPO_ROOT/.bench-state/kc-${cluster}"
 
   # ensure cluster + record it (so teardown only touches what we created)
   CLUSTER="$cluster" ZONE="$zone" SERVER_MACHINE="$(_suite 's.cluster["server_machine"]')" \
