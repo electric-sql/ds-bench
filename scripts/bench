@@ -102,7 +102,7 @@ run_mode() {
     cluster="$(_suite 's.cluster.get("cluster_name") or "bench-'"$mode"'"')"
     local zone; zone="$(_suite 's.cluster.get("zone") or ""')"
     if [ -z "$zone" ]; then
-      local zoneidx; case "$mode" in wal) zoneidx=a;; ursula) zoneidx=b;; s2) zoneidx=c;; *) zoneidx=a;; esac
+      local zoneidx; case "$mode" in wal) zoneidx=a;; ursula) zoneidx=b;; s2) zoneidx=c;; node) zoneidx=d;; *) zoneidx=a;; esac
       zone="${region}-${zoneidx}"
     fi
     export KUBECONFIG="$REPO_ROOT/.bench-state/kc-${cluster}"

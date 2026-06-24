@@ -17,7 +17,7 @@ REG="${AR_LOCATION}-docker.pkg.dev/$PROJECT/$AR_REPO"
 cd "$REPO_ROOT"
 
 cleanup() {
-  rm -f ds-bench/Dockerfile ../durable-streams/Dockerfile
+  rm -f ds-bench/Dockerfile ../durable-streams/Dockerfile ../durable-streams/.dockerignore
 }
 trap cleanup EXIT
 
@@ -33,4 +33,13 @@ cp dockerfiles/durable-streams.Dockerfile ../durable-streams/Dockerfile
 gcloud builds submit ../durable-streams --project "$PROJECT" --tag "$REG/durable-streams:dev"
 rm -f ../durable-streams/Dockerfile
 
-echo "pushed: $REG/ds-bench:dev  $REG/durable-streams:dev"
+# --- durable-node (Node.js reference; context: ../durable-streams; BUILD_NODE=0 to skip) ---
+if [ "${BUILD_NODE:-1}" = 1 ]; then
+  echo "=== Cloud Build: durable-node -> $REG/durable-node:dev ==="
+  cp dockerfiles/durable-node.Dockerfile ../durable-streams/Dockerfile
+  printf 'node_modules/\n.git/\ntarget/\n**/node_modules/\n**/target/\ndist/\n**/dist/\n' > ../durable-streams/.dockerignore
+  gcloud builds submit ../durable-streams --project "$PROJECT" --tag "$REG/durable-node:dev"
+  rm -f ../durable-streams/Dockerfile ../durable-streams/.dockerignore
+fi
+
+echo "pushed: $REG/ds-bench:dev  $REG/durable-streams:dev  $REG/durable-node:dev"

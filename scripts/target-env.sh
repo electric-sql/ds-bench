@@ -23,6 +23,7 @@ case "$DS_TARGET" in
     # IMG_SERVER is overridable so several server implementations (reference,
     # io-uring, …) can be compared by pointing at distinct image tags.
     IMG_SERVER="${IMG_SERVER:-durable-streams:dev}"
+    IMG_NODE="${IMG_NODE:-durable-node:dev}"   # Node.js reference server (kind-loaded)
     IMG_URSULA="${IMG_URSULA:-ghcr.io/tonbo-io/ursula:v0.1.5}"   # upstream published image
     IMG_DSBENCH="ds-bench:dev"
     IMG_METRICS="ds-bench:dev"        # ds-bench:dev carries bash+curl+procps for the sidecar
@@ -41,6 +42,7 @@ case "$DS_TARGET" in
     AR_LOCATION="${AR_LOCATION:-europe-west1}"; AR_REPO="${AR_REPO:-ds-bench}"
     REG="${AR_LOCATION}-docker.pkg.dev/${PROJECT}/${AR_REPO}"
     IMG_SERVER="${IMG_SERVER:-${REG}/durable-streams:dev}"
+    IMG_NODE="${IMG_NODE:-${REG}/durable-node:dev}"   # Node.js reference server
     IMG_URSULA="${IMG_URSULA:-ghcr.io/tonbo-io/ursula:v0.1.5}"   # upstream published image
     IMG_DSBENCH="${REG}/ds-bench:dev"
     IMG_METRICS="${REG}/ds-bench:dev"   # ds-bench:dev carries bash+procps for the sidecar
@@ -82,11 +84,11 @@ FLEET_CPU="${FLEET_CPU:-0.5}"
 URSULA_WAL="${URSULA_WAL:-disk}"
 
 # Vars referenced by envsubst in the manifests + by the runners.
-export DS_TARGET KCTX IMG_SERVER IMG_URSULA IMG_DSBENCH IMG_METRICS PULL_POLICY \
+export DS_TARGET KCTX IMG_SERVER IMG_NODE IMG_URSULA IMG_DSBENCH IMG_METRICS PULL_POLICY \
        NODESEL_SERVER NODESEL_CLIENT PROJECT ZONE CLUSTER KIND_CLUSTER REG \
        AR_LOCATION AR_REPO SERVER_MEM SERVER_MACHINE FLEET_CPU URSULA_WAL
 
 # Every manifest envsubst must whitelist these so the image/policy/selector
 # placeholders resolve. Runners reference $MANIFEST_VARS in their envsubst calls.
-MANIFEST_VARS='${IMG_SERVER} ${IMG_URSULA} ${IMG_DSBENCH} ${IMG_METRICS} ${PULL_POLICY} ${NODESEL_SERVER} ${NODESEL_CLIENT} ${SERVER_MEM} ${FLEET_CPU} ${URSULA_WAL}'
+MANIFEST_VARS='${IMG_SERVER} ${IMG_NODE} ${IMG_URSULA} ${IMG_DSBENCH} ${IMG_METRICS} ${PULL_POLICY} ${NODESEL_SERVER} ${NODESEL_CLIENT} ${SERVER_MEM} ${FLEET_CPU} ${URSULA_WAL}'
 export MANIFEST_VARS

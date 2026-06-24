@@ -45,7 +45,7 @@ ensure_metrics_configmap() {
 # from a prior run, so suites never stack up / contend for the single node. MinIO and
 # the metrics ConfigMap (shared infra) stay. No-op on remote (each mode has its own cluster).
 shutdown_local_servers() {
-  K delete deploy durable-streams ursula s2lite --ignore-not-found --cascade=foreground >&2 2>/dev/null || true
+  K delete deploy durable-streams durable-node ursula s2lite --ignore-not-found --cascade=foreground >&2 2>/dev/null || true
 }
 
 # ── deploy_server SERVER_CPU [extra_args...] ─────────────────────────────────
@@ -362,6 +362,11 @@ reset_state() {
       $run kubectl --context "$KCTX" -n ds-bench rollout restart deploy/ursula
       if [ -z "$run" ]; then kubectl --context "$KCTX" -n ds-bench rollout status deploy/ursula --timeout=120s; _wait_server_http ursula:4437; fi
       ;;
+    node)
+      # in-memory server: a rollout restart gives a fresh (empty) process
+      $run kubectl --context "$KCTX" -n ds-bench rollout restart deploy/durable-node
+      if [ -z "$run" ]; then kubectl --context "$KCTX" -n ds-bench rollout status deploy/durable-node --timeout=120s; _wait_server_http durable-node:4438; fi
+      ;;
     *) echo "reset_state: unknown mode '$mode'" >&2; return 2 ;;
   esac
 }
@@ -394,6 +399,12 @@ deploy_mode() {
       envsubst "${MANIFEST_VARS}" < gke/s2lite.yaml | K apply -f - >&2 \
         && K rollout status deploy/s2lite --timeout=600s >&2 || return 1
       T_TARGET="http://s2lite:80"; T_API="s2"; T_NS="--basin benchmark" ;;
+    node)
+      # Node.js reference server — same protocol as the Rust server (api-style durable),
+      # in-memory storage (no MinIO; a restart in reset_state gives fresh state).
+      envsubst "${MANIFEST_VARS} \${SERVER_CPU}" < gke/durable-node.yaml | K apply -f - >&2 \
+        && K rollout status deploy/durable-node --timeout=600s >&2 || return 1
+      T_TARGET="http://durable-node:4438"; T_API="durable"; T_NS="" ;;
     *) echo "deploy_mode: unknown mode '$mode'" >&2; return 1 ;;
   esac
   export T_TARGET T_API T_NS

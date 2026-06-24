@@ -91,14 +91,20 @@ A workload is server-agnostic: the same suite runs against any supported impleme
 by the suite's `modes` and the server image that gets deployed. **durable-streams**, the Rust
 server this harness was built alongside, runs either WAL-backed (`--durability wal`, a sharded
 committer) or without a WAL (`--durability memory`), and its two modes have their own suites
-(`write-throughput-wal.json` and `write-throughput-memory.json`). **ursula** is a single-node
-Raft server whose storage backend is chosen at deploy time through the `URSULA_WAL` variable —
-`memory` keeps the log in RAM while `disk` writes a WAL and fsyncs on every commit (the default) —
-so a single `write-throughput-ursula.json` covers both. **S2**, run here as `s2lite`, is
-object-store-backed. Every server points at the same single-node MinIO, and only the system
-under test is running while it is measured. Adding another implementation comes down to a
-deployment manifest, a `ds-bench` API style for its wire protocol, and a few addressing lines in
-`deploy_mode` and `reset_state` in `scripts/lib-bench.sh`.
+(`write-throughput-wal.json` and `write-throughput-memory.json`). The **Node.js reference
+server** (`@durable-streams/server`) is the protocol's reference implementation and speaks the
+same wire protocol, so it reuses the `durable` API style and runs as mode `node` (in-memory
+storage). Because it is TypeScript rather than a compiled binary, its image is built from the
+same `../durable-streams` monorepo by installing the pnpm workspace and starting the server
+under Node — see `dockerfiles/durable-node.Dockerfile`; `build-images.sh` builds it by default
+(`BUILD_NODE=0` to skip). **ursula** is a single-node Raft server whose storage backend is
+chosen at deploy time through the `URSULA_WAL` variable — `memory` keeps the log in RAM while
+`disk` writes a WAL and fsyncs on every commit (the default) — so a single
+`write-throughput-ursula.json` covers both. **S2**, run here as `s2lite`, is object-store-backed.
+Every server points at the same single-node MinIO, and only the system under test is running
+while it is measured. Adding another implementation comes down to a deployment manifest, a
+`ds-bench` API style for its wire protocol, and a few addressing lines in `deploy_mode` and
+`reset_state` in `scripts/lib-bench.sh`.
 
 ## Results & reproducing
 

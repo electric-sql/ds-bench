@@ -25,7 +25,7 @@ build_one() {  # tag dockerfile context
   local tag="$1" dockerfile="$2" context="$3" rc
   echo "=== docker build ${tag} (native) — context ${context} ==="
   cp "$dockerfile" "${context}/Dockerfile"
-  printf 'target/\n.git/\nnode_modules/\n**/target/\n**/node_modules/\n' > "${context}/.dockerignore"
+  printf 'target/\n.git/\nnode_modules/\n**/target/\n**/node_modules/\ndist/\n**/dist/\n' > "${context}/.dockerignore"
   if docker build -t "${tag}" "${context}"; then rc=0; else rc=$?; fi
   rm -f "${context}/Dockerfile" "${context}/.dockerignore"
   [ "$rc" = 0 ] || { echo "build ${tag} FAILED (rc=$rc)" >&2; exit "$rc"; }
@@ -33,7 +33,13 @@ build_one() {  # tag dockerfile context
 
 build_one "ds-bench:dev"         dockerfiles/ds-bench.Dockerfile         ds-bench
 build_one "durable-streams:dev"  dockerfiles/durable-streams.Dockerfile  ../durable-streams
+# Node.js reference server (BUILD_NODE=0 to skip when iterating only on the Rust server).
+loaded="durable-streams:dev ds-bench:dev"
+if [ "${BUILD_NODE:-1}" = 1 ]; then
+  build_one "durable-node:dev" dockerfiles/durable-node.Dockerfile ../durable-streams
+  loaded="$loaded durable-node:dev"
+fi
 
 echo "=== kind load docker-image → ${KIND_CLUSTER} ==="
-kind load docker-image durable-streams:dev ds-bench:dev --name "$KIND_CLUSTER"
+kind load docker-image $loaded --name "$KIND_CLUSTER"
 echo "✓ images built + loaded ($(git -C ../durable-streams rev-parse --short HEAD 2>/dev/null) server)"
