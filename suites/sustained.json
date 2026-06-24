@@ -1,0 +1,30 @@
+{
+  "suite": "sustained",
+  "workload": "sustained",
+  "cluster": {
+    "server_machine": "c4d-standard-16-lssd",
+    "client_machine": "n2d-standard-32",
+    "client_nodes": 2,
+    "region": "europe-west4",
+    "cluster_name": "bench-sustained",
+    "zone": "europe-west4-b"
+  },
+  "sustained": {
+    "rate_per_stream": 10,
+    "duration_secs": 90,
+    "snapshot_secs": 5,
+    "pods": 1,
+    "fleet_cpu": 0.5,
+    "payload_bytes": 256,
+    "setup_concurrency": 64,
+    "repeats": 1
+  },
+  "modes": ["wal"],
+  "stream_counts": [10, 50, 100, 150],
+  "server_configs": {
+    "wal": [
+      { "label": "wal",    "args": "--durability wal --wal-shards 4" },
+      { "label": "memory", "args": "--durability memory" }
+    ]
+  }
+}

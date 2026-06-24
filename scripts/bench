@@ -44,7 +44,10 @@ cmd_teardown() {
   return 0
 }
 
-cmd_report() { python3 scripts/report.py "$SUITE_FILE"; }
+cmd_report() {
+  if [ "$(_suite 's.workload')" = "sustained" ]; then python3 scripts/sustained_report.py "$SUITE_FILE";
+  else python3 scripts/report.py "$SUITE_FILE"; fi
+}
 
 # Tear down this suite's cluster(s) ONLY if the run finished cleanly and results
 # were collected. Errors/incompleteness keep the cluster up for investigation/
@@ -79,6 +82,7 @@ cmd_run() {
 
 run_mode() {
   local mode="$1"
+  local workload; workload="$(_suite 's.workload')"
   local region; region="$(_suite 's.cluster["region"]')"
   # Cluster name + zone default to bench-<mode> / region-{a,b,c}, but a suite may
   # override cluster.cluster_name and cluster.zone so a same-mode run (e.g. a
@@ -104,19 +108,22 @@ run_mode() {
   export ZONE="$zone" CLUSTER="$cluster"
   export KCTX="gke_${PROJECT}_${zone}_${cluster}"
   export SERVER_CPUS="${SERVER_CPUS:-4}"; export SERVER_CPU="${SERVER_CPUS%% *}"
-  export FLEET_CPU="$(_suite 's.saturation["fleet_cpu"]')"
-  export WARMUP_SECS="$(_suite 's.saturation["warmup_secs"]')"
-  export MEASURE_SECS="$(_suite 's.saturation["measure_secs"]')"
+  # fleet_cpu/setup/payload come from the saturation block (write) OR the sustained
+  # block (sustained suites have no saturation block); warmup/measure are write-only.
+  export FLEET_CPU="$(_suite 's.saturation.get("fleet_cpu", s.sustained.get("fleet_cpu", 0.5))')"
+  export WARMUP_SECS="$(_suite 's.saturation.get("warmup_secs", 15)')"
+  export MEASURE_SECS="$(_suite 's.saturation.get("measure_secs", 20)')"
   export SETTLE_SECS="${SETTLE_SECS:-5}"
-  export SETUP_CONCURRENCY="$(_suite 's.saturation.get("setup_concurrency", 32)')"
-  export PAYLOAD_BYTES="$(_suite 's.saturation.get("payload_bytes", 256)')"
+  export SETUP_CONCURRENCY="$(_suite 's.saturation.get("setup_concurrency", s.sustained.get("setup_concurrency", 32))')"
+  export PAYLOAD_BYTES="$(_suite 's.saturation.get("payload_bytes", s.sustained.get("payload_bytes", 256))')"
   export SWEEP_RUN_ID="${SUITE_NAME}-${mode}"
   local mode_root="results/${SUITE_NAME}/${mode}"
   export RESULTS_ROOT="$mode_root" SAT_RESULT_ROOT="$mode_root/cells"
   local cells_json="${mode_root}/cells.json"
 
-  # source the engine (defines K/deploy_mode/walk_cell against the now-correct KCTX)
-  . scripts/lib-saturate.sh
+  # source the engine (defines K/deploy_mode/walk_cell against the now-correct KCTX).
+  # sustained suites also get run_sustained_cell (lib-sustained sources lib-saturate).
+  if [ "$workload" = "sustained" ]; then . scripts/lib-sustained.sh; else . scripts/lib-saturate.sh; fi
   ensure_metrics_configmap >&2 || true
   # cold-tier buckets (ursula/s2 write to the object store)
   K exec deploy/minio -- sh -c 'mc alias set local http://localhost:9000 minioadmin minioadmin >/dev/null 2>&1; mc mb -p local/ursula local/s2-bench local/durable-streams local/bench-results >/dev/null 2>&1; true' >/dev/null 2>&1 || true
@@ -140,14 +147,19 @@ run_mode() {
     deploy_mode "$mode" || { echo "[$mode/$label] deploy failed — skipping variant" >&2; continue; }
     local digest; digest="$(server_image_digest "$mode" "$args")"
 
-    local sc st
+    # write-throughput → walk_cell (saturate), skip cells already `saturated`.
+    # sustained → run_sustained_cell (one fixed-rate run), skip cells already `done`.
+    local sc st store skip verb
+    if [ "$workload" = "sustained" ]; then store=sustained_cells; skip=done; verb="sustained run"
+    else store=cells; skip=saturated; verb="walking ladder"; fi
     for sc in $(_suite "' '.join(map(str,s.stream_counts))"); do
-      st="$(python3 -c "import sys;sys.path.insert(0,'scripts');import cells;print(cells.status_of('$label_cells',$sc,'$digest'))")"
-      [ "$st" = "saturated" ] && { echo "[$label $sc] already saturated, skip"; continue; }
-      echo "[$label $sc] walking ladder (status=$st)"
+      st="$(python3 -c "import sys;sys.path.insert(0,'scripts');import ${store};print(${store}.status_of('$label_cells',$sc,'$digest'))")"
+      [ "$st" = "$skip" ] && { echo "[$label $sc] already ${skip}, skip"; continue; }
+      echo "[$label $sc] ${verb} (status=$st)"
       # base $mode (not $label) so reset_state + addressing resolve; per-label
       # SAT_RESULT_ROOT + cells path keep variants from colliding.
-      walk_cell "$mode" "$sc" "$label_cells" "$digest"
+      if [ "$workload" = "sustained" ]; then run_sustained_cell "$mode" "$sc" "$label_cells" "$digest"
+      else walk_cell "$mode" "$sc" "$label_cells" "$digest"; fi
     done
   done
 }

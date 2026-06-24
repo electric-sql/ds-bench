@@ -14,13 +14,17 @@ class Suite:
     @property
     def name(self):            return self._d["suite"]
     @property
+    def workload(self):        return self._d.get("workload", "write-throughput")
+    @property
     def modes(self):           return list(self._d["modes"])
     @property
     def stream_counts(self):   return list(self._d["stream_counts"])
     @property
     def cluster(self):         return dict(self._d["cluster"])
     @property
-    def saturation(self):      return dict(self._d["saturation"])
+    def saturation(self):      return dict(self._d.get("saturation", {}))
+    @property
+    def sustained(self):       return dict(self._d.get("sustained", {}))
 
     def ladder_for(self, stream_count):
         ladder = self._d["pod_ladder"]
