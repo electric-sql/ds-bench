@@ -39,6 +39,15 @@ ensure_metrics_configmap() {
     --dry-run=client -o yaml | K apply -f -
 }
 
+# shutdown_local_servers — on the shared local (kind) cluster every suite uses ONE
+# cluster, so remove ALL server deployments (durable-streams / ursula / s2lite) + their
+# pods to free the node. Lets a local suite self-clean on exit and pre-clear leftovers
+# from a prior run, so suites never stack up / contend for the single node. MinIO and
+# the metrics ConfigMap (shared infra) stay. No-op on remote (each mode has its own cluster).
+shutdown_local_servers() {
+  K delete deploy durable-streams ursula s2lite --ignore-not-found --cascade=foreground >&2 2>/dev/null || true
+}
+
 # ── deploy_server SERVER_CPU [extra_args...] ─────────────────────────────────
 #   Applies durable-streams.yaml (envsubst MANIFEST_VARS + SERVER_CPU), optionally
 #   patching server args. Two injection modes selected from extra_args:

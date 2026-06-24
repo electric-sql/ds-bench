@@ -139,6 +139,10 @@ run_mode() {
   # cold-tier buckets (ursula/s2 write to the object store)
   K exec deploy/minio -- sh -c 'mc alias set local http://localhost:9000 minioadmin minioadmin >/dev/null 2>&1; mc mb -p local/ursula local/s2-bench local/durable-streams local/bench-results >/dev/null 2>&1; true' >/dev/null 2>&1 || true
 
+  # Local kind is one shared cluster: clear any server left by a prior suite so this run
+  # never contends with another server on the single node (this suite self-cleans on exit).
+  [ "${DS_TARGET}" = "local" ] && shutdown_local_servers
+
   # One result series per server-config variant (label). Variants share the mode's
   # cluster: redeploy the server with the variant's args, then walk all stream-counts
   # into results/<suite>/<label>/cells.json — so e.g. wal vs wal-tailcache compare
@@ -181,6 +185,9 @@ run_mode() {
       esac
     done
   done
+  # Local: self-shutdown the server when the suite finishes (the kind cluster stays up,
+  # so the node is free for the next suite). Remote tears down its own cluster instead.
+  [ "${DS_TARGET}" = "local" ] && { echo "[bench] local: shutting down server (kind cluster kept)"; shutdown_local_servers; }
 }
 
 _record_cluster() {  # idempotent append to the suite state file
