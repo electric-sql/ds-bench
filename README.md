@@ -28,17 +28,19 @@ client fleet, merges per-pod HDR histograms into fleet-wide percentiles, records
 results under `results/<suite>/`, and tears down. Reports are regenerated from local results
 with no cluster.
 
-- **write throughput** — concurrent appends across N streams; the client fleet ramps up a
-  per-cardinality pod ladder until server throughput plateaus (a *saturation walk*), then pins
-  and confirms the peak append/s and its tail latency.
-- **sustained** — a fixed append rate across N streams held for `duration_secs`; records latency
-  and server-memory (RSS) drift over the window.
-- **catch-up / reconnect** — a stream is pre-populated, then N clients reconnect and replay it
-  from the start simultaneously; records per-client catch-up latency, response body size, and
-  aggregate replay throughput. Each implementation replays via its native read path (snapshot+tail
-  or full-log).
-- **SSE fan-out** — one writer publishes to a stream while many subscribers stream it; records
-  per-event end-to-end delivery latency versus subscriber count.
+The four workloads exercise different parts of a durable-stream server. **Write throughput**
+drives concurrent appends across many streams while the client fleet ramps up a per-cardinality
+pod ladder; once server throughput stops climbing it pins and confirms the peak append rate and
+the latency at that peak — a *saturation walk* that finds the server's ceiling rather than
+assuming a pod count. **Sustained load** instead holds a fixed, modest append rate across a set
+of streams for a long window and watches whether latency and the server's resident memory stay
+flat over time, surfacing slow drift or leaks that a short burst would miss. **Catch-up /
+reconnect** pre-populates a stream and then has many clients reconnect and replay it from the
+beginning all at once, recording how long each client takes to catch up, how large its response
+is, and the aggregate replay throughput; each implementation replays through whatever native
+read path it offers, whether a snapshot plus the tail since that snapshot or a full scan of the
+log. **SSE fan-out** has a single writer publish to one stream while a growing number of
+subscribers stream it, measuring the per-event end-to-end delivery latency as the fan-out widens.
 
 ## Prerequisites
 
@@ -84,26 +86,27 @@ clean completion; `scripts/teardown-watchdog.sh` is a deadline safety net.
 
 ## Supported implementations
 
-A workload runs against any supported server; the suite's `modes` + server image pick which one.
-Currently supported:
-
-- **durable-streams** — `--durability wal` (WAL-backed, sharded committer) or `--durability memory`
-  (no WAL). Suites: `write-throughput-wal.json`, `write-throughput-memory.json`.
-- **ursula** — single-node Raft; `URSULA_WAL` selects the backend —
-  `URSULA_WAL=memory scripts/bench suites/write-throughput-ursula.json run` (in-memory) vs
-  `URSULA_WAL=disk …` (disk WAL, fsync per commit). Default `disk`.
-- **S2 (s2lite)** — object-store-backed; `suites/write-throughput-s2.json`.
-
-All servers point at the same single-node MinIO; only the system under test runs during its
-measurement. Adding an implementation is a deploy manifest, a `ds-bench` API style, and a few
-addressing lines in `deploy_mode` / `reset_state` (`scripts/lib-bench.sh`).
+A workload is server-agnostic: the same suite runs against any supported implementation, chosen
+by the suite's `modes` and the server image that gets deployed. **durable-streams**, the Rust
+server this harness was built alongside, runs either WAL-backed (`--durability wal`, a sharded
+committer) or without a WAL (`--durability memory`), and its two modes have their own suites
+(`write-throughput-wal.json` and `write-throughput-memory.json`). **ursula** is a single-node
+Raft server whose storage backend is chosen at deploy time through the `URSULA_WAL` variable —
+`memory` keeps the log in RAM while `disk` writes a WAL and fsyncs on every commit (the default) —
+so a single `write-throughput-ursula.json` covers both. **S2**, run here as `s2lite`, is
+object-store-backed. Every server points at the same single-node MinIO, and only the system
+under test is running while it is measured. Adding another implementation comes down to a
+deployment manifest, a `ds-bench` API style for its wire protocol, and a few addressing lines in
+`deploy_mode` and `reset_state` in `scripts/lib-bench.sh`.
 
 ## Results & reproducing
 
-- Raw per-cell data (`cells.json`, merged HDRs, sidecar `samples.csv`) → `results/<suite>/`.
-- Curated final dataset + report → `results/final/`.
-- Regenerate a report any time: `scripts/bench suites/<suite>.json report` (catch-up:
-  `python3 scripts/catchup_report.py suites/catchup-*.json`; SSE: see `scripts/run-sse.sh`).
+Each run writes its raw per-cell data — the `cells.json` result-and-resume store, the merged HDR
+histograms, and the sidecar `samples.csv` — under `results/<suite>/`, while the curated dataset
+behind the sample report lives in `results/final/`. Reports are derived purely from those local
+files and can be regenerated at any time without a cluster: use `scripts/bench suites/<suite>.json
+report` for most workloads, `python3 scripts/catchup_report.py suites/catchup-*.json` for the
+catch-up comparison, and `scripts/run-sse.sh` for SSE.
 
 ## Tests
 
@@ -119,13 +122,14 @@ catch-up/sustained runners, and the report renderers.
 
 ## Fairness & disclosure
 
-- **Equal footing:** one node per server, identical workload parameters, a shared single-node
-  MinIO, and only the system under test running during its measurement. Per-client measurement
-  logic is ursula-bench's, unchanged.
-- **Single-node only:** no replication is exercised; every number is generated by `ds-bench` on
-  equal hardware, not reused from any implementation's published results.
-- **Implementations differ architecturally** (e.g. an object-store-backed server makes a storage
-  round-trip on every append where others defer to background tiering). The benchmark surfaces
-  those differences rather than tuning them away — match `modes`/configs to compare like for like.
-- **Fresh state:** data directories are container-ephemeral — each run starts clean (no cross-run
-  contamination) while still exercising durability within a run.
+Every run keeps the implementations on equal footing: one node per server, identical workload
+parameters, a shared single-node MinIO, and only the system under test running during its own
+measurement, with the per-client timing logic taken unchanged from ursula-bench. Nothing here
+exercises replication — these are single-node numbers generated by `ds-bench` on equal hardware,
+never reused from any implementation's published multi-node results. The implementations are
+genuinely different in shape; an object-store-backed server, for instance, makes a storage
+round-trip on the hot path of every append where others defer that work to background tiering.
+The benchmark is meant to surface those differences rather than tune them away, so it is on you
+to match `modes` and configs when you want a like-for-like comparison. Finally, data directories
+are container-ephemeral by design, so each run starts from a clean slate with no cross-run
+contamination while still exercising durability within the run itself.
