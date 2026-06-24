@@ -8,8 +8,8 @@
 #      kubectl -n ds-bench create configmap metrics-poller \
 #        --from-file=poller.sh=deploy/metrics/poller.sh
 #
-#    The run script (e.g. micro/run.sh) should issue this before `kubectl apply`
-#    so no image rebuild is needed when the poller logic changes.
+#    `ensure_metrics_configmap` (scripts/lib-bench.sh) does this before deploy, so no
+#    image rebuild is needed when the poller logic changes.
 #
 # 2. Paste the annotated sections below into your Deployment manifest.
 #    Replace SERVER_PROC with the binary name that appears in /proc/<pid>/stat
@@ -22,8 +22,8 @@
 # - nice -n 19 keeps the poller at the lowest CPU scheduling priority so it
 #   does not perturb latency measurements.
 # - 1-second poll interval; adjust METRICS_INTERVAL_S for coarser/finer data.
-# - The micro:dev image ships bash, pgrep (procps), and coreutils — no extra
-#   image required.
+# - The `${IMG_METRICS}` image just needs bash, pgrep (procps), and coreutils;
+#   ds-bench:dev (the default) already carries them — no extra image required.
 # - Output is written to a shared emptyDir (/metrics/samples.csv); the run
 #   harness collects it via `kubectl cp` after the benchmark completes.
 # - SERVER_PROC parameterises the process name so ursula, S2, and future
