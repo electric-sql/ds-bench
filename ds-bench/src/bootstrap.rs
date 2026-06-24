@@ -78,6 +78,7 @@ pub struct BootstrapResult {
     pub stampede_elapsed_secs: f64,
     pub counts: Counts,
     pub bytes_received_total: u64,
+    pub aggregate_mb_per_sec: f64,
     pub latency_ms: LatencySummary,
 }
 
@@ -193,6 +194,15 @@ pub async fn run(args: BootstrapArgs) -> Result<BootstrapResult> {
 
     let h = hist.lock().await;
     let latency = summarize(&h);
+    // Emit the mergeable per-pod HDR so the coordinator's hdr-merge produces fleet-wide
+    // p50/p99 (mirrors catch_up.rs; the label matches --label-prefix bootstrap-).
+    crate::dist::emit_hdr(&h, &format!("bootstrap-{}", std::process::id()));
+
+    let stampede_secs = stampede_elapsed.as_secs_f64();
+    let bytes_recv = bytes_total.load(Ordering::Relaxed);
+    // Aggregate replay throughput (MiB/s), matching catch_up.rs; dist sums it per-pod.
+    let aggregate_mb_per_sec =
+        if stampede_secs > 0.0 { bytes_recv as f64 / stampede_secs / 1_048_576.0 } else { 0.0 };
 
     Ok(BootstrapResult {
         scenario: "bootstrap-stampede",
@@ -207,13 +217,14 @@ pub async fn run(args: BootstrapArgs) -> Result<BootstrapResult> {
         event_bytes: args.event_bytes,
         snapshot_bytes: args.snapshot_bytes,
         setup_elapsed_secs: setup_elapsed.as_secs_f64(),
-        stampede_elapsed_secs: stampede_elapsed.as_secs_f64(),
+        stampede_elapsed_secs: stampede_secs,
         counts: Counts {
             ok: ok.load(Ordering::Relaxed),
             backpressure: bp.load(Ordering::Relaxed),
             other_err: err.load(Ordering::Relaxed),
         },
-        bytes_received_total: bytes_total.load(Ordering::Relaxed),
+        bytes_received_total: bytes_recv,
+        aggregate_mb_per_sec,
         latency_ms: latency,
     })
 }

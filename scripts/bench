@@ -45,8 +45,11 @@ cmd_teardown() {
 }
 
 cmd_report() {
-  if [ "$(_suite 's.workload')" = "sustained" ]; then python3 scripts/sustained_report.py "$SUITE_FILE";
-  else python3 scripts/report.py "$SUITE_FILE"; fi
+  case "$(_suite 's.workload')" in
+    sustained) python3 scripts/sustained_report.py "$SUITE_FILE" ;;
+    catchup)   python3 scripts/catchup_report.py "$SUITE_FILE" ;;
+    *)         python3 scripts/report.py "$SUITE_FILE" ;;
+  esac
 }
 
 # Tear down this suite's cluster(s) ONLY if the run finished cleanly and results
@@ -123,7 +126,11 @@ run_mode() {
 
   # source the engine (defines K/deploy_mode/walk_cell against the now-correct KCTX).
   # sustained suites also get run_sustained_cell (lib-sustained sources lib-saturate).
-  if [ "$workload" = "sustained" ]; then . scripts/lib-sustained.sh; else . scripts/lib-saturate.sh; fi
+  case "$workload" in
+    sustained) . scripts/lib-sustained.sh ;;
+    catchup)   . scripts/lib-catchup.sh ;;
+    *)         . scripts/lib-saturate.sh ;;
+  esac
   ensure_metrics_configmap >&2 || true
   # cold-tier buckets (ursula/s2 write to the object store)
   K exec deploy/minio -- sh -c 'mc alias set local http://localhost:9000 minioadmin minioadmin >/dev/null 2>&1; mc mb -p local/ursula local/s2-bench local/durable-streams local/bench-results >/dev/null 2>&1; true' >/dev/null 2>&1 || true
@@ -149,17 +156,25 @@ run_mode() {
 
     # write-throughput → walk_cell (saturate), skip cells already `saturated`.
     # sustained → run_sustained_cell (one fixed-rate run), skip cells already `done`.
+    # write-throughput → walk_cell (saturate, skip `saturated`); sustained →
+    # run_sustained_cell; catchup → run_catchup_cell (both single-shot, skip `done`).
     local sc st store skip verb
-    if [ "$workload" = "sustained" ]; then store=sustained_cells; skip=done; verb="sustained run"
-    else store=cells; skip=saturated; verb="walking ladder"; fi
+    case "$workload" in
+      sustained) store=sustained_cells; skip=done; verb="sustained run" ;;
+      catchup)   store=catchup_cells;   skip=done; verb="catch-up run" ;;
+      *)         store=cells;           skip=saturated; verb="walking ladder" ;;
+    esac
     for sc in $(_suite "' '.join(map(str,s.stream_counts))"); do
       st="$(python3 -c "import sys;sys.path.insert(0,'scripts');import ${store};print(${store}.status_of('$label_cells',$sc,'$digest'))")"
       [ "$st" = "$skip" ] && { echo "[$label $sc] already ${skip}, skip"; continue; }
       echo "[$label $sc] ${verb} (status=$st)"
       # base $mode (not $label) so reset_state + addressing resolve; per-label
       # SAT_RESULT_ROOT + cells path keep variants from colliding.
-      if [ "$workload" = "sustained" ]; then run_sustained_cell "$mode" "$sc" "$label_cells" "$digest"
-      else walk_cell "$mode" "$sc" "$label_cells" "$digest"; fi
+      case "$workload" in
+        sustained) run_sustained_cell "$mode" "$sc" "$label_cells" "$digest" ;;
+        catchup)   run_catchup_cell   "$mode" "$sc" "$label_cells" "$digest" ;;
+        *)         walk_cell           "$mode" "$sc" "$label_cells" "$digest" ;;
+      esac
     done
   done
 }

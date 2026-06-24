@@ -1,0 +1,15 @@
+{
+  "suite": "catchup-ursula",
+  "workload": "catchup",
+  "cluster": {
+    "server_machine": "c4d-standard-16-lssd",
+    "client_machine": "n2d-standard-32",
+    "client_nodes": 2,
+    "region": "europe-west4",
+    "cluster_name": "bench-cu-ursula",
+    "zone": "europe-west4-b"
+  },
+  "catchup": { "clients": 1000, "per_client_stream": true, "event_bytes": 1024, "snapshot_bytes": 51200, "pods": 1, "setup_concurrency": 64, "repeats": 1 },
+  "modes": ["ursula"],
+  "stream_counts": [200, 2000]
+}

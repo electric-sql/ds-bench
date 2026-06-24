@@ -171,6 +171,23 @@ clean_jobs() {
   done
 }
 
+# _capture_choke_diagnostics — when a fleet didn't fully Complete, log WHY (to stderr,
+# i.e. the run log) so a "creation_choke" is backed by a concrete cause. Distinguishes:
+#   * server CRASH/OOM  -> server pod restarts>0 / lastTerminated reason OOMKilled|Error
+#   * server CRASHLOOP   -> state=waiting reason=CrashLoopBackOff (e.g. s2lite)
+#   * TIMEOUT (heavy)    -> server Running, 0 restarts; client pod still Running/slow
+# plus a non-Completed client pod's last log lines (the actual client-side error).
+_capture_choke_diagnostics() {
+  echo "    ── choke diagnostics ──────────────────────────────────────────" >&2
+  K get pods -l 'app in (durable-streams,ursula,s2lite)' -o jsonpath='{range .items[*]}      SERVER {.metadata.name} phase={.status.phase} restarts={.status.containerStatuses[0].restartCount} state={.status.containerStatuses[0].state} lastTerminated={.status.containerStatuses[0].lastState.terminated.reason}:{.status.containerStatuses[0].lastState.terminated.exitCode}{"\n"}{end}' 2>/dev/null >&2 || true
+  local fp; fp="$(K get pods -l job-name=bench-fleet --no-headers 2>/dev/null | awk '$3!="Completed"{print $1; exit}')"
+  if [ -n "$fp" ]; then
+    echo "      CLIENT pod $fp ($(K get pod "$fp" -o jsonpath='{.status.phase}' 2>/dev/null)) — log tail:" >&2
+    K logs "$fp" --tail=12 2>&1 | sed 's/^/        /' >&2 || true
+  fi
+  echo "    ───────────────────────────────────────────────────────────────" >&2
+}
+
 # run_fleet_and_coordinator — expects: RUN_ID PARALLELISM BENCH_CMD OUT_PREFIX MERGE_CMD
 run_fleet_and_coordinator() {
   export RUN_ID PARALLELISM BENCH_CMD OUT_PREFIX MERGE_CMD
@@ -188,6 +205,12 @@ run_fleet_and_coordinator() {
     || true
   echo "    fleet pods: $(K get pods -l job-name=bench-fleet --no-headers 2>/dev/null | awk '{print $3}' | sort | uniq -c | tr '\n' ' ')"
   K get pods -l job-name=bench-fleet -o wide 2>/dev/null || true
+  # If any fleet pod did NOT Complete, the cell will choke — capture WHY now (the
+  # server pod's crash/OOM/restart state + a failed client pod's log tail), so the
+  # generic "creation_choke" label is backed by a concrete reason in the run log.
+  if K get pods -l job-name=bench-fleet --no-headers 2>/dev/null | awk '$3!="Completed"{f=1} END{exit !f}'; then
+    _capture_choke_diagnostics
+  fi
 
   echo "    launching coordinator..."
   K delete job bench-coordinator --ignore-not-found --cascade=foreground --wait=true >/dev/null 2>&1 || true

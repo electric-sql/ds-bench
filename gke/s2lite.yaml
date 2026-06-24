@@ -40,7 +40,7 @@ spec:
             failureThreshold: 30
           resources:
             requests: { memory: "2Gi", cpu: "2" }
-            limits: { memory: "6Gi" }
+            limits: { memory: "12Gi" }
 ---
 apiVersion: v1
 kind: Service

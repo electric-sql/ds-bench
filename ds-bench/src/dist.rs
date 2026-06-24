@@ -129,7 +129,9 @@ fn scan_headlines(results_dir: Option<&Path>) -> HeadlineAcc {
         let Ok(txt) = std::fs::read_to_string(&p) else { continue };
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) else { continue };
         let scenario = v.get("scenario").and_then(|x| x.as_str()).unwrap_or("");
-        if scenario.starts_with("catch-up") {
+        if scenario.starts_with("catch-up") || scenario.starts_with("bootstrap") {
+            // bootstrap (reconnect/catch-up) reports bytes_received_total like catch-up
+            // but no aggregate_mb_per_sec (unwrap_or 0.0); both surface bytes_received.
             acc.saw_catchup = true;
             acc.mb_per_sec += v.get("aggregate_mb_per_sec").and_then(|x| x.as_f64()).unwrap_or(0.0);
             acc.bytes_received += v.get("bytes_received_total").and_then(|x| x.as_u64()).unwrap_or(0);
