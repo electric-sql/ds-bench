@@ -20,7 +20,7 @@ def _save(path, data):
 
 
 def record(path, stream_count, *, image_digest, walk, pinned_pods, throughput,
-           p99, saturated, status, reason):
+           p50, p99, saturated, status, reason):
     data = _load(path)
     data["cells"][str(stream_count)] = {
         "stream_count": stream_count,
@@ -28,7 +28,8 @@ def record(path, stream_count, *, image_digest, walk, pinned_pods, throughput,
         "walk": walk,                # [[pods, throughput], ...]
         "pinned_pods": pinned_pods,
         "throughput": throughput,
-        "p99": p99,
+        "p50": p50,                  # median latency (ms) at the pinned point
+        "p99": p99,                  # tail latency (ms) at the pinned point
         "saturated": saturated,
         "status": status,            # "ok" | "error"
         "reason": reason,            # "plateau" | "cpu" | "ladder_exhausted" | "creation_choke" | ...

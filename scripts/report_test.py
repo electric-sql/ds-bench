@@ -13,7 +13,7 @@ def _setup():
                                ("ursula", 1000, 62000, True)]:
         status = "error" if (mode == "wal" and sc == 100000) else "ok"
         store.setdefault(mode, {})[str(sc)] = {"stream_count": sc, "throughput": thr,
-            "p99": 2.0, "pinned_pods": 16, "saturated": sat, "status": status,
+            "p50": 2.0, "p99": 2.0, "pinned_pods": 16, "saturated": sat, "status": status,
             "reason": "plateau", "walk": [[16, thr]], "image_digest": "x"}
     for mode, cells in store.items():
         d = os.path.join(root, mode); os.makedirs(d, exist_ok=True)
@@ -50,7 +50,7 @@ class TestReport(unittest.TestCase):
         for label, thr in [("wal", 100000), ("wal-tailcache", 130000)]:
             d = os.path.join(root, label); os.makedirs(d)
             json.dump({"cells": {"100": {"stream_count": 100, "throughput": thr,
-                "p99": 1.0, "pinned_pods": 4, "saturated": True, "status": "ok",
+                "p50": 1.0, "p99": 1.0, "pinned_pods": 4, "saturated": True, "status": "ok",
                 "reason": "plateau", "walk": [[4, thr]], "image_digest": "x"}}},
                 open(os.path.join(d, "cells.json"), "w"))
         suite = os.path.join(tempfile.mkdtemp(), "s.json")
@@ -76,7 +76,7 @@ class TestSuiteStatus(unittest.TestCase):
         return p
 
     def _cell(self, sc, status="ok"):
-        return {"stream_count": sc, "throughput": 1.0, "p99": 1.0, "pinned_pods": 1,
+        return {"stream_count": sc, "throughput": 1.0, "p50": 1.0, "p99": 1.0, "pinned_pods": 1,
                 "saturated": True, "status": status, "reason": "plateau",
                 "walk": [[1, 1.0]], "image_digest": "x"}
 

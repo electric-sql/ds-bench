@@ -18,7 +18,7 @@ def build(suite_path, results_root):
         for c in cells_mod.all_cells(p):
             rows.append({"mode": label, "stream_count": c["stream_count"],
                          "pods": c.get("pinned_pods"), "throughput": c.get("throughput"),
-                         "p99": c.get("p99"), "saturated": c.get("saturated"),
+                         "p50": c.get("p50"), "p99": c.get("p99"), "saturated": c.get("saturated"),
                          "status": c.get("status"), "reason": c.get("reason"),
                          "walk": c.get("walk")})
     rows.sort(key=lambda r: (r["stream_count"], r["mode"]))
@@ -82,7 +82,7 @@ def main():
     with open(os.path.join(root, "aggregate.json"), "w") as f:
         json.dump(rows, f, indent=2)
     with open(os.path.join(root, "aggregate.csv"), "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["mode", "stream_count", "pods", "throughput", "p99", "saturated", "status", "reason"])
+        w = csv.DictWriter(f, fieldnames=["mode", "stream_count", "pods", "throughput", "p50", "p99", "saturated", "status", "reason"])
         w.writeheader()
         for r in rows:
             w.writerow({k: r[k] for k in w.fieldnames})

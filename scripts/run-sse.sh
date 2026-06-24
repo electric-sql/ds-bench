@@ -49,8 +49,9 @@ done
 # 4. Report from the latest gke-bench summary.tsv.
 SUM="$(ls -t results/bench/bench-*/summary.tsv 2>/dev/null | head -1)"
 if [ -n "$SUM" ]; then
-  log "parsing $SUM -> sse report"
-  python3 scripts/sse_report.py "$SUM" sse-comparison || log "WARN: sse report failed"
+  RUNDIR="$(dirname "$SUM")"
+  log "parsing $RUNDIR (merged.json, p50) -> sse report"
+  python3 scripts/sse_report.py "$RUNDIR" sse-comparison || log "WARN: sse report failed"
   mkdir -p results/final/sse
   cp -f results/sse-comparison.md results/sse-comparison.csv results/final/sse/ 2>/dev/null || true
 else

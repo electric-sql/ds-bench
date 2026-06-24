@@ -103,7 +103,7 @@ def main():
     csv_path = f"results/{base}.csv"
     with open(csv_path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["suite", "mode", "stream_count", "pods",
-                                          "throughput", "p99", "saturated", "status", "reason"])
+                                          "throughput", "p50", "p99", "saturated", "status", "reason"])
         w.writeheader()
         for r in all_rows:
             w.writerow({k: r.get(k) for k in w.fieldnames})

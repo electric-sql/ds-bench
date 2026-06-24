@@ -10,20 +10,31 @@
   },
   "saturation": {
     "plateau_pct": 5,
-    "fleet_cpu": 2,
+    "fleet_cpu": 1,
     "repeats": 3,
     "warmup_secs": 15,
     "measure_secs": 20,
     "setup_concurrency": 16
   },
-  "modes": ["wal"],
-  "stream_counts": [100000],
+  "modes": [
+    "wal"
+  ],
+  "stream_counts": [
+    100000
+  ],
   "pod_ladder": {
-    "100000": [190, 280, 380]
+    "100000": [
+      190,
+      280,
+      380
+    ]
   },
   "server_configs": {
     "wal": [
-      { "label": "wal-newbin-x", "args": "--wal-shards 4" }
+      {
+        "label": "wal-newbin-x",
+        "args": "--wal-shards 4"
+      }
     ]
   }
 }

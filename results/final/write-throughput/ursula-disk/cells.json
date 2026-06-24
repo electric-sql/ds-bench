@@ -27,10 +27,11 @@
       ],
       "pinned_pods": 24,
       "throughput": 3681.9500000000007,
-      "p99": null,
       "saturated": true,
       "status": "ok",
-      "reason": "plateau"
+      "reason": "plateau",
+      "p50": 32.543,
+      "p99": 63.359
     },
     "1000": {
       "stream_count": 1000,
@@ -47,10 +48,11 @@
       ],
       "pinned_pods": 4,
       "throughput": 4846.95,
-      "p99": null,
       "saturated": true,
       "status": "ok",
-      "reason": "plateau"
+      "reason": "plateau",
+      "p50": 196.607,
+      "p99": 500.735
     },
     "10000": {
       "stream_count": 10000,
@@ -71,10 +73,11 @@
       ],
       "pinned_pods": 24,
       "throughput": 6442.55,
-      "p99": null,
       "saturated": true,
       "status": "ok",
-      "reason": "plateau"
+      "reason": "plateau",
+      "p50": 1500.159,
+      "p99": 4698.111
     },
     "100000": {
       "stream_count": 100000,
@@ -91,10 +94,11 @@
       ],
       "pinned_pods": 80,
       "throughput": 9739.899999999996,
-      "p99": null,
       "saturated": true,
       "status": "ok",
-      "reason": "plateau"
+      "reason": "plateau",
+      "p50": 6119.423,
+      "p99": 20004.863
     }
   }
 }

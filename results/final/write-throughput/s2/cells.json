@@ -15,10 +15,11 @@
       ],
       "pinned_pods": 4,
       "throughput": 1963.75,
-      "p99": null,
       "saturated": true,
       "status": "ok",
-      "reason": "plateau"
+      "reason": "plateau",
+      "p50": 50.975,
+      "p99": 52.287
     },
     "1000": {
       "stream_count": 1000,
@@ -35,10 +36,11 @@
       ],
       "pinned_pods": null,
       "throughput": 0.0,
-      "p99": null,
       "saturated": false,
       "status": "error",
-      "reason": "creation_choke"
+      "reason": "creation_choke",
+      "p50": null,
+      "p99": null
     },
     "10000": {
       "stream_count": 10000,
@@ -51,10 +53,11 @@
       ],
       "pinned_pods": null,
       "throughput": 0.0,
-      "p99": null,
       "saturated": false,
       "status": "error",
-      "reason": "creation_choke"
+      "reason": "creation_choke",
+      "p50": null,
+      "p99": null
     },
     "100000": {
       "stream_count": 100000,
@@ -67,10 +70,11 @@
       ],
       "pinned_pods": null,
       "throughput": 0.0,
-      "p99": null,
       "saturated": false,
       "status": "error",
-      "reason": "creation_choke"
+      "reason": "creation_choke",
+      "p50": null,
+      "p99": null
     }
   }
 }

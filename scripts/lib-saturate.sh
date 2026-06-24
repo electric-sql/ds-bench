@@ -61,43 +61,44 @@ walk_cell() {
     decision="$(python3 -c "import sys; sys.path.insert(0,'scripts'); from saturation import step_decision; print(step_decision(float(sys.argv[1]), float(sys.argv[2]), float(sys.argv[3])))" "$prev_thr" "$thr" "$plateau")"
     case "$decision" in
       error)
-        _record "$cells_json" "$sc" "$digest" "$walk" None 0 None False error creation_choke
+        _record "$cells_json" "$sc" "$digest" "$walk" None 0 None False error creation_choke None
         return 0 ;;
       plateau)
         # saturated one rung back; confirm the pinned point with `repeats` reps
-        local conf_p99; conf_p99="$(_confirm "$fn" "$mode" "$prev_pods" "$repeats")"
-        conf_p99="${conf_p99:-None}"   # never pass an empty string to _record
-        _record "$cells_json" "$sc" "$digest" "$walk" "$prev_pods" "$prev_thr" "$conf_p99" True ok plateau
+        local conf_p50 conf_p99; read -r conf_p50 conf_p99 < <(_confirm "$fn" "$mode" "$prev_pods" "$repeats")
+        conf_p50="${conf_p50:-None}"; conf_p99="${conf_p99:-None}"   # never pass empty to _record
+        _record "$cells_json" "$sc" "$digest" "$walk" "$prev_pods" "$prev_thr" "$conf_p50" True ok plateau "$conf_p99"
         return 0 ;;
       continue)
         prev_pods="$pods"; prev_thr="$thr" ;;
     esac
   done
   # ladder exhausted without plateau
-  _record "$cells_json" "$sc" "$digest" "$walk" "$prev_pods" "$prev_thr" None False ok ladder_exhausted
+  _record "$cells_json" "$sc" "$digest" "$walk" "$prev_pods" "$prev_thr" None False ok ladder_exhausted None
 }
 
-# _confirm <fn> <mode> <pods> <reps> — rerun the pinned pods `reps` times; echo a
-# representative p99 (median). p99 is read from the pinned run's merged.json with
-# the SAME extraction gke-bench.sh run_one uses; if there is no merged.json (the
-# unit test's mock fn), p99 falls back to None.
+# _confirm <fn> <mode> <pods> <reps> — rerun the pinned pods `reps` times; echo the
+# representative "p50 p99" (median latency, ms) read from each rep's merged.json.
+# No merged.json (the unit test's mock fn) -> "None None".
 _confirm() {
-  local fn="$1" mode="$2" pods="$3" reps="$4" i p99s="" cd p99
+  local fn="$1" mode="$2" pods="$3" reps="$4" i p50s="" p99s="" cd p50 p99
   for ((i=1;i<=reps;i++)); do
     SAT_REP="$i"; reset_state "$mode"; "$fn" "$pods" >/dev/null
     cd="$(_sat_cell_dir "$pods" "$i")"
+    p50="$(grep -oE '"p50_ms"[: ]*[0-9.]+' "$cd/merged.json" 2>/dev/null | grep -oE '[0-9.]+$' | head -1)"
     p99="$(grep -oE '"p99_ms"[: ]*[0-9.]+' "$cd/merged.json" 2>/dev/null | grep -oE '[0-9.]+$' | head -1)"
-    p99s="$p99s ${p99:-}"
+    p50s="$p50s ${p50:-}"; p99s="$p99s ${p99:-}"
   done
-  echo "$p99s" | tr ' ' '\n' | grep -v '^$' | sort -n | awk '{a[NR]=$1} END{print (NR? a[int((NR+1)/2)] : "None")}'
+  local med='{a[NR]=$1} END{print (NR? a[int((NR+1)/2)] : "None")}'
+  echo "$(echo "$p50s" | tr ' ' '\n' | grep -v '^$' | sort -n | awk "$med") $(echo "$p99s" | tr ' ' '\n' | grep -v '^$' | sort -n | awk "$med")"
 }
 
-_record() {  # bridge to cells.py
+_record() {  # bridge to cells.py — args: cells sc digest walk pods thr p50 sat status reason p99
   python3 -c "
 import sys; sys.path.insert(0,'scripts')
 import cells
-# Tolerant parsing: a malformed pinned_pods/p99/throughput must NEVER crash the
-# record and drop an otherwise-good cell (a bad confirm-p99 silently lost cells).
+# Tolerant parsing: a malformed pinned_pods/p50/p99/throughput must NEVER crash the
+# record and drop an otherwise-good cell (a bad confirm value silently lost cells).
 def _f(x, d=None):
     try: return float(x)
     except (ValueError, TypeError): return d
@@ -105,9 +106,10 @@ def _i(x, d=None):
     try: return int(x)
     except (ValueError, TypeError): return d
 pp = None if sys.argv[5]=='None' else _i(sys.argv[5])
-p99 = None if sys.argv[7]=='None' else _f(sys.argv[7])
+p50 = None if sys.argv[7]=='None' else _f(sys.argv[7])
+p99 = None if sys.argv[11]=='None' else _f(sys.argv[11])
 cells.record(sys.argv[1], int(sys.argv[2]), image_digest=sys.argv[3],
   walk=__import__('json').loads(sys.argv[4]), pinned_pods=pp, throughput=(_f(sys.argv[6]) or 0.0),
-  p99=p99, saturated=(sys.argv[8]=='True'), status=sys.argv[9], reason=sys.argv[10])
-" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}"
+  p50=p50, p99=p99, saturated=(sys.argv[8]=='True'), status=sys.argv[9], reason=sys.argv[10])
+" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}"
 }

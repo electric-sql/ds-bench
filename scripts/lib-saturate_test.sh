@@ -66,14 +66,15 @@ assert cell["reason"] == "ladder_exhausted", cell
 print("PASS walk_cell caps low cardinality")
 PY
 
-# _record must NEVER drop a cell on a malformed p99/throughput (regression: a bad
-# confirm-p99 used to crash float() and silently lose the whole cell).
+# _record must NEVER drop a cell on a malformed p50/throughput (regression: a bad
+# confirm-p50 used to crash float() and silently lose the whole cell).
 tmp4="$(mktemp -d)/cells.json"
-_record "$tmp4" 1000 d4 '[[16,500000]]' 16 500000 "garbage-p99" True ok plateau
+_record "$tmp4" 1000 d4 '[[16,500000]]' 16 500000 "garbage-p50" True ok plateau 3.3
 python3 - "$tmp4" <<'PY'
 import sys, json
 cell = json.load(open(sys.argv[1]))["cells"]["1000"]
-assert cell["throughput"] == 500000.0 and cell["p99"] is None, cell
+assert cell["throughput"] == 500000.0 and cell["p50"] is None, cell   # bad p50 -> None
+assert cell["p99"] == 3.3, cell                                       # valid p99 stored
 assert cell["saturated"] is True and cell["reason"] == "plateau", cell
-print("PASS _record tolerates malformed p99")
+print("PASS _record tolerates malformed p50, keeps p99")
 PY

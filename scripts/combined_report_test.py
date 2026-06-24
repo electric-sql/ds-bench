@@ -18,7 +18,7 @@ def _suite(tmp, name, labels_cells, server_configs=None):
         ld = os.path.join(root, label); os.makedirs(ld, exist_ok=True)
         obj = {"cells": {}}
         for sc, thr, sat, status in cells:
-            obj["cells"][str(sc)] = {"stream_count": sc, "throughput": thr, "p99": 1.0,
+            obj["cells"][str(sc)] = {"stream_count": sc, "throughput": thr, "p50": 1.0, "p99": 1.0,
                 "pinned_pods": 4, "saturated": sat, "status": status, "reason": "plateau" if sat else "ladder_exhausted",
                 "walk": [[4, thr]], "image_digest": "x"}
         json.dump(obj, open(os.path.join(ld, "cells.json"), "w"))
