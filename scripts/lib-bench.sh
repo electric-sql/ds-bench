@@ -365,3 +365,69 @@ run_cell() {
     fi
   done
 }
+
+# reset_state <mode> — clear server state between cells WITHOUT recreating the
+# cluster. Pod restart wipes the emptyDir (+ the wipe-data initContainer guarantees
+# the data-dir is empty even on NVMe). s2 keeps state in MinIO, so its bucket is
+# emptied too. Deployment/bucket names: wal=durable-streams, ursula=ursula,
+# s2=s2lite (bucket s2-bench). RESET_DRYRUN=1 echoes commands instead of running
+# them (for tests).
+reset_state() {
+  local mode="$1" run
+  if [ "${RESET_DRYRUN:-0}" = "1" ]; then run="echo"; else run=""; fi
+  case "$mode" in
+    s2)
+      # mc's alias lives in the minio pod's ~/.mc config; set it inline (as the
+      # rest of the harness does) so the rm works in a fresh exec session.
+      $run kubectl --context "$KCTX" -n ds-bench exec deploy/minio -- sh -c \
+        'mc alias set local http://localhost:9000 minioadmin minioadmin >/dev/null 2>&1; mc rm --recursive --force local/s2-bench/ 2>/dev/null; true' || true
+      $run kubectl --context "$KCTX" -n ds-bench rollout restart deploy/s2lite
+      if [ -z "$run" ]; then kubectl --context "$KCTX" -n ds-bench rollout status deploy/s2lite --timeout=120s; fi
+      ;;
+    wal)
+      $run kubectl --context "$KCTX" -n ds-bench rollout restart deploy/durable-streams
+      if [ -z "$run" ]; then kubectl --context "$KCTX" -n ds-bench rollout status deploy/durable-streams --timeout=120s; fi
+      ;;
+    ursula)
+      $run kubectl --context "$KCTX" -n ds-bench rollout restart deploy/ursula
+      if [ -z "$run" ]; then kubectl --context "$KCTX" -n ds-bench rollout status deploy/ursula --timeout=120s; fi
+      ;;
+    *) echo "reset_state: unknown mode '$mode'" >&2; return 2 ;;
+  esac
+}
+
+# deploy_mode <mode> — deploy ONE server for a persistent-cluster cell run and set
+# the addressing globals (T_TARGET/T_API/T_NS) the walker's measure_pods consumes.
+# Mirrors gke-bench.sh deploy_system's per-mode switch, but WITHOUT the per-cell
+# `K delete` (the cluster persists; reset_state clears state between cells). Modes:
+#   wal    -> durable-streams, --durability wal --wal-shards N --splice-appends
+#   ursula -> ursula (URSULA_WAL backend from env; cold tier -> MinIO `ursula`)
+#   s2     -> s2lite (cold tier -> MinIO `s2-bench`)
+deploy_mode() {
+  local mode="$1"
+  case "$mode" in
+    wal)
+      local args="--durability wal --wal-shards ${WAL_SHARDS:-4} --splice-appends"
+      SERVER_KIND=durable SERVER_EXTRA_ARGS="$args" PROBE_HOSTPORT="durable-streams:4438" \
+        deploy_server "$SERVER_CPU" >&2 || return 1
+      T_TARGET="http://durable-streams:4438"; T_API="durable"; T_NS="" ;;
+    ursula)
+      SERVER_KIND=ursula URSULA_WAL="${URSULA_WAL:-disk}" PROBE_HOSTPORT="ursula:4437" \
+        deploy_server "$SERVER_CPU" >&2 || return 1
+      T_TARGET="http://ursula:4437"; T_API="ursula"; T_NS="--bucket benchmark" ;;
+    s2)
+      K apply -f gke/s2lite.yaml >&2 && K rollout status deploy/s2lite --timeout=600s >&2 || return 1
+      T_TARGET="http://s2lite:80"; T_API="s2"; T_NS="--basin benchmark" ;;
+    *) echo "deploy_mode: unknown mode '$mode'" >&2; return 1 ;;
+  esac
+  export T_TARGET T_API T_NS
+}
+
+# server_image_digest <mode> — echo a 12-char digest of the deployed server image,
+# so a changed image re-runs that cell (see cells.status_of). Deployment per mode:
+# wal=durable-streams, ursula=ursula, s2=s2lite.
+server_image_digest() {
+  local dep; case "$1" in wal) dep=durable-streams;; ursula) dep=ursula;; s2) dep=s2lite;; esac
+  K get "deploy/$dep" \
+    -o jsonpath='{.spec.template.spec.containers[0].image}' | sha256sum | cut -c1-12
+}

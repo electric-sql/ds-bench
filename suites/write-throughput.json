@@ -1,0 +1,26 @@
+{
+  "suite": "write-throughput",
+  "cluster": {
+    "server_machine": "c4d-standard-16-lssd",
+    "client_machine": "n2d-standard-32",
+    "client_nodes": 6,
+    "region": "europe-west4"
+  },
+  "saturation": {
+    "plateau_pct": 10,
+    "fleet_cpu": 0.5,
+    "repeats": 3,
+    "warmup_secs": 15,
+    "measure_secs": 20
+  },
+  "modes": ["wal", "ursula", "s2"],
+  "stream_counts": [1, 10, 100, 1000, 10000, 100000],
+  "pod_ladder": {
+    "1":      [2, 4, 8],
+    "10":     [2, 4, 8],
+    "100":    [4, 8, 16],
+    "1000":   [12, 16, 20, 24, 32],
+    "10000":  [32, 64, 96, 128, 160, 200],
+    "100000": [128, 200, 256, 320, 400, 512]
+  }
+}

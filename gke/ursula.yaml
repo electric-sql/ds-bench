@@ -55,6 +55,15 @@ spec:
       nodeSelector: ${NODESEL_SERVER}
       # Required so the metrics sidecar can read /proc/<pid>/stat of ursula.
       shareProcessNamespace: true
+      # Wipe the data-dir between cells (see durable-streams.yaml). ursula's WAL
+      # lives under /var/lib/ursula/data on the `data` emptyDir.
+      initContainers:
+        - name: wipe-data
+          image: ${IMG_URSULA}
+          imagePullPolicy: ${PULL_POLICY}
+          command: ["sh", "-c", "rm -rf /var/lib/ursula/* /var/lib/ursula/.[!.]* 2>/dev/null; true"]
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/ursula }
       containers:
         - name: ursula
           image: ${IMG_URSULA}

@@ -53,6 +53,20 @@ def extract_throughput(path):
             return float(obj[k])
     return 0.0
 
+def step_decision(prev_thr, thr, plateau_pct):
+    """Decide the walker's next move from consecutive ladder-rung throughputs.
+
+    "error"    -> throughput collapsed to ~0 (choke/thrash); do not pin.
+    "continue" -> first rung, or gain still above plateau threshold.
+    "plateau"  -> gain at or below plateau threshold; server saturated.
+    """
+    if thr <= 0:
+        return "error"
+    if prev_thr <= 0:
+        return "continue"
+    gain = (thr - prev_thr) / prev_thr
+    return "continue" if gain > plateau_pct / 100.0 else "plateau"
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--merged", required=True)

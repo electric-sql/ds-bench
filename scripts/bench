@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# bench <suite.json> {run|report|teardown} — declarative write-throughput suite.
+#
+#   run      ensure one persistent cluster per mode (zones a/b/c, own KUBECONFIG),
+#            then for each (mode, stream_count) skip-if-saturated else walk_cell.
+#            Modes run in parallel. State+results: results/<suite>/<mode>/cells.json.
+#   report   regenerate results/<suite>/aggregate.{csv,json} + report.md (no cluster).
+#   teardown delete ONLY the clusters this suite created (.bench-state/<suite>.json).
+#
+# BENCH_DRYRUN=1 echoes the destructive cluster ops (for tests).
+set -uo pipefail
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$REPO_ROOT"
+
+usage() { echo "usage: scripts/bench <suite.json> {run|report|teardown}" >&2; exit 2; }
+[ $# -lt 2 ] && usage
+SUITE_FILE="$1"; CMD="$2"
+[ -f "$SUITE_FILE" ] || { echo "no such suite: $SUITE_FILE" >&2; exit 2; }
+export SUITE_FILE
+SUITE_NAME="$(python3 -c "import sys;sys.path.insert(0,'scripts');from suite import Suite;print(Suite.load('$SUITE_FILE').name)")"
+STATE=".bench-state/${SUITE_NAME}.json"; mkdir -p .bench-state
+RUN="${BENCH_DRYRUN:+echo}"
+
+_suite() { python3 -c "import sys;sys.path.insert(0,'scripts');from suite import Suite;s=Suite.load('$SUITE_FILE');print($1)"; }
+
+cmd_teardown() {
+  [ -f "$STATE" ] || { echo "no clusters recorded for $SUITE_NAME"; return 0; }
+  python3 -c "import json;[print(c['name'],c['zone']) for c in json.load(open('$STATE'))['clusters']]" \
+    | while read -r name zone; do
+        $RUN gcloud container clusters delete "$name" --zone "$zone" --quiet
+      done
+}
+
+cmd_report() { python3 scripts/report.py "$SUITE_FILE"; }
+
+cmd_run() {
+  local modes; modes="$(_suite "' '.join(s.modes)")"
+  for mode in $modes; do ( run_mode "$mode" ) & done
+  wait
+  cmd_report
+}
+
+run_mode() {
+  local mode="$1" cluster="bench-${mode}"
+  export KUBECONFIG="$REPO_ROOT/.bench-state/kc-${mode}"
+  local region; region="$(_suite 's.cluster["region"]')"
+  local zoneidx; case "$mode" in wal) zoneidx=a;; ursula) zoneidx=b;; s2) zoneidx=c;; *) zoneidx=a;; esac
+  local zone="${region}-${zoneidx}"
+
+  # ensure cluster + record it (so teardown only touches what we created)
+  CLUSTER="$cluster" ZONE="$zone" SERVER_MACHINE="$(_suite 's.cluster["server_machine"]')" \
+    CLIENT_MACHINE="$(_suite 's.cluster["client_machine"]')" CLIENT_NODES="$(_suite 's.cluster["client_nodes"]')" \
+    DS_TARGET=remote bash scripts/cluster-up.sh
+  _record_cluster "$cluster" "$zone"
+
+  # engine env (mirrors gke-bench.sh's preamble; the walker reuses lib-bench's engine)
+  export DS_TARGET=remote PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
+  export ZONE="$zone" CLUSTER="$cluster"
+  export KCTX="gke_${PROJECT}_${zone}_${cluster}"
+  export SERVER_CPUS="${SERVER_CPUS:-4}"; export SERVER_CPU="${SERVER_CPUS%% *}"
+  export FLEET_CPU="$(_suite 's.saturation["fleet_cpu"]')"
+  export WARMUP_SECS="$(_suite 's.saturation["warmup_secs"]')"
+  export MEASURE_SECS="$(_suite 's.saturation["measure_secs"]')"
+  export SETTLE_SECS="${SETTLE_SECS:-5}"
+  export SWEEP_RUN_ID="${SUITE_NAME}-${mode}"
+  local mode_root="results/${SUITE_NAME}/${mode}"
+  export RESULTS_ROOT="$mode_root" SAT_RESULT_ROOT="$mode_root/cells"
+  local cells_json="${mode_root}/cells.json"
+
+  # source the engine (defines K/deploy_mode/walk_cell against the now-correct KCTX)
+  . scripts/lib-saturate.sh
+  ensure_metrics_configmap >&2 || true
+  # cold-tier buckets (ursula/s2 write to the object store)
+  K exec deploy/minio -- sh -c 'mc alias set local http://localhost:9000 minioadmin minioadmin >/dev/null 2>&1; mc mb -p local/ursula local/s2-bench local/durable-streams local/bench-results >/dev/null 2>&1; true' >/dev/null 2>&1 || true
+
+  deploy_mode "$mode" || { echo "[$mode] deploy failed — skipping mode" >&2; return 1; }
+  local digest; digest="$(server_image_digest "$mode")"
+
+  local sc st
+  for sc in $(_suite "' '.join(map(str,s.stream_counts))"); do
+    st="$(python3 -c "import sys;sys.path.insert(0,'scripts');import cells;print(cells.status_of('$cells_json',$sc,'$digest'))")"
+    [ "$st" = "saturated" ] && { echo "[$mode $sc] already saturated, skip"; continue; }
+    echo "[$mode $sc] walking ladder (status=$st)"
+    walk_cell "$mode" "$sc" "$cells_json" "$digest"
+  done
+}
+
+_record_cluster() {  # idempotent append to the suite state file
+  python3 -c "
+import json,os
+p='$STATE'; d=json.load(open(p)) if os.path.exists(p) else {'clusters':[]}
+if not any(c['name']=='$1' for c in d['clusters']): d['clusters'].append({'name':'$1','zone':'$2'})
+json.dump(d, open(p,'w'), indent=2)"
+}
+
+case "$CMD" in
+  run) cmd_run ;;
+  report) cmd_report ;;
+  teardown) cmd_teardown ;;
+  *) usage ;;
+esac

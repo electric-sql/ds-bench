@@ -34,6 +34,16 @@ spec:
       securityContext:
         seccompProfile:
           type: Unconfined
+      # Wipe the data-dir between cells. A pod restart already gives a fresh
+      # emptyDir, but this guarantees /data is empty even if the volume backing
+      # changes (e.g. NVMe local-SSD reuse).
+      initContainers:
+        - name: wipe-data
+          image: ${IMG_SERVER}
+          imagePullPolicy: ${PULL_POLICY}
+          command: ["sh", "-c", "rm -rf /data/* /data/.[!.]* 2>/dev/null; true"]
+          volumeMounts:
+            - { name: data, mountPath: /data }
       containers:
         - name: durable-streams
           image: ${IMG_SERVER}
