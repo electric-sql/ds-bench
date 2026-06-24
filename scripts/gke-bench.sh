@@ -119,7 +119,19 @@ deploy_system() {  # system variant
   K delete deploy/durable-streams ursula s2lite --ignore-not-found --wait=true >/dev/null 2>&1 || true
   case "$sys" in
     durable)
-      local args="--durability ${var}"
+      local args
+      # walnew / walnew-cache: the SIMPLIFIED (wal-v2 / zero-copy) server binary —
+      # WAL-only (no --durability) and no --splice-appends (both flags were dropped);
+      # only --wal-shards (+ optional --tail-cache-bytes). Point IMG_SERVER at the new
+      # image. Used for SSE on the new binary. Handled here so the legacy flag path
+      # (which would inject rejected flags) is skipped entirely.
+      case "$var" in
+        walnew)       SERVER_KIND=durable SERVER_EXTRA_ARGS="--wal-shards ${WAL_SHARDS:-4}" PROBE_HOSTPORT="durable-streams:4438" deploy_server "$SERVER_CPU" >&2 || return 1
+                      T_TARGET="http://durable-streams:4438"; T_API="durable"; T_PROBE="durable-streams:4438"; T_NS=""; return 0 ;;
+        walnew-cache) SERVER_KIND=durable SERVER_EXTRA_ARGS="--wal-shards ${WAL_SHARDS:-4} --tail-cache-bytes ${TAIL_CACHE_BYTES:-65536}" PROBE_HOSTPORT="durable-streams:4438" deploy_server "$SERVER_CPU" >&2 || return 1
+                      T_TARGET="http://durable-streams:4438"; T_API="durable"; T_PROBE="durable-streams:4438"; T_NS=""; return 0 ;;
+      esac
+      args="--durability ${var}"
       [ "$var" = strict-iouring ] && args="--durability strict --strict-io-uring"
       [ "$var" = wal ] && args="--durability wal --wal-shards ${WAL_SHARDS:-4}"
       # wal-cache: wal mode with the resident tail cache ON (64 KiB) — for the
@@ -190,8 +202,11 @@ for sysvar in $SYSTEMS; do
     # *-cache variants (strict-cache/wal-cache): the resident tail read-cache DOES
     # change the read path, so they MUST run reads (that IS the cache A/B). write
     # and sustained are write-path workloads → run on every durable variant.
+    # walnew (new binary, cache off) and walnew-cache (cache on) are read-relevant
+    # too — keep them OUT of the skip so SSE/replay actually run for the new binary.
     [ "$sys" = durable ] && [ "$wl" != write ] && [ "$wl" != sustained ] \
-      && [ "$var" != wal ] && [ "$var" != strict-cache ] && [ "$var" != wal-cache ] && \
+      && [ "$var" != wal ] && [ "$var" != strict-cache ] && [ "$var" != wal-cache ] \
+      && [ "$var" != walnew ] && [ "$var" != walnew-cache ] && \
       { echo "  (skip $wl on durable:$var — reads are mode-independent; covered by durable:wal)"; continue; }
     case "$wl" in
       write)
