@@ -12,7 +12,8 @@
 set -euo pipefail
 PROJECT="${1:-$(gcloud config get-value project)}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REG="europe-west1-docker.pkg.dev/$PROJECT/ds-bench"
+AR_LOCATION="${AR_LOCATION:-europe-west1}"; AR_REPO="${AR_REPO:-ds-bench}"
+REG="${AR_LOCATION}-docker.pkg.dev/$PROJECT/$AR_REPO"
 cd "$REPO_ROOT"
 
 cleanup() {

@@ -13,8 +13,11 @@ REPO_ROOT="$(pwd)"
 CLUSTER="${CLUSTER:-bench-sse}"; ZONE="${ZONE:-europe-west4-a}"
 DONE_MARKER="${DONE_MARKER:-$REPO_ROOT/.bench-state/sse.done}"
 TIMEOUT_BIN="$(command -v gtimeout || command -v timeout || true)"
-export DS_TARGET=remote PROJECT="${PROJECT:-vaxine}" PULL_POLICY="${PULL_POLICY:-IfNotPresent}"
-export IMG_SERVER="${IMG_SERVER:-europe-west1-docker.pkg.dev/vaxine/ds-bench/durable-streams:zerocopy}"
+export DS_TARGET=remote PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}" PULL_POLICY="${PULL_POLICY:-IfNotPresent}"
+# IMG_SERVER defaults to the standard durable-streams image (target-env derives it
+# from the registry). Override to benchmark a specific server build.
+export AR_LOCATION="${AR_LOCATION:-europe-west1}" AR_REPO="${AR_REPO:-ds-bench}"
+export IMG_SERVER="${IMG_SERVER:-${AR_LOCATION}-docker.pkg.dev/${PROJECT}/${AR_REPO}/durable-streams:dev}"
 log() { echo "[$(date -u +%H:%M:%S)] $*"; }
 
 rm -f "$DONE_MARKER"

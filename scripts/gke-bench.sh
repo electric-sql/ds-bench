@@ -38,13 +38,13 @@
 #           fan-out) + images pushed (scripts/gke-push-images.sh). Does NOT
 #           create or tear down the cluster.
 #
-# Usage:    PROJECT=vaxine ZONE=.. CLUSTER=.. [knobs below] scripts/gke-bench.sh
+# Usage:    PROJECT=<your-project> ZONE=.. CLUSTER=.. [knobs below] scripts/gke-bench.sh
 # Output:   results/bench/bench-<ts>/summary.tsv  (+ per-cell merged/samples/hdr)
 # ============================================================================
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 REPO_ROOT="$(pwd)"; export REPO_ROOT
-export DS_TARGET="${DS_TARGET:-remote}" PROJECT="${PROJECT:-vaxine}"
+export DS_TARGET="${DS_TARGET:-remote}" PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
 # ZONE/CLUSTER only required for remote target
 [ "${DS_TARGET}" = "remote" ] && { export ZONE="${ZONE:?set ZONE}" CLUSTER="${CLUSTER:?set CLUSTER}"; } || { export ZONE="${ZONE:-local}" CLUSTER="${CLUSTER:-ds-bench}"; }
 export SERVER_CPUS="${SERVER_CPUS:-4}" SERVER_MEM="${SERVER_MEM:-16Gi}"

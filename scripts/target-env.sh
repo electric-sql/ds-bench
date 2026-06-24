@@ -36,7 +36,10 @@ case "$DS_TARGET" in
     ZONE="${ZONE:-europe-west1-b}"
     CLUSTER="${CLUSTER:-ds-bench}"
     KCTX="gke_${PROJECT}_${ZONE}_${CLUSTER}"
-    REG="europe-west1-docker.pkg.dev/${PROJECT}/ds-bench"
+    # Artifact Registry: ${AR_LOCATION}-docker.pkg.dev/${PROJECT}/${AR_REPO}. Override
+    # AR_LOCATION / AR_REPO (and PROJECT / ZONE) for your own project + region.
+    AR_LOCATION="${AR_LOCATION:-europe-west1}"; AR_REPO="${AR_REPO:-ds-bench}"
+    REG="${AR_LOCATION}-docker.pkg.dev/${PROJECT}/${AR_REPO}"
     IMG_SERVER="${IMG_SERVER:-${REG}/durable-streams:dev}"
     IMG_URSULA="${IMG_URSULA:-${REG}/ursula:dev}"
     IMG_DSBENCH="${REG}/ds-bench:dev"
@@ -81,7 +84,7 @@ URSULA_WAL="${URSULA_WAL:-disk}"
 # Vars referenced by envsubst in the manifests + by the runners.
 export DS_TARGET KCTX IMG_SERVER IMG_URSULA IMG_DSBENCH IMG_METRICS PULL_POLICY \
        NODESEL_SERVER NODESEL_CLIENT PROJECT ZONE CLUSTER KIND_CLUSTER REG \
-       SERVER_MEM SERVER_MACHINE FLEET_CPU URSULA_WAL
+       AR_LOCATION AR_REPO SERVER_MEM SERVER_MACHINE FLEET_CPU URSULA_WAL
 
 # Every manifest envsubst must whitelist these so the image/policy/selector
 # placeholders resolve. Runners reference $MANIFEST_VARS in their envsubst calls.

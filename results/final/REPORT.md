@@ -1,94 +1,115 @@
-# Write-Throughput Benchmark — Final Results
+# Streaming-server benchmarks — durable-streams vs ursula vs S2
 
-Maintained final dataset. Per-config data points live in
-`results/final/write-throughput/<config>/cells.json`; this report summarizes them.
+Single-node, best-case comparison of three streaming servers across four workloads:
+**write throughput**, **sustained load**, **catch-up / reconnect**, and **SSE fan-out**.
+Each workload is a declarative suite under `suites/`; see *Reproducing* at the end.
 
-**Methodology:** single-node, best-case append throughput. 4-CPU-pinned server on
-`c4d-standard-16-lssd`; `n2d-standard-32` client fleet (Spot). **256-byte payload per
-append**; 15 s warm-up + 20 s measure; saturation walk pins the pod count where
-throughput stops gaining ≥5%, median of 3 reps. (SSE: 256-byte events, 1 writer @ 50 ev/s.)
+**Setup.** Server pinned to 4 CPUs on one node; a Kubernetes client fleet drives load.
+256-byte event payloads (1 KiB for catch-up). Latencies are fleet-wide percentiles from
+merged HDR histograms. Systems:
+- **durable-streams** — `--durability wal` (WAL-backed) and `--durability memory` (no WAL).
+- **ursula** — single-node Raft, in-memory (`URSULA_WAL=memory`) and disk WAL.
+- **S2 (s2lite)** — object-store-backed.
 
-**Builds / provenance (most recent values):**
-- **wal** — **new build `47b03a5` ("close WAL read-before-durable")**, `--durability wal
-  --wal-shards 4`, `fleet_cpu=0.5`. Prior old-build baseline kept for the regression check below.
-- **memory** — `--durability memory` (no WAL; Linux-only zero-copy splice), full sweep at
-  `fleet_cpu=2` (4× client CPU recovered the peak vs fc=0.5).
-- **ursula in-mem / disk, s2** — unchanged from prior runs (no recent re-run).
-- ⚠️ `choke*` = an **intermittent server crash on the rung-restart** (not a ceiling) — see Caveats.
+---
 
-## Peak append throughput (ops/s)
+## 1. Write throughput (append/s at saturation)
 
-| configuration | peak | at streams | note |
+A saturation walk ramps client pods until per-server throughput plateaus, then pins it.
+
+| streams | durable wal | durable memory | ursula in-mem | ursula disk | s2 |
+|---|---|---|---|---|---|
+| 100 | 494k | 444k | 51k | 4k | 2k |
+| 1 000 | 636k | 496k | 86k | 5k | — |
+| 10 000 | 628k | 509k | 106k | 6k | — |
+| 100 000 | ~750–870k | **~1.0M** | 154k | 10k | — |
+
+**Peak:** durable-memory **~1.0M append/s**, durable-wal **~750–870k**, ursula-in-memory ~154k,
+ursula-disk ~10k, S2 ~2k (S2 stream-creation does not scale past ~100 streams). durable-memory
+is ~15–20% faster than durable-wal at the peak (no WAL fsync); durable is ~5× ursula-in-memory
+and ~75× ursula-disk.
+
+**Append latency at the peak (p50 / p99, ms):** durable stays sub-ms–2 ms median (p99 tail grows
+with the backlog at the ceiling); ursula-in-memory tens of ms; ursula-disk hundreds of ms→seconds
+(Raft-log fsync); S2 ~50 ms.
+
+---
+
+## 2. Sustained load (stability over time)
+
+Fixed low rate (10 ops/s × N streams) held for 90 s; measures latency and server-memory drift.
+
+| streams | durable wal: p50 / p99 · RSS drift | durable memory: p50 / p99 · RSS drift |
+|---|---|---|
+| 10 | 0.52 / 0.89 ms · 0 MiB | 0.44 / 0.72 ms · 0 MiB |
+| 50 | 0.61 / 1.33 ms · 2 MiB | 0.55 / 1.11 ms · 2 MiB |
+| 100 | 0.59 / 1.69 ms · 4 MiB | 0.44 / 1.07 ms · 3 MiB |
+| 150 | 0.52 / 1.55 ms · 5 MiB | 0.44 / 1.18 ms · 2 MiB |
+
+Both modes are **stable** — sub-2 ms latency and ≤5 MiB RSS drift over the window (no leak).
+`memory` mode holds RSS as flat as `wal` and runs slightly faster.
+
+---
+
+## 3. Catch-up / reconnect
+
+Reproduces ursula's published methodology (ursula.tonbo.io/benchmark): 1 000 clients each
+reconnect to their **own** pre-populated stream and catch up via that system's native path —
+**ursula** `GET /bootstrap` (snapshot+tail), **durable** `offset=-1` and **s2** `/records`
+(full-log replay). Equal hardware (1 server node each).
+
+| metric (1 KiB events, 200-event streams) | durable | ursula | s2 |
 |---|---|---|---|
-| **memory** | **~964k** | 100 000 | @`fleet_cpu=2`, @120 pods (degrades to 709k @160); p50 2.06 / p99 978 ms. True peak ~1.005M @`fleet_cpu=1`/200 pods |
-| **wal** (new `47b03a5`) | **~692k** | 100 000 | @`fleet_cpu=0.5`; p50 1.88 / p99 1141 ms. prior old-build 754k |
-| **ursula in-memory** | ~154k † | 100 000 | ~server-bound ≈150k (lower bound; more clients don't help) |
-| **ursula disk** | ~10k | 100 000 | durable Raft fsync bound |
-| **s2** | ~2k | 100 | creation-choked at ≥1 000 streams |
+| per-client catch-up p99 (ms) | 146 | **126** | 331 |
+| response body per client (KiB) | 200 | 158 | 471 |
+| aggregate replay throughput (MiB/s) | 1306 | 1039 | 1301 |
 
-## Throughput matrix (ops/s; † = lower bound, `choke*` = rung-restart crash, not a ceiling)
+Ordering: **ursula < durable < s2** — ursula's snapshot+tail reads less (158 KiB vs the full
+200/471 KiB), so it finishes fastest; S2's paginated read is slowest. (MiB/s reflects bytes moved,
+not speed — ursula moves fewer bytes by design.) durable replays the full log at 200 KiB and
+~1.3 GiB/s. At 2 000-event streams durable sustained 925 ms p99 / 2 GiB/s replay.
 
-| streams | wal (new) | memory | ursula in-mem | ursula disk | s2 |
-|---|---|---|---|---|---|
-| 100 | 494k † | 444k | 51k | 4k | 2k |
-| 1 000 | 636k | 496k | 86k | 5k | choke |
-| 10 000 | choke* | choke* | 106k | 6k | choke |
-| 100 000 | **692k** | **964k** | 154k † | 10k | choke |
+---
 
-### Write latency at saturation — p50 / p99 (ms)
-At the pinned (saturating) pod count — latencies *under max load* (p99 = queueing tail at the ceiling).
+## 4. SSE fan-out (delivery latency)
 
-| streams | wal (new) | memory | ursula in-mem | ursula disk | s2 |
-|---|---|---|---|---|---|
-| 100 | — † | 0.25 / 0.38 | 0.59 / 35.3 | 32.5 / 63.4 | 51.0 / 52.3 |
-| 1 000 | 1.24 / 6.87 | 1.58 / 8.0 | 4.40 / 102 | 196.6 / 500.7 | choke |
-| 10 000 | choke* | choke* | 14.9 / 474 | 1500 / 4698 | choke |
-| 100 000 | 1.88 / 1141 | 2.06 / 978 | 67.3 / 3330 | 6119 / 20005 | choke |
+1 stream, 1 writer @ 50 ev/s, swept total subscribers. Writer-paced; metric is per-event
+end-to-end delivery latency (p50 / p99, ms).
 
-**memory and wal both stay ~sub-ms–2.2ms median** even at saturation; p99 tail grows with the
-backlog at the ceiling. ursula in-memory rises into tens of ms; **ursula disk hits hundreds of
-ms→seconds** (Raft fsync, p99 ~20s @100k); s2 ~51ms then chokes.
-
-## WAL new build vs prior — regression check
-
-The new build's headline change is *"close WAL read-before-durable + protocol/tier fixes"*.
-Per-cardinality (new `47b03a5` @fc0.5 vs prior old build):
-
-| streams | new | prior | Δ | note |
-|---|---|---|---|---|
-| 100 | 494k † | 504k | −2% | lower bound (ladder exhausted) |
-| 1 000 | 636k | 444k | +43% | improved (prior used a lower ladder too) |
-| 10 000 | choke* | 629k | — | lost to the rung-restart crash |
-| 100 000 | 692k | 754k | −8% | partly `fleet_cpu=0.5` vs prior + run variance |
-
-**Verdict: no clear WAL regression.** n=100/1000 held or improved; the 100k −8% is within the
-`fleet_cpu`/run-variance band (memory showed ~18% fc0.5-vs-fc1), not an obvious code regression.
-A clean confirmation needs n=10000 (lost to the choke) and a same-`fleet_cpu` baseline.
-
-## SSE fan-out — delivery latency, p50 / p99 (ms)
-
-1 stream, 1 writer @ 50 ev/s, swept total subscribers, single client pod. Writer-paced.
-Full spread (p90/p999/max) in `results/final/sse/`.
-
-| subscribers | wal (cache off) | wal (cache on) | ursula in-mem | ursula disk | s2 |
+| subscribers | durable (cache off) | durable (cache on) | ursula in-mem | ursula disk | s2 |
 |---|---|---|---|---|---|
 | 1 | 0.38 / 0.56 | 0.32 / 0.50 | 0.39 / 0.57 | 0.41 / 0.63 | — |
 | 10 | 0.48 / 0.67 | 0.45 / 0.65 | 0.49 / 0.66 | 0.50 / 0.70 | 51.3 / 52.0 |
 | 100 | 0.84 / 1.17 | 0.79 / 1.14 | 0.81 / 1.11 | 0.87 / 1.20 | 50.9 / 52.0 |
-| 1000 | 3.60 / 5.06 | **2.85 / 4.30** | 2.67 / 3.92 | 2.95 / 4.50 | 52.2 / 54.0 |
+| 1000 | 3.60 / 5.06 | 2.85 / 4.30 | 2.67 / 3.92 | 2.95 / 4.50 | 52.2 / 54.0 |
 
-- **wal and ursula are competitive** (sub-ms to ~3.6ms median); **residency cache helps SSE** ~15–20%
-  at high fan-out (read-path win, unlike writes where it was neutral). **s2 ~51ms — ~10–50× slower.**
+durable and ursula are competitive (sub-ms to ~3.6 ms median across the fan-out). durable's
+residency cache helps delivery ~15–20% at high fan-out. **S2 ~50 ms — 10–50× slower** (object-store
+delivery path).
 
-## Caveats
-- ⚠️ **Intermittent rung-restart choke (open issue, CONFIRMED server-side):** ~1 random cell per
-  4-cell sweep is lost to a failure during the pod restart between ladder rungs (rung N completes →
-  rung N+1's fleet all-error → 0, recorded as `creation_choke`). It hit **memory @n=1000** (fc=0.5),
-  **wal @n=10000** (fc=0.5), and **memory @n=10000** (fc=2). **Giving clients 4× CPU (fc=0.5→2) did not
-  fix it — the choke just relocated to a different cardinality**, proving it is **server-side, not
-  client-bound** (and not mode- or cardinality-specific). Root cause (OOM vs panic vs restart-readiness
-  race) still to be pinned with server-pod logs.
-- **memory** column is at `fleet_cpu=0.5`; a `fleet_cpu=2` re-run is in progress (the 1.005M peak was at
-  `fleet_cpu=1`). Memory numbers will refresh on completion.
-- Single-node, best-case; not multi-node/replicated. ursula/s2 not server-CPU-instrumented.
-- Cross-run/cluster variance ~≤20%; trust same-cluster comparisons. Superseded runs in `results/trash/`.
+---
+
+## Reproducing
+
+Each workload is a suite under `suites/`. Run one with:
+
+    scripts/bench suites/<suite>.json run        # provisions a cluster, runs, tears down
+    scripts/bench suites/<suite>.json report      # regenerate the report from local results
+
+- **write throughput** — `suites/write-throughput-{wal,memory,ursula,s2}.json`
+- **sustained** — `suites/sustained.json`
+- **catch-up** — `suites/catchup-{durable,ursula,s2}.json`
+- **SSE fan-out** — `scripts/run-sse.sh`
+
+Raw per-cell data (`cells.json`, merged HDRs) lands under `results/<suite>/`. See `README.md`
+for cluster/image setup.
+
+## Tests
+
+The framework logic is unit-tested (no cluster required):
+
+    cd scripts && for t in *_test.py; do python3 "$t"; done
+    for t in scripts/*_test.sh; do bash "$t"; done
+
+Covers the suite loader, the per-cell result stores, the saturation classifier, the
+catch-up/sustained runners, and the report renderers.

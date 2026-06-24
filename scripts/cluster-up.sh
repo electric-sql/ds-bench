@@ -51,7 +51,7 @@ else
       --node-labels=role=client "${SPOT_FLAG[@]}"
   fi
   gcloud container clusters get-credentials "$CLUSTER" --zone "$ZONE" --project "$PROJECT"
-  gcloud auth configure-docker europe-west1-docker.pkg.dev -q || true
+  gcloud auth configure-docker "${AR_LOCATION:-europe-west1}-docker.pkg.dev" -q || true
 fi
 
 echo "=== namespace + metrics ConfigMap + MinIO (context=${KCTX}) ==="
