@@ -109,6 +109,7 @@ run_mode() {
   export MEASURE_SECS="$(_suite 's.saturation["measure_secs"]')"
   export SETTLE_SECS="${SETTLE_SECS:-5}"
   export SETUP_CONCURRENCY="$(_suite 's.saturation.get("setup_concurrency", 32)')"
+  export PAYLOAD_BYTES="$(_suite 's.saturation.get("payload_bytes", 256)')"
   export SWEEP_RUN_ID="${SUITE_NAME}-${mode}"
   local mode_root="results/${SUITE_NAME}/${mode}"
   export RESULTS_ROOT="$mode_root" SAT_RESULT_ROOT="$mode_root/cells"

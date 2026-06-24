@@ -8,11 +8,12 @@
   },
   "saturation": {
     "plateau_pct": 5,
-    "fleet_cpu": 1,
+    "fleet_cpu": 0.5,
     "repeats": 3,
     "warmup_secs": 15,
     "measure_secs": 20,
-    "setup_concurrency": 32
+    "setup_concurrency": 32,
+    "payload_bytes": 256
   },
   "modes": [
     "wal"

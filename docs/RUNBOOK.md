@@ -10,8 +10,12 @@ Throughput is split into one suite per mode, each on its own cluster/zone:
 - `suites/write-throughput-ursula.json` → cluster `bench-ursula` (zone b)
 - `suites/write-throughput-s2.json`     → cluster `bench-s2`     (zone c)
 
-Each declares its mode, stream-counts, the per-stream-count `pod_ladder`, and cluster
-machine types (ladder first rung = seed, last = climb ceiling). The **wal** suite also
+Each declares its mode, stream-counts, the per-stream-count `pod_ladder`, cluster machine
+types, and the `saturation` knobs (ladder first rung = seed, last = climb ceiling). The
+`saturation` block documents the workload: `payload_bytes` (default **256** B per append),
+`setup_concurrency` (stream-creation parallelism), `fleet_cpu` (per-pod reservation),
+`plateau_pct` (pin when the next rung gains <this %), `repeats`, `warmup_secs`, `measure_secs`.
+The **wal** suite also
 carries a `server_configs` sweep — `wal` (shards 4) and `wal-tailcache` (shards 4 +
 64 KiB tail-cache) — which appear as **side-by-side columns** in its report.
 

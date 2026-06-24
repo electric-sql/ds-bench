@@ -4,8 +4,10 @@ Maintained final dataset. Per-config data points live in
 `results/final/write-throughput/<config>/cells.json`; this report summarizes them.
 
 **Methodology:** single-node, best-case append throughput. 4-CPU-pinned server on
-`c4d-standard-16-lssd`, `n2d-standard-32` client fleet, `fleet_cpu=2`, ~1000 streams/pod,
-saturation walk pins the pod count where throughput stops gaining ≥5%, median of 3 reps.
+`c4d-standard-16-lssd`; `n2d-standard-32` client fleet (`fleet_cpu=1`, Spot), ~1000
+streams/pod. **256-byte payload per append** (`payload_bytes`); 15 s warm-up + 20 s
+measure; saturation walk pins the pod count where throughput stops gaining ≥5%
+(`plateau_pct`), median of 3 reps. (SSE uses 256-byte events, 1 writer @ 50 ev/s.)
 
 **Configurations**
 - **wal** — durable-streams, WAL durability, `--wal-shards 4`, resident tail-cache **off**,
@@ -13,16 +15,25 @@ saturation walk pins the pod count where throughput stops gaining ≥5%, median 
 - **ursula in-memory** — ursula single-node Raft, `URSULA_WAL=memory` (non-durable best case).
 - **ursula disk** — ursula single-node Raft, disk WAL (durable).
 - **s2** — S2-lite, object-store backed.
-- **zero-copy** — _reserved; a replacement build will be benchmarked here later._
+- **memory** — durable-streams `--durability memory` (no WAL; Linux-only zero-copy
+  socket→file splice; tail-cache off). The latest binary's non-durable fast path.
 
 ## Peak append throughput (ops/s)
 
 | configuration | peak | at streams | note |
 |---|---|---|---|
-| **wal** | **~754k** | 100 000 | peak @~190 pods; degrades if over-driven (≈376k @280 pods) |
+| **memory** | **~1.005M** | 100 000 | peak @200 pods; degrades past it (≈739k @240). p50 1.85 / p99 620 ms |
+| **wal** | **~870k** | 100 000 | latest binary, @~160–200 pods. p50 1.75 / p99 752 ms |
 | **ursula in-memory** | ~154k † | 100 000 | ~server-bound ≈150k (lower bound; more clients don't help) |
 | **ursula disk** | ~10k | 100 000 | durable Raft fsync bound |
 | **s2** | ~2k | 100 | creation-choked at ≥1 000 streams |
+
+**memory vs wal (same latest binary, same `[120..280]` ladder, Spot) — sanity-checked:**
+`--durability memory` ≈ **1.005M** vs `--durability wal` ≈ **870k** → **memory ~15% faster**
+(non-durable: no Raft/WAL fsync). The gap is **real, not run-to-run noise** — both ran on
+the *same* `durable-streams:memory` image back-to-back. (An earlier wal run on an older
+binary peaked 754k @190; that cross-binary number is superseded by the 870k same-binary
+control. Both peak near 160–200 pods and degrade if over-driven.)
 | _zero-copy_ | _TBD_ | — | _reserved_ |
 
 ## Throughput matrix (ops/s; † = lower bound)

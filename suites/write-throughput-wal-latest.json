@@ -1,11 +1,11 @@
 {
-  "suite": "write-throughput-ursula-memory-ext",
+  "suite": "write-throughput-wal-latest",
   "cluster": {
     "server_machine": "c4d-standard-16-lssd",
     "client_machine": "n2d-standard-32",
     "client_nodes": 12,
     "region": "europe-west4",
-    "cluster_name": "bench-ursula-ext",
+    "cluster_name": "bench-wallatest",
     "zone": "europe-west4-b"
   },
   "saturation": {
@@ -14,27 +14,29 @@
     "repeats": 3,
     "warmup_secs": 15,
     "measure_secs": 20,
-    "setup_concurrency": 32,
+    "setup_concurrency": 16,
     "payload_bytes": 256
   },
   "modes": [
-    "ursula"
+    "wal"
   ],
   "stream_counts": [
     100000
   ],
   "pod_ladder": {
     "100000": [
-      110,
-      140,
-      170
+      120,
+      160,
+      200,
+      240,
+      280
     ]
   },
   "server_configs": {
-    "ursula": [
+    "wal": [
       {
-        "label": "ursula-memory-ext",
-        "args": ""
+        "label": "wal-latest",
+        "args": "--durability wal --wal-shards 4"
       }
     ]
   }

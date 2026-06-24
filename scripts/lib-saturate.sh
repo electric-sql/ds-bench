@@ -28,8 +28,8 @@ measure_pods() {
   # at high cardinality, pods × 256 concurrent creates overwhelmed the creation
   # endpoint (the 100k creation_choke). A lower per-pod value keeps total concurrent
   # creation bounded while pods still drive full load after setup.
-  local setup_conc="${SETUP_CONCURRENCY:-32}"
-  local bench_cmd="multi-stream --target ${T_TARGET:?} --api-style ${T_API:?} ${T_NS:-} --streams ${perpod} --duration-secs ${dur} --payload-bytes 256 --setup-concurrency ${setup_conc} --warmup-secs ${warmup} --settle-secs ${settle}"
+  local setup_conc="${SETUP_CONCURRENCY:-32}" payload="${PAYLOAD_BYTES:-256}"
+  local bench_cmd="multi-stream --target ${T_TARGET:?} --api-style ${T_API:?} ${T_NS:-} --streams ${perpod} --duration-secs ${dur} --payload-bytes ${payload} --setup-concurrency ${setup_conc} --warmup-secs ${warmup} --settle-secs ${settle}"
   local merge_cmd="ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix multi-stream-"
   _run_cell_one "${mode}-write-n${sc}-p${pods}" "$bench_cmd" "write" "$merge_cmd" "$pods" "$rep" "$cell_dir"
 }
@@ -64,8 +64,15 @@ walk_cell() {
         _record "$cells_json" "$sc" "$digest" "$walk" None 0 None False error creation_choke None
         return 0 ;;
       plateau)
-        # saturated one rung back; confirm the pinned point with `repeats` reps
-        local conf_p50 conf_p99; read -r conf_p50 conf_p99 < <(_confirm "$fn" "$mode" "$prev_pods" "$repeats")
+        # saturated one rung back; confirm the pinned point with `repeats` reps.
+        # Capture via $(...) — it BLOCKS until _confirm fully EXITS. (Previously
+        # `read < <(_confirm)` returned on _confirm's first stdout line — reset_state's
+        # "deployment rolled out" — leaving _confirm running in the BACKGROUND, so the
+        # next stream-count's walk ran CONCURRENTLY with the lingering confirm: two
+        # walkers, interleaved fleets, "already exists", stale merged reuse.)
+        local conf_out conf_p50 conf_p99
+        conf_out="$(_confirm "$fn" "$mode" "$prev_pods" "$repeats")"
+        conf_p50="${conf_out%% *}"; conf_p99="${conf_out##* }"
         conf_p50="${conf_p50:-None}"; conf_p99="${conf_p99:-None}"   # never pass empty to _record
         _record "$cells_json" "$sc" "$digest" "$walk" "$prev_pods" "$prev_thr" "$conf_p50" True ok plateau "$conf_p99"
         return 0 ;;
@@ -83,7 +90,9 @@ walk_cell() {
 _confirm() {
   local fn="$1" mode="$2" pods="$3" reps="$4" i p50s="" p99s="" cd p50 p99
   for ((i=1;i<=reps;i++)); do
-    SAT_REP="$i"; reset_state "$mode"; "$fn" "$pods" >/dev/null
+    # reset_state -> stderr so _confirm's STDOUT carries ONLY the final "p50 p99"
+    # result line (its rollout/reset chatter must not be captured as the result).
+    SAT_REP="$i"; reset_state "$mode" >&2; "$fn" "$pods" >/dev/null
     cd="$(_sat_cell_dir "$pods" "$i")"
     p50="$(grep -oE '"p50_ms"[: ]*[0-9.]+' "$cd/merged.json" 2>/dev/null | grep -oE '[0-9.]+$' | head -1)"
     p99="$(grep -oE '"p99_ms"[: ]*[0-9.]+' "$cd/merged.json" 2>/dev/null | grep -oE '[0-9.]+$' | head -1)"

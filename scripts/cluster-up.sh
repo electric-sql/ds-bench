@@ -41,8 +41,14 @@ else
       --machine-type "$SERVER_MACHINE" "${LSSD_FLAG[@]}" \
       --node-labels=role=server --network benchmarking --subnetwork benchmarking \
       --enable-ip-alias --release-channel regular
+    # The client fleet is disposable + fault-tolerant (the bench tolerates pod
+    # failures), so run it on Spot VMs by default (~60-80% cheaper). The SERVER
+    # pool stays on-demand (it holds state). SPOT_CLIENTS=0 forces on-demand.
+    SPOT_FLAG=()
+    [ "${SPOT_CLIENTS:-1}" = "1" ] && SPOT_FLAG=(--spot)
     gcloud container node-pools create clients --cluster "$CLUSTER" --zone "$ZONE" --project "$PROJECT" \
-      --machine-type "${CLIENT_MACHINE:-n2d-standard-16}" --num-nodes "${CLIENT_NODES:-2}" --node-labels=role=client
+      --machine-type "${CLIENT_MACHINE:-n2d-standard-16}" --num-nodes "${CLIENT_NODES:-2}" \
+      --node-labels=role=client "${SPOT_FLAG[@]}"
   fi
   gcloud container clusters get-credentials "$CLUSTER" --zone "$ZONE" --project "$PROJECT"
   gcloud auth configure-docker europe-west1-docker.pkg.dev -q || true

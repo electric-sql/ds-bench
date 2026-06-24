@@ -159,7 +159,10 @@ server_calibration_key() {
 
 # clean_jobs — delete bench-fleet + bench-coordinator synchronously.
 clean_jobs() {
-  K delete job bench-fleet bench-coordinator --ignore-not-found --wait=true >/dev/null 2>&1 || true
+  # --cascade=foreground: block until the Jobs' PODS are gone too (default background
+  # cascade deletes the Job object but reaps pods async -> they linger into the next
+  # rung, which reused the fixed job names -> stale-pod log reads + "already exists").
+  K delete job bench-fleet bench-coordinator --ignore-not-found --cascade=foreground --wait=true >/dev/null 2>&1 || true
   for _ in $(seq 1 45); do
     j=$( { K get jobs bench-fleet bench-coordinator --no-headers 2>/dev/null || true; } | wc -l | tr -d ' ')
     p=$( { K get pods -l 'job-name in (bench-fleet,bench-coordinator)' --no-headers 2>/dev/null || true; } | wc -l | tr -d ' ')
@@ -187,7 +190,7 @@ run_fleet_and_coordinator() {
   K get pods -l job-name=bench-fleet -o wide 2>/dev/null || true
 
   echo "    launching coordinator..."
-  K delete job bench-coordinator --ignore-not-found --wait=true >/dev/null 2>&1 || true
+  K delete job bench-coordinator --ignore-not-found --cascade=foreground --wait=true >/dev/null 2>&1 || true
   for _ in $(seq 1 30); do
     c=$( { K get job bench-coordinator --no-headers 2>/dev/null || true; } | wc -l | tr -d ' ')
     if [ "$c" = "0" ]; then break; fi
@@ -205,9 +208,13 @@ run_fleet_and_coordinator() {
 # the pod is still ContainerCreating (kubectl logs returns BadRequest then). Never
 # fatal: on persistent failure writes an error marker so `set -e` can't abort.
 fetch_coordinator_merged() {
-  local dest="$1" i out
+  local dest="$1" i out cpod
   for i in $(seq 1 30); do
-    if out="$(K logs job/bench-coordinator 2>/dev/null)" && [ -n "$out" ]; then
+    # Read the NEWEST coordinator pod specifically (not `job/bench-coordinator`,
+    # which can match a lingering previous-rung pod and return STALE merged data).
+    cpod="$(K get pods -l job-name=bench-coordinator --sort-by=.metadata.creationTimestamp \
+            -o jsonpath='{.items[-1:].metadata.name}' 2>/dev/null)"
+    if [ -n "$cpod" ] && out="$(K logs "$cpod" 2>/dev/null)" && [ -n "$out" ]; then
       printf '%s\n' "$out" > "$dest"
       return 0
     fi
