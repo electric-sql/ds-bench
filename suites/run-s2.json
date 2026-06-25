@@ -3,7 +3,7 @@
   "cluster": {
     "server_machine": "c4d-standard-16-lssd",
     "client_machine": "n2d-standard-32",
-    "client_nodes": 8,
+    "client_nodes": 1,
     "region": "europe-west4"
   },
   "saturation": {
