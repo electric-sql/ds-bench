@@ -25,7 +25,8 @@ fi
 
 # Portable concurrency cap (bash 3.2 has no `wait -n`): poll the live PIDs.
 pids=()
-alive() { local n=0 p; for p in "${pids[@]}"; do kill -0 "$p" 2>/dev/null && n=$((n+1)); done; echo "$n"; }
+# "${pids[@]:-}" guards the empty-array-under-set-u quirk in bash 3.2.
+alive() { local n=0 p; for p in "${pids[@]:-}"; do [ -n "$p" ] && kill -0 "$p" 2>/dev/null && n=$((n+1)); done; echo "$n"; }
 
 for s in "${SUITES[@]}"; do
   while [ "$(alive)" -ge "$MAXP" ]; do sleep 10; done
