@@ -102,7 +102,9 @@ run_mode() {
     cluster="$(_suite 's.cluster.get("cluster_name") or "bench-'"$mode"'"')"
     local zone; zone="$(_suite 's.cluster.get("zone") or ""')"
     if [ -z "$zone" ]; then
-      local zoneidx; case "$mode" in wal) zoneidx=a;; ursula) zoneidx=b;; s2) zoneidx=c;; node) zoneidx=d;; *) zoneidx=a;; esac
+      # Most GCP regions (incl. europe-west4) have only zones a/b/c. The matrix caps
+      # at 3 parallel clusters, so the 4th (node) reuses a freed zone (b = ursula's).
+      local zoneidx; case "$mode" in wal) zoneidx=a;; ursula) zoneidx=b;; s2) zoneidx=c;; node) zoneidx=b;; *) zoneidx=a;; esac
       zone="${region}-${zoneidx}"
     fi
     export KUBECONFIG="$REPO_ROOT/.bench-state/kc-${cluster}"
