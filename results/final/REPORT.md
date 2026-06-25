@@ -120,7 +120,7 @@ cost crosses above ursula by 1000 subscribers (23 vs 15). Both scale with *conne
 
 ## Findings
 
-1. **Write throughput:** durable peaks at **~0.65–0.89M append/s** at 4 CPUs — ~7–9× ursula-in-memory,
+1. **Write throughput:** durable peaks at **~0.79–0.89M append/s** at 4 CPUs — ~7–9× ursula-in-memory,
    ~70–100× ursula-disk, ~10× the Node reference, and ~400× S2.
 2. **Write memory is the architectural divider.** durable's footprint tracks **stream count** (per-file
    bookkeeping; tens–hundreds of MiB; p50 ≪ peak) because it keeps no payload resident. ursula's tracks
