@@ -67,7 +67,7 @@ commit); s2 ~50 ms (object-store hot path).
 
 The headline result. **durable stays in tens–hundreds of MiB** even at 100k streams (`memory` mode
 is the lightest — no WAL buffers); **ursula sits at 1–5 GB** throughout. And the *shape* differs:
-- **durable: p50 ≪ peak** (e.g. wal @ 100k 502 / 968; wal @ 100 45 / 103) — it holds very little
+- **durable: p50 ≪ peak** (e.g. wal @ 100k 515 / 950; wal @ 100 45 / 103) — it holds very little
   steadily; the peak is a transient WAL group-commit / page-cache spike during the write burst.
 - **ursula: p50 ≈ peak** (e.g. disk @ 10k 2561 / 2982; mem @ 10k 4286 / 5058) — it holds gigabytes
   *resident the whole time*.
@@ -125,7 +125,7 @@ cost crosses above ursula by 1000 subscribers (23 vs 15). Both scale with *conne
 2. **Write memory is the architectural divider.** durable's footprint tracks **stream count** (per-file
    bookkeeping; tens–hundreds of MiB; p50 ≪ peak) because it keeps no payload resident. ursula's tracks
    **bytes resident** (1–5 GB; p50 ≈ peak) because Raft keeps the whole log + state machine in RAM, disk
-   WAL or not. `memory` mode is durable's lightest (779 MiB @ 100k vs 968 for wal).
+   WAL or not. `memory` mode is durable's lightest (769 MiB @ 100k vs 950 for wal).
 3. **SSE fan-out memory is shared, not per-subscriber**, in both — ursula flat, durable +~18 KB/subscriber
    (socket overhead). Delivery latency stays sub-ms→~4 ms for all.
 
