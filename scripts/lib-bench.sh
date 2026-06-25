@@ -127,9 +127,16 @@ deploy_server() {
     || echo "    WARN: probe pod non-zero (kubectl --rm attach is flaky); continuing"
 }
 
-# server_label — pod selector for the server under test (durable-streams | ursula),
+# server_label — pod selector for the server under test (durable-streams|ursula|s2lite|durable-node),
 # so the metrics sidecar helpers find the right pod regardless of SERVER_KIND.
-server_label() { [ "${SERVER_KIND:-durable}" = "ursula" ] && echo "app=ursula" || echo "app=durable-streams"; }
+server_label() {
+  case "${SERVER_KIND:-durable}" in
+    ursula) echo "app=ursula" ;;
+    s2)     echo "app=s2lite" ;;
+    node)   echo "app=durable-node" ;;
+    *)      echo "app=durable-streams" ;;
+  esac
+}
 
 # reset_sidecar_samples — truncate the server sidecar's samples.csv before a cell.
 reset_sidecar_samples() {
@@ -401,21 +408,21 @@ deploy_mode() {
       local args="${WAL_SERVER_ARGS:-}"
       SERVER_KIND=durable SERVER_EXTRA_ARGS="$args" PROBE_HOSTPORT="durable-streams:4438" \
         deploy_server "$SERVER_CPU" >&2 || return 1
-      T_TARGET="http://durable-streams:4438"; T_API="durable"; T_NS="" ;;
+      T_TARGET="http://durable-streams:4438"; T_API="durable"; T_NS=""; export SERVER_KIND=durable ;;
     ursula)
       SERVER_KIND=ursula URSULA_WAL="${URSULA_WAL:-disk}" PROBE_HOSTPORT="ursula:4437" \
         deploy_server "$SERVER_CPU" >&2 || return 1
-      T_TARGET="http://ursula:4437"; T_API="ursula"; T_NS="--bucket benchmark" ;;
+      T_TARGET="http://ursula:4437"; T_API="ursula"; T_NS="--bucket benchmark"; export SERVER_KIND=ursula ;;
     s2)
       envsubst "${MANIFEST_VARS}" < gke/s2lite.yaml | K apply -f - >&2 \
         && K rollout status deploy/s2lite --timeout=600s >&2 || return 1
-      T_TARGET="http://s2lite:80"; T_API="s2"; T_NS="--basin benchmark" ;;
+      T_TARGET="http://s2lite:80"; T_API="s2"; T_NS="--basin benchmark"; export SERVER_KIND=s2 ;;
     node)
       # Node.js reference server — same protocol as the Rust server (api-style durable),
       # in-memory storage (no MinIO; a restart in reset_state gives fresh state).
       envsubst "${MANIFEST_VARS} \${SERVER_CPU}" < gke/durable-node.yaml | K apply -f - >&2 \
         && K rollout status deploy/durable-node --timeout=600s >&2 || return 1
-      T_TARGET="http://durable-node:4438"; T_API="durable"; T_NS="" ;;
+      T_TARGET="http://durable-node:4438"; T_API="durable"; T_NS=""; export SERVER_KIND=node ;;
     *) echo "deploy_mode: unknown mode '$mode'" >&2; return 1 ;;
   esac
   export T_TARGET T_API T_NS
