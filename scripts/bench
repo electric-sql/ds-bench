@@ -48,7 +48,9 @@ cmd_report() {
   case "$(_suite 's.workload')" in
     sustained) python3 scripts/sustained_report.py "$SUITE_FILE" ;;
     catchup)   python3 scripts/catchup_report.py "$SUITE_FILE" ;;
-    *)         python3 scripts/report.py "$SUITE_FILE" ;;
+    *)         # backfill peak + p50 pod memory from the saved samples, then render
+               python3 scripts/podmem.py "results/${SUITE_NAME}" >/dev/null 2>&1 || true
+               python3 scripts/report.py "$SUITE_FILE" ;;
   esac
 }
 

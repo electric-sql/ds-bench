@@ -18,7 +18,8 @@ def build(suite_path, results_root):
         for c in cells_mod.all_cells(p):
             rows.append({"mode": label, "stream_count": c["stream_count"],
                          "pods": c.get("pinned_pods"), "throughput": c.get("throughput"),
-                         "p50": c.get("p50"), "p99": c.get("p99"), "pod_mem_mb": c.get("pod_mem_mb"),
+                         "p50": c.get("p50"), "p99": c.get("p99"),
+                         "pod_mem_mb": c.get("pod_mem_mb"), "pod_mem_p50_mb": c.get("pod_mem_p50_mb"),
                          "saturated": c.get("saturated"),
                          "status": c.get("status"), "reason": c.get("reason"),
                          "walk": c.get("walk")})
@@ -70,16 +71,22 @@ def _markdown(s, rows):
     # across implementations, so it captures a resident cache (shows as memory) vs an
     # OS-paging design (data in page cache, also charged to the pod) on equal terms.
     if any(r.get("pod_mem_mb") for r in rows):
-        out += ["## Peak pod memory at saturation (MiB)", ""]
+        out += ["## Pod memory at saturation — peak / p50 (MiB)", ""]
         out += [header, "|" + "---|" * (len(labels) + 1)]
         for sc in s.stream_counts:
             mrow = []
             for m in labels:
                 r = by.get((m, sc))
-                mrow.append(f"{r['pod_mem_mb']:.0f}" if r and r.get("pod_mem_mb") else "—")
+                if r and r.get("pod_mem_mb"):
+                    pk = r["pod_mem_mb"]; md = r.get("pod_mem_p50_mb")
+                    mrow.append(f"{pk:.0f} / {md:.0f}" if md is not None else f"{pk:.0f}")
+                else:
+                    mrow.append("—")
             out.append(f"| {sc} | " + " | ".join(mrow) + " |")
-        out += ["", "_Pod working set = cgroup `memory.current − inactive_file`; counts the "
-                "server's resident memory **and** the page cache it keeps hot._", ""]
+        out += ["", "_Pod working set = cgroup `memory.current − inactive_file` (anon + active page "
+                "cache), sampled each second at the pinned rung. **peak** = high-water (catches bursts "
+                "like an in-RAM Raft log filling); **p50** = median (what the server steadily holds "
+                "resident). peak ≈ p50 ⇒ steadily resident; peak ≫ p50 ⇒ transient spikes._", ""]
 
     out += ["## Saturation walks (pods → ops/s)", ""]
     for r in rows:
@@ -99,7 +106,7 @@ def main():
     with open(os.path.join(root, "aggregate.json"), "w") as f:
         json.dump(rows, f, indent=2)
     with open(os.path.join(root, "aggregate.csv"), "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["mode", "stream_count", "pods", "throughput", "p50", "p99", "pod_mem_mb", "saturated", "status", "reason"])
+        w = csv.DictWriter(f, fieldnames=["mode", "stream_count", "pods", "throughput", "p50", "p99", "pod_mem_mb", "pod_mem_p50_mb", "saturated", "status", "reason"])
         w.writeheader()
         for r in rows:
             w.writerow({k: r[k] for k in w.fieldnames})
