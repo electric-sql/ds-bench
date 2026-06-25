@@ -30,9 +30,11 @@ with no cluster.
 
 The four workloads exercise different parts of a durable-stream server. **Write throughput**
 drives concurrent appends across many streams while the client fleet ramps up a per-cardinality
-pod ladder; once server throughput stops climbing it pins and confirms the peak append rate and
-the latency at that peak — a *saturation walk* that finds the server's ceiling rather than
-assuming a pod count. **Sustained load** instead holds a fixed, modest append rate across a set
+pod ladder; once server throughput stops climbing it pins and confirms the peak append rate,
+the latency at that peak, and the server's peak pod memory — a *saturation walk* that finds the
+server's ceiling rather than assuming a pod count. The memory figure is the pod cgroup working
+set (anon + active page cache), so a resident cache and an OS-paging design are compared on
+equal terms across every implementation. **Sustained load** instead holds a fixed, modest append rate across a set
 of streams for a long window and watches whether latency and the server's resident memory stay
 flat over time, surfacing slow drift or leaks that a short burst would miss. **Catch-up /
 reconnect** pre-populates a stream and then has many clients reconnect and replay it from the
