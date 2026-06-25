@@ -34,9 +34,12 @@ rung; reported as **peak** (high-water) / **p50** (median = steady state).
 | 100 | 520k | 528k | 427k | 48k | 4.6k | 55k | 2.0k |
 | 1 000 | 650k | 607k | 488k | 91k | 4.8k | 76k | — |
 | 10 000 | 572k | 560k | 479k | 89k | 8.7k | 63k | — |
-| 100 000 | 771k | **887k** | 670k | — | — | — | — |
+| 100 000 | **860k** | 887k† | **786k** | — | — | — | — |
 
-**Peak:** durable ~**0.65–0.89M append/s** (wal/wal-tailcache highest; `memory` ~0.5–0.67M).
+† wal-tailcache @ 100k (887k) is from the earlier run and was **not** re-collected with the
+results-upload fix below, so it is a lower bound; wal (860k) and memory (786k) are the clean values.
+
+**Peak:** durable ~**0.79–0.89M append/s** (wal 860k @ 80 pods; memory 786k @ ~100 pods; wal-tailcache ≥887k).
 durable is **~7–9× ursula-in-memory** (~90k), **~70–100× ursula-disk** (~5–9k), and **~10× node**
 (~55–76k). S2 does not scale past ~100 streams (1000 chokes on stream creation). ursula/node/s2 cap
 at 10k/1k/100 streams respectively (higher cardinalities crash or don't saturate within budget).
@@ -60,7 +63,7 @@ commit); s2 ~50 ms (object-store hot path).
 | 100 | 103 / 45 | 110 / 36 | 93 / 51 | 3693 / 2644 | 1031 / 948 | 488 / 279 |
 | 1 000 | 52 / 41 | 74 / 57 | 61 / 42 | 2245 / 1817 | 1986 / 1719 | 214 / 159 |
 | 10 000 | 202 / 177 | 203 / 183 | 167 / 134 | 5058 / 4286 | 2982 / 2561 | 1052 / 793 |
-| 100 000 | 968 / 502 | 977 / 655 | **779 / 362** | — | — | — |
+| 100 000 | 950 / 515 | 977 / 655† | **769 / 496** | — | — | — |
 
 The headline result. **durable stays in tens–hundreds of MiB** even at 100k streams (`memory` mode
 is the lightest — no WAL buffers); **ursula sits at 1–5 GB** throughout. And the *shape* differs:
@@ -132,6 +135,12 @@ cost crosses above ursula by 1000 subscribers (23 vs 15). Both scale with *conne
   not exercised.
 - Throughput is a saturation ceiling per the pod ladder; some durable cells are mildly non-monotonic
   (run-to-run variance at the ceiling). Memory figures are server-side and stable.
+- **100k re-collected with a robust result upload.** At 100k streams + 100+ fleet pods, the per-pod
+  `mc cp → MinIO` result uploads stormed MinIO; some timed out, dropping those pods' HDRs and
+  *undercounting* throughput (the apparent "collapse" past ~80 pods). The bench-job now retries the
+  upload with per-pod-staggered backoff; durable wal/memory @ 100k were re-collected clean (860k /
+  786k, up from 771k / 670k). wal degrading past 80 pods (96 → 561k) is then **real** server
+  contention at 4 CPU, not lost data.
 - ursula/node/s2 are capped at the cardinality where they stop saturating / crash (10k / 1k / 100).
 
 ## Reproducing
