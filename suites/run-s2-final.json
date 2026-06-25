@@ -1,6 +1,0 @@
-{ "suite": "run-s2-final",
-  "cluster": { "server_machine": "c4d-standard-16-lssd", "client_machine": "n2d-standard-32", "client_nodes": 1, "region": "europe-west4" },
-  "saturation": { "plateau_pct": 8, "fleet_cpu": 0.5, "repeats": 3, "warmup_secs": 15, "measure_secs": 20, "setup_concurrency": 16, "payload_bytes": 256 },
-  "modes": ["s2"],
-  "stream_counts": [100],
-  "pod_ladder": { "100": [2,4,8] } }
