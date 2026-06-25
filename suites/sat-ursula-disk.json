@@ -1,0 +1,5 @@
+{ "suite": "sat-ursula-disk",
+  "cluster": { "server_machine": "c4d-standard-16-lssd", "client_machine": "n2d-standard-32", "client_nodes": 2, "region": "europe-west4", "cluster_name": "bench-sat-ud", "zone": "europe-west4-c" },
+  "saturation": { "plateau_pct": 8, "fleet_cpu": 0.5, "repeats": 3, "warmup_secs": 15, "measure_secs": 20, "setup_concurrency": 16, "payload_bytes": 256 },
+  "modes": ["ursula"], "server_configs": { "ursula": [ {"label":"ursula-disk","args":"disk"} ] },
+  "stream_counts": [100], "pod_ladder": { "100": [24,32,48,64] } }
