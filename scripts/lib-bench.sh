@@ -137,7 +137,7 @@ reset_sidecar_samples() {
   pod="$( { K get pod -l "$(server_label)" -o name 2>/dev/null || true; } | head -1 | sed 's|pod/||')"
   if [ -n "$pod" ]; then
     echo "    resetting samples.csv on pod ${pod}..."
-    K exec "$pod" -c metrics -- sh -c 'echo "ts_ms,rss_bytes,cpu_ticks,write_bytes" > /metrics/samples.csv' || true
+    K exec "$pod" -c metrics -- sh -c 'echo "ts_ms,rss_bytes,cpu_ticks,write_bytes,pod_ws_bytes" > /metrics/samples.csv' || true
   fi
 }
 
@@ -277,6 +277,17 @@ compute_server_mem_mb() {
       if (drift > -0.5 && drift < 0.5) drift = 0
       printf "%.0f %.0f\n", peak/1048576, drift
     }' "$1"
+}
+
+# compute_server_podmem_mb SAMPLES_CSV — peak POD working-set memory (col 5
+# pod_ws_bytes = memory.current − inactive_file), MiB. Process-agnostic, so it is
+# comparable across implementations (anon + active page cache). "0" if no data /
+# the column is absent (older samples.csv) / the pod cgroup was not found.
+compute_server_podmem_mb() {
+  awk -F',' '
+    NR==1 { next }
+    { if (NF>=5 && $5+0 > peak) peak=$5+0 }
+    END { printf "%.0f\n", peak/1048576 }' "$1"
 }
 
 # _run_cell_one — one measurement at a fixed pod count: deploy the fleet + coordinator,

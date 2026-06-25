@@ -117,10 +117,14 @@ spec:
             # writeback the per-pid /proc/<pid>/io counter misses for buffered writes).
             - name: DATA_DIR
               value: /data
+            # POD_UID lets the poller find this pod's cgroup under the host cgroupfs
+            # to sample pod working-set memory (anon + active page cache).
+            - { name: POD_UID, valueFrom: { fieldRef: { fieldPath: metadata.uid } } }
           volumeMounts:
             - { name: metrics, mountPath: /metrics }
             - { name: metrics-poller, mountPath: /deploy/metrics }
             - { name: data, mountPath: /data, readOnly: true }
+            - { name: cgroup-host, mountPath: /host/cgroup, readOnly: true }
           resources:
             requests:
               cpu: "10m"
@@ -137,6 +141,8 @@ spec:
           configMap:
             name: metrics-poller
             defaultMode: 0755
+        - name: cgroup-host
+          hostPath: { path: /sys/fs/cgroup }
 ---
 apiVersion: v1
 kind: Service

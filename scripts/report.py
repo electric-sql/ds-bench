@@ -18,7 +18,8 @@ def build(suite_path, results_root):
         for c in cells_mod.all_cells(p):
             rows.append({"mode": label, "stream_count": c["stream_count"],
                          "pods": c.get("pinned_pods"), "throughput": c.get("throughput"),
-                         "p50": c.get("p50"), "p99": c.get("p99"), "saturated": c.get("saturated"),
+                         "p50": c.get("p50"), "p99": c.get("p99"), "pod_mem_mb": c.get("pod_mem_mb"),
+                         "saturated": c.get("saturated"),
                          "status": c.get("status"), "reason": c.get("reason"),
                          "walk": c.get("walk")})
     rows.sort(key=lambda r: (r["stream_count"], r["mode"]))
@@ -64,6 +65,22 @@ def _markdown(s, rows):
         cells_row = [_cell_str(by[(m, sc)]) if (m, sc) in by else "—" for m in labels]
         out.append(f"| {sc} | " + " | ".join(cells_row) + " |")
     out += ["", "† = not saturated (ladder exhausted) — treat as a lower bound.", ""]
+
+    # Peak pod working-set memory (anon + active page cache) at saturation. Uniform
+    # across implementations, so it captures a resident cache (shows as memory) vs an
+    # OS-paging design (data in page cache, also charged to the pod) on equal terms.
+    if any(r.get("pod_mem_mb") for r in rows):
+        out += ["## Peak pod memory at saturation (MiB)", ""]
+        out += [header, "|" + "---|" * (len(labels) + 1)]
+        for sc in s.stream_counts:
+            mrow = []
+            for m in labels:
+                r = by.get((m, sc))
+                mrow.append(f"{r['pod_mem_mb']:.0f}" if r and r.get("pod_mem_mb") else "—")
+            out.append(f"| {sc} | " + " | ".join(mrow) + " |")
+        out += ["", "_Pod working set = cgroup `memory.current − inactive_file`; counts the "
+                "server's resident memory **and** the page cache it keeps hot._", ""]
+
     out += ["## Saturation walks (pods → ops/s)", ""]
     for r in rows:
         walk = " → ".join(f"{p}:{t/1000:.0f}k" for p, t in (r["walk"] or []))
@@ -82,7 +99,7 @@ def main():
     with open(os.path.join(root, "aggregate.json"), "w") as f:
         json.dump(rows, f, indent=2)
     with open(os.path.join(root, "aggregate.csv"), "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["mode", "stream_count", "pods", "throughput", "p50", "p99", "saturated", "status", "reason"])
+        w = csv.DictWriter(f, fieldnames=["mode", "stream_count", "pods", "throughput", "p50", "p99", "pod_mem_mb", "saturated", "status", "reason"])
         w.writeheader()
         for r in rows:
             w.writerow({k: r[k] for k in w.fieldnames})

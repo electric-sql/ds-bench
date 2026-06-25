@@ -20,7 +20,7 @@ def _save(path, data):
 
 
 def record(path, stream_count, *, image_digest, walk, pinned_pods, throughput,
-           p50, p99, saturated, status, reason):
+           p50, p99, saturated, status, reason, pod_mem_mb=None):
     data = _load(path)
     data["cells"][str(stream_count)] = {
         "stream_count": stream_count,
@@ -30,6 +30,7 @@ def record(path, stream_count, *, image_digest, walk, pinned_pods, throughput,
         "throughput": throughput,
         "p50": p50,                  # median latency (ms) at the pinned point
         "p99": p99,                  # tail latency (ms) at the pinned point
+        "pod_mem_mb": pod_mem_mb,    # peak pod working-set memory (MiB) during the cell
         "saturated": saturated,
         "status": status,            # "ok" | "error"
         "reason": reason,            # "plateau" | "cpu" | "ladder_exhausted" | "creation_choke" | ...

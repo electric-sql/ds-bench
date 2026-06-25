@@ -21,6 +21,7 @@ spec:
     metadata: { labels: { app: s2lite } }
     spec:
       nodeSelector: ${NODESEL_SERVER}
+      shareProcessNamespace: true   # so the metrics sidecar can see the s2 process
       containers:
         - name: s2lite
           image: ghcr.io/s2-streamstore/s2:latest
@@ -41,6 +42,33 @@ spec:
           resources:
             requests: { memory: "2Gi", cpu: "2" }
             limits: { memory: "12Gi" }
+        # ── metrics sidecar — pod working-set memory (+ s2 process RSS if matched).
+        # See gke/metrics-sidecar.yaml. Pod memory is process-agnostic, so it works
+        # even though we don't pin s2's binary name.
+        - name: metrics
+          image: ${IMG_METRICS}
+          imagePullPolicy: ${PULL_POLICY}
+          command: [nice, "-n", "19", bash, /deploy/metrics/poller.sh]
+          env:
+            - { name: SERVER_PROC, value: s2 }
+            - { name: METRICS_INTERVAL_S, value: "1" }
+            - { name: METRICS_OUT, value: /metrics/samples.csv }
+            - { name: DATA_DIR, value: /tmp }
+            - { name: POD_UID, valueFrom: { fieldRef: { fieldPath: metadata.uid } } }
+          volumeMounts:
+            - { name: metrics, mountPath: /metrics }
+            - { name: metrics-poller, mountPath: /deploy/metrics }
+            - { name: cgroup-host, mountPath: /host/cgroup, readOnly: true }
+          resources:
+            requests: { cpu: "10m", memory: "32Mi" }
+            limits: { cpu: "50m", memory: "64Mi" }
+      volumes:
+        - name: metrics
+          emptyDir: {}
+        - name: metrics-poller
+          configMap: { name: metrics-poller, defaultMode: 0755 }
+        - name: cgroup-host
+          hostPath: { path: /sys/fs/cgroup }
 ---
 apiVersion: v1
 kind: Service

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# lib-bench_mem_test.sh — cluster-free unit test for compute_server_mem_mb.
+# lib-bench_mem_test.sh — cluster-free unit test for compute_server_mem_mb +
+# compute_server_podmem_mb (peak pod working-set, col 5).
 # Exit 0 = PASS, non-zero = FAIL.
 set -uo pipefail
 
@@ -42,5 +43,25 @@ check empty \
 check negative_sub_mib \
   $'ts_ms,rss_bytes,cpu_ticks,write_bytes\n1000,104857600,0,0\n2000,104557600,0,0\n' \
   "100 0"
+
+# ── compute_server_podmem_mb: peak of col 5 (pod_ws_bytes), MiB ──────────────
+checkpod() {  # name csv_content expected
+  local name="$1" csv="$2" expected="$3" got
+  printf '%s' "$csv" > "${tmp}/s.csv"
+  got="$(compute_server_podmem_mb "${tmp}/s.csv")"
+  if [ "$got" != "$expected" ]; then
+    echo "FAIL [$name]: expected '$expected', got '$got'"; PASS=false
+  else echo "ok [$name]: $got"; fi
+}
+
+# peak working-set = max(col5): 50MiB, 300MiB, 200MiB -> 300
+checkpod podmem_peak \
+  $'ts_ms,rss_bytes,cpu_ticks,write_bytes,pod_ws_bytes\n1000,0,0,0,52428800\n2000,0,0,0,314572800\n3000,0,0,0,209715200\n' \
+  "300"
+
+# older samples.csv without the pod_ws column -> 0 (graceful)
+checkpod podmem_absent_col \
+  $'ts_ms,rss_bytes,cpu_ticks,write_bytes\n1000,104857600,0,0\n' \
+  "0"
 
 $PASS && { echo "PASS"; exit 0; } || { echo "FAILED"; exit 1; }

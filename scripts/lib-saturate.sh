@@ -70,18 +70,20 @@ walk_cell() {
         # "deployment rolled out" — leaving _confirm running in the BACKGROUND, so the
         # next stream-count's walk ran CONCURRENTLY with the lingering confirm: two
         # walkers, interleaved fleets, "already exists", stale merged reuse.)
-        local conf_out conf_p50 conf_p99
+        local conf_out conf_p50 conf_p99 mem_mb
         conf_out="$(_confirm "$fn" "$mode" "$prev_pods" "$repeats")"
         conf_p50="${conf_out%% *}"; conf_p99="${conf_out##* }"
         conf_p50="${conf_p50:-None}"; conf_p99="${conf_p99:-None}"   # never pass empty to _record
-        _record "$cells_json" "$sc" "$digest" "$walk" "$prev_pods" "$prev_thr" "$conf_p50" True ok plateau "$conf_p99"
+        mem_mb="$(_sat_peak_podmem "$sc")"
+        _record "$cells_json" "$sc" "$digest" "$walk" "$prev_pods" "$prev_thr" "$conf_p50" True ok plateau "$conf_p99" "$mem_mb"
         return 0 ;;
       continue)
         prev_pods="$pods"; prev_thr="$thr" ;;
     esac
   done
   # ladder exhausted without plateau
-  _record "$cells_json" "$sc" "$digest" "$walk" "$prev_pods" "$prev_thr" None False ok ladder_exhausted None
+  local mem_mb; mem_mb="$(_sat_peak_podmem "$sc")"
+  _record "$cells_json" "$sc" "$digest" "$walk" "$prev_pods" "$prev_thr" None False ok ladder_exhausted None "$mem_mb"
 }
 
 # _confirm <fn> <mode> <pods> <reps> — rerun the pinned pods `reps` times; echo the
@@ -102,7 +104,7 @@ _confirm() {
   echo "$(echo "$p50s" | tr ' ' '\n' | grep -v '^$' | sort -n | awk "$med") $(echo "$p99s" | tr ' ' '\n' | grep -v '^$' | sort -n | awk "$med")"
 }
 
-_record() {  # bridge to cells.py — args: cells sc digest walk pods thr p50 sat status reason p99
+_record() {  # bridge to cells.py — args: cells sc digest walk pods thr p50 sat status reason p99 [mem_mb]
   python3 -c "
 import sys; sys.path.insert(0,'scripts')
 import cells
@@ -117,8 +119,22 @@ def _i(x, d=None):
 pp = None if sys.argv[5]=='None' else _i(sys.argv[5])
 p50 = None if sys.argv[7]=='None' else _f(sys.argv[7])
 p99 = None if sys.argv[11]=='None' else _f(sys.argv[11])
+mem = _f(sys.argv[12]) if len(sys.argv) > 12 and sys.argv[12] not in ('None','') else None
 cells.record(sys.argv[1], int(sys.argv[2]), image_digest=sys.argv[3],
   walk=__import__('json').loads(sys.argv[4]), pinned_pods=pp, throughput=(_f(sys.argv[6]) or 0.0),
-  p50=p50, p99=p99, saturated=(sys.argv[8]=='True'), status=sys.argv[9], reason=sys.argv[10])
-" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}"
+  p50=p50, p99=p99, saturated=(sys.argv[8]=='True'), status=sys.argv[9], reason=sys.argv[10], pod_mem_mb=mem)
+" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}" "${12:-None}"
+}
+
+# _sat_peak_podmem <stream_count> — max pod working-set MiB across every rep's
+# samples.csv for this stream-count (the high-water mark over the whole walk).
+_sat_peak_podmem() {
+  local sc="$1" root="${SAT_RESULT_ROOT:-}" f peak=0 m
+  [ -z "$root" ] && { echo 0; return; }
+  for f in "$root"/*/n"$sc"/*/samples.csv; do
+    [ -f "$f" ] || continue
+    m="$(compute_server_podmem_mb "$f" 2>/dev/null || echo 0)"
+    [ "${m:-0}" -gt "$peak" ] 2>/dev/null && peak="$m"
+  done
+  echo "$peak"
 }
