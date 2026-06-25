@@ -410,7 +410,12 @@ deploy_mode() {
         deploy_server "$SERVER_CPU" >&2 || return 1
       T_TARGET="http://durable-streams:4438"; T_API="durable"; T_NS=""; export SERVER_KIND=durable ;;
     ursula)
-      SERVER_KIND=ursula URSULA_WAL="${URSULA_WAL:-disk}" PROBE_HOSTPORT="ursula:4437" \
+      # Backend (memory|disk) per server_config: the config's args (exported as
+      # WAL_SERVER_ARGS by run_mode) pick it, so a suite can run ursula-memory +
+      # ursula-disk as two labeled configs in ONE cluster. Falls back to the
+      # URSULA_WAL env, then disk.
+      local backend="${WAL_SERVER_ARGS:-${URSULA_WAL:-disk}}"
+      SERVER_KIND=ursula URSULA_WAL="$backend" PROBE_HOSTPORT="ursula:4437" \
         deploy_server "$SERVER_CPU" >&2 || return 1
       T_TARGET="http://ursula:4437"; T_API="ursula"; T_NS="--bucket benchmark"; export SERVER_KIND=ursula ;;
     s2)

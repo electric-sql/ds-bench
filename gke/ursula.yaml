@@ -46,7 +46,13 @@ spec:
   selector: { matchLabels: { app: ursula } }
   strategy: { type: Recreate }
   template:
-    metadata: { labels: { app: ursula } }
+    # The WAL backend lives in the ursula-config ConfigMap, not the pod spec, so a
+    # backend change wouldn't restart the pod on its own. This annotation puts the
+    # backend in the pod template, so `kubectl apply` rolls a fresh pod (picking up
+    # the new ConfigMap) whenever the backend changes between server_configs.
+    metadata:
+      labels: { app: ursula }
+      annotations: { "ds-bench/wal-backend": "${URSULA_WAL}" }
     spec:
       nodeSelector: ${NODESEL_SERVER}
       # Required so the metrics sidecar can read /proc/<pid>/stat of ursula.
