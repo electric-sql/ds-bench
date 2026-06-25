@@ -6,7 +6,9 @@ latency (not throughput) is the metric.
 Usage: python3 sse_report.py <run-dir-or-merged.json>... [out_basename]
   run-dir: a results/bench/bench-* dir (globs its */rep*/merged.json).
 Writes results/<out>.md + results/<out>.csv (default out=sse-comparison)."""
-import sys, os, csv, re, glob, json
+import sys, os, csv, re, glob, json, statistics
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from podmem import _ws_samples   # per-tick pod_ws_bytes reader (col 5 of samples.csv)
 
 LABEL = {
     ("durable", "walnew"): "wal (cache off)",
@@ -55,10 +57,17 @@ def parse(paths):
         if key in seen:
             rows = [x for x in rows if (x["config"], x["subs"]) != key]
         seen.add(key)
+        # Pod working-set memory during this subscriber-count cell (samples.csv sits
+        # next to merged.json). Lets us see whether the server's fan-out buffer is
+        # SHARED (memory flat as subscribers grow) or PER-SUBSCRIBER (memory grows).
+        ws = _ws_samples(os.path.join(os.path.dirname(f), "samples.csv"))
+        pod_peak = round(max(ws) / 1048576) if ws else None
+        pod_p50 = round(statistics.median(ws) / 1048576) if ws else None
         rows.append({"config": label, "subs": subs,
                      "p50_ms": d.get("p50_ms"), "p90_ms": d.get("p90_ms"),
                      "p99_ms": d.get("p99_ms"), "p999_ms": d.get("p999_ms"),
                      "max_ms": d.get("max_ms"),
+                     "pod_mem_mb": pod_peak, "pod_mem_p50_mb": pod_p50,
                      "events_per_sec": round(d.get("aggregate_events_per_sec", 0), 1)})
     return rows
 
@@ -85,6 +94,24 @@ def markdown(rows):
             r = by.get((c, s))
             if r:
                 out.append(f"| {c} | {s} | {r['p50_ms']} | {r['p90_ms']} | {r['p99_ms']} | {r['p999_ms']} | {r['max_ms']} |")
+    # Pod memory vs subscriber count — the shared-vs-per-subscriber buffer test.
+    if any(r.get("pod_mem_mb") for r in rows):
+        out += ["", "## Pod memory vs subscribers — peak / p50 (MiB)", "",
+                "| config \\ subscribers | " + " | ".join(str(s) for s in subs_vals) + " |",
+                "|" + "---|" * (len(subs_vals) + 1)]
+        for c in configs:
+            cells = []
+            for s in subs_vals:
+                r = by.get((c, s))
+                if r and r.get("pod_mem_mb") is not None:
+                    pk, md = r["pod_mem_mb"], r.get("pod_mem_p50_mb")
+                    cells.append(f"{pk} / {md}" if md is not None else f"{pk}")
+                else:
+                    cells.append("—")
+            out.append(f"| {c} | " + " | ".join(cells) + " |")
+        out += ["", "_Pod working set (cgroup `memory.current − inactive_file`) during each "
+                "subscriber-count cell. **Flat across the row ⇒ a shared fan-out buffer** (one "
+                "resident tail served to all subscribers); growth ⇒ per-subscriber buffering._", ""]
     out += ["", "_p50 = median; lower is better. — = not measured._", ""]
     return "\n".join(out)
 
@@ -98,7 +125,7 @@ def main():
     rows = parse(paths)
     os.makedirs("results", exist_ok=True)
     with open(f"results/{out}.csv", "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["config", "subs", "p50_ms", "p90_ms", "p99_ms", "p999_ms", "max_ms", "events_per_sec"])
+        w = csv.DictWriter(f, fieldnames=["config", "subs", "p50_ms", "p90_ms", "p99_ms", "p999_ms", "max_ms", "pod_mem_mb", "pod_mem_p50_mb", "events_per_sec"])
         w.writeheader()
         for r in sorted(rows, key=lambda r: (r["config"], r["subs"])):
             w.writerow(r)
