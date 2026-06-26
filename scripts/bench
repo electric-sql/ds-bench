@@ -61,7 +61,12 @@ _maybe_teardown() {
   if [ "${BENCH_KEEP_CLUSTER:-0}" = "1" ]; then
     echo "[bench] BENCH_KEEP_CLUSTER=1 — leaving ${SUITE_NAME} cluster(s) up"; return 0
   fi
-  local report_md="results/${SUITE_NAME}/report.md"
+  # Most workloads render results/<suite>/report.md; catch-up writes a single
+  # COMBINED report at results/catchup/report.md instead, so look there for it.
+  local report_md; case "$(_suite 's.workload')" in
+    catchup) report_md="results/catchup/report.md" ;;
+    *)       report_md="results/${SUITE_NAME}/report.md" ;;
+  esac
   if [ ! -f "$report_md" ]; then
     echo "[bench] results not collected (no ${report_md}) — leaving cluster(s) up"; return 0
   fi

@@ -108,6 +108,38 @@ class TestSuiteStatus(unittest.TestCase):
         self._write(root, "wal", [self._cell(1), self._cell(10)])  # wal-tc absent
         self.assertEqual(report.suite_status(suite, root), "incomplete")
 
+    def _catchup_suite(self):
+        # catch-up cells are keyed by pre_events, not stream_count, and live under
+        # the mode label (e.g. node). suite_status must use the catchup reader/key.
+        d = {"suite": "cu", "workload": "catchup", "modes": ["node"],
+             "stream_counts": [200, 2000], "cluster": {},
+             "catchup": {"clients": 1000}}
+        p = os.path.join(tempfile.mkdtemp(), "s.json")
+        json.dump(d, open(p, "w"))
+        return p
+
+    def _write_catchup(self, root, label, pres, bad=()):
+        d = os.path.join(root, label); os.makedirs(d, exist_ok=True)
+        cells = {str(pe): {"pre_events": pe, "p50": 1.0, "p99": 1.0,
+                           "status": ("error" if pe in bad else "ok"),
+                           "reason": "complete", "image_digest": "x"} for pe in pres}
+        json.dump({"cells": cells}, open(os.path.join(d, "cells.json"), "w"))
+
+    def test_catchup_complete(self):
+        suite = self._catchup_suite(); root = tempfile.mkdtemp()
+        self._write_catchup(root, "node", [200, 2000])
+        self.assertEqual(report.suite_status(suite, root), "complete")
+
+    def test_catchup_incomplete_when_pre_events_missing(self):
+        suite = self._catchup_suite(); root = tempfile.mkdtemp()
+        self._write_catchup(root, "node", [200])  # 2000 absent
+        self.assertEqual(report.suite_status(suite, root), "incomplete")
+
+    def test_catchup_errors(self):
+        suite = self._catchup_suite(); root = tempfile.mkdtemp()
+        self._write_catchup(root, "node", [200, 2000], bad=(2000,))
+        self.assertEqual(report.suite_status(suite, root), "errors")
+
 
 if __name__ == "__main__":
     unittest.main()

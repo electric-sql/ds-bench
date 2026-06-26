@@ -34,10 +34,19 @@ def suite_status(suite_path, results_root):
                      cluster for investigation / resume).
       "incomplete" — a cell is missing (run didn't finish; keep the cluster)."""
     s = Suite.load(suite_path)
+    # Catch-up cells are keyed by `pre_events` (not `stream_count`) and live in a
+    # separate store, so they need the catchup_cells reader + key.
+    if s.workload == "catchup":
+        import catchup_cells as cu_cells
+        key = "pre_events"
+        reader = cu_cells.all_cells
+    else:
+        key = "stream_count"
+        reader = cells_mod.all_cells
     saw_error = False
     for label in s.labels():
         p = os.path.join(results_root, label, "cells.json")
-        by_sc = {c["stream_count"]: c for c in cells_mod.all_cells(p)} if os.path.exists(p) else {}
+        by_sc = {c[key]: c for c in reader(p)} if os.path.exists(p) else {}
         for sc in s.stream_counts:
             c = by_sc.get(sc)
             if c is None:
