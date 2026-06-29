@@ -1,0 +1,17 @@
+{
+  "suite": "reads-local",
+  "workload": "reads",
+  "cluster": {},
+  "reads": {
+    "read_size_bytes": 4096,
+    "seed_bytes": 1048576,
+    "duration_secs": 10,
+    "warmup_secs": 2,
+    "settle_secs": 1,
+    "connection_levels": [8, 32],
+    "pods": 1,
+    "repeats": 1
+  },
+  "modes": ["wal"],
+  "stream_counts": [10, 100]
+}
