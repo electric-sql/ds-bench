@@ -6,10 +6,7 @@
 # Driven by `ds-bench reads`. S2 is excluded (paginated JSON read is incomparable).
 set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# Guard: skip sourcing lib-saturate if stubs are already in place (unit-test mode)
-if ! declare -f _run_cell_one >/dev/null 2>&1; then
-  . "$REPO_ROOT/scripts/lib-saturate.sh"   # engine + _sat_cell_dir/_sat_get/reset_state
-fi
+. "$REPO_ROOT/scripts/lib-saturate.sh"   # engine + _sat_cell_dir/_sat_get/reset_state
 
 # measure_reads <pods> -> "cpu_pct thr". READS_CONN carries the connection level,
 # READS_SC the stream_count; RD_* carry the suite knobs. Exposes the built command
