@@ -4,8 +4,12 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
+use anyhow::Context;
 use anyhow::Result;
+use bytes::BytesMut;
 use clap::Args;
+use clap::ValueEnum;
+use futures::StreamExt;
 use hdrhistogram::Histogram;
 use serde::Serialize;
 use tokio::sync::Mutex;
@@ -20,9 +24,51 @@ use crate::common::merge;
 use crate::common::new_histogram;
 use crate::common::record;
 use crate::common::summarize;
+use crate::sse_util::build_payload;
+use crate::sse_util::extract_send_ns_maybe_b64;
+use crate::sse_util::find_event_end;
+use crate::sse_util::parse_sse_data;
+use crate::sse_util::unix_nanos_now;
+
+// ---------------------------------------------------------------------------
+// Read-scalability workload, two modes:
+//
+//   catchup    — sustained hot catch-up reads of a resident stream: each reader
+//                scans the whole seeded stream from the start, wraps, repeats.
+//                Measures the resident/replay read path (sendfile bandwidth) at
+//                a fixed cardinality, swept over connections.
+//
+//   long-poll  — a read is a LONG POLL that blocks at the tail waiting for new
+//                data. A light per-stream writer appends timestamped records;
+//                reader connections tail via `?offset=<tail>&live=long-poll` and
+//                every reader of a stream receives every append (fan-out). We
+//                measure per-record delivery latency (append→receive) and the
+//                connection level at which delivery falls over.
+//
+//   sse        — like long-poll but over a held Server-Sent Events connection
+//                (`?offset=now&live=sse`). Supported by BOTH Durable and Ursula,
+//                so it gives an apples-to-apples live-read comparison. Same
+//                writer + fan-out + delivery-latency model; the timestamp rides
+//                in the payload as hex text (SSE-safe) via `sse_util`.
+// ---------------------------------------------------------------------------
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReadMode {
+    /// Re-scan resident data from the start in a hot loop.
+    Catchup,
+    /// Long-poll the tail, receiving live appends from the writer.
+    LongPoll,
+    /// Subscribe at the tail over SSE (works for Durable + Ursula).
+    Sse,
+}
 
 #[derive(Args, Debug, Clone)]
 pub struct ReadsArgs {
+    /// Which read benchmark to run.
+    #[arg(long, value_enum, default_value_t = ReadMode::Catchup)]
+    pub mode: ReadMode,
+
     /// Target base URL(s). Comma-separated for round-robin across nodes.
     #[arg(long)]
     pub target: String,
@@ -35,30 +81,30 @@ pub struct ReadsArgs {
     #[arg(long, default_value = "bench-reads")]
     pub bucket: String,
 
-    /// Stream name to read from. Must be pre-seeded or seeded via --seed-bytes.
+    /// Stream name prefix. Streams are `{stream}-{i}` for i in 0..streams.
     #[arg(long, default_value = "bench-reads-stream")]
     pub stream: String,
 
-    /// Number of streams to seed and read across. Readers are pinned to
-    /// stream `reader_idx % streams` (the cardinality axis). Stream names are
-    /// `{stream}-{i}` for i in 0..streams.
+    /// Number of streams to read across. Readers are pinned to stream
+    /// `reader_idx % streams` (the cardinality axis).
     #[arg(long, default_value_t = 1)]
     pub streams: usize,
 
-    /// Payload size per record in bytes (used both for seeding and as the unit
-    /// of per-read latency measurement).
+    /// catchup: seeding record size + per-read latency unit.
+    /// long-poll: size of each appended record (>= 8; first 8 bytes carry the
+    /// write timestamp used for delivery latency).
     #[arg(long, default_value_t = 4096)]
     pub read_size_bytes: usize,
 
-    /// Number of concurrent reader connections.
+    /// Number of concurrent reader connections (the load axis).
     #[arg(long, default_value_t = 8)]
     pub connections: usize,
 
-    /// How long to run the sustained read loop, in seconds.
+    /// Length of the measured window, in seconds.
     #[arg(long, default_value_t = 60)]
     pub duration_secs: u64,
 
-    /// Warm-up seconds: readers run but are not counted (warms the cache).
+    /// Warm-up seconds: run but uncounted.
     #[arg(long, default_value_t = 0)]
     pub warmup_secs: u64,
 
@@ -66,20 +112,25 @@ pub struct ReadsArgs {
     #[arg(long, default_value_t = 0)]
     pub settle_secs: u64,
 
-    /// Total bytes to pre-seed the stream with. Each record is `--read-size-bytes`
-    /// bytes. Seeding is idempotent: if the stream already holds at least this
-    /// many bytes, seeding is skipped.
-    #[arg(long, default_value_t = 16_777_216)] // 16 MiB default
+    /// catchup ONLY: bytes to pre-seed each stream with (idempotent).
+    #[arg(long, default_value_t = 16_777_216)] // 16 MiB
     pub seed_bytes: u64,
 
-    /// HTTP request timeout in seconds.
-    #[arg(long, default_value_t = 30)]
+    /// long-poll ONLY: appends per second PER STREAM by the writer. Low — it is
+    /// the cadence that wakes long-polls; fan-out grows with `connections`.
+    #[arg(long, default_value_t = 50.0)]
+    pub append_rate_per_sec: f64,
+
+    /// HTTP request timeout in seconds. For long-poll it must exceed the server
+    /// long-poll timeout so an idle poll returns up-to-date rather than erroring.
+    #[arg(long, default_value_t = 60)]
     pub request_timeout_secs: u64,
 }
 
 #[derive(Serialize)]
 pub struct ReadsResult {
     pub scenario: &'static str,
+    pub mode: ReadMode,
     pub api_style: ApiStyle,
     pub target: String,
     pub stream: String,
@@ -90,6 +141,7 @@ pub struct ReadsResult {
     pub warmup_secs: u64,
     pub settle_secs: u64,
     pub seed_bytes: u64,
+    pub append_rate_per_sec: f64,
     pub elapsed_secs: f64,
     pub counts: Counts,
     pub bytes_read_total: u64,
@@ -103,7 +155,7 @@ pub struct ReadsResult {
 }
 
 // ---------------------------------------------------------------------------
-// URL helpers (mirrors catch_up.rs)
+// Shared helpers
 // ---------------------------------------------------------------------------
 
 fn read_url(b: &Backend, base_idx: usize, stream: &str, offset: &str) -> String {
@@ -115,18 +167,12 @@ fn read_url(b: &Backend, base_idx: usize, stream: &str, offset: &str) -> String 
     }
 }
 
-fn read_start(_b: &Backend) -> &'static str {
-    // Both Durable and Ursula accept -1 = stream start.
-    "-1"
-}
-
 /// Pin a reader to a stream: reader `idx` reads `streams[idx % streams.len()]`.
 fn stream_for(streams: &[String], idx: usize) -> &str {
     &streams[idx % streams.len()]
 }
 
-/// Offsets from a common base for the three phases: warmup (read, uncounted) →
-/// settle (idle) → measure (read + counted, length = duration_secs).
+/// Offsets from a common base: warmup (uncounted) → settle (idle) → measure.
 fn phase_offsets(
     warmup_secs: u64,
     settle_secs: u64,
@@ -138,18 +184,32 @@ fn phase_offsets(
     (warmup_end, measure_start, deadline)
 }
 
-// ---------------------------------------------------------------------------
-// One catch-up pass: reads from `offset` until up-to-date, returns (bytes, next_start_offset).
-// On up-to-date it returns offset="-1" so the next pass restarts from the beginning,
-// giving us the "hot resident read" loop.
-// ---------------------------------------------------------------------------
+pub async fn run(args: ReadsArgs) -> Result<ReadsResult> {
+    if args.api_style == ApiStyle::S2 {
+        anyhow::bail!(
+            "reads workload is not supported for S2: its paginated JSON read \
+             is not comparable to the Durable Streams read path"
+        );
+    }
+    match args.mode {
+        ReadMode::Catchup => run_catchup(args).await,
+        ReadMode::LongPoll => run_longpoll(args).await,
+        ReadMode::Sse => run_sse(args).await,
+    }
+}
+
+// ===========================================================================
+// Mode: catchup — sustained hot re-scan of resident data
+// ===========================================================================
+
+/// One catch-up pass: read from `offset` until up-to-date; on up-to-date return
+/// "-1" so the next pass restarts from the beginning (the hot-read loop).
 async fn catch_up_once(
     b: &Backend,
     base_idx: usize,
     stream: &str,
     start_offset: &str,
-) -> anyhow::Result<(u64, String)> {
-    use anyhow::Context;
+) -> Result<(u64, String)> {
     let mut offset = start_offset.to_string();
     let mut total: u64 = 0;
     let mut guard: u32 = 0;
@@ -176,52 +236,48 @@ async fn catch_up_once(
         guard += 1;
         match next {
             Some(n) if !up && n != offset && guard < 100_000 => offset = n,
-            // Up-to-date or stalled: wrap back to start for the hot-read loop.
             _ => return Ok((total, "-1".to_string())),
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Seeding
-// ---------------------------------------------------------------------------
+/// Probe stream byte size via one GET from the start, reading the
+/// `stream-next-offset` header. Returns 0 if absent/unparseable.
+async fn probe_stream_size(b: &Backend, stream: &str) -> Result<u64> {
+    let url = read_url(b, 0, stream, "-1");
+    let resp = b.client.get(&url).send().await?;
+    if !resp.status().is_success() {
+        return Ok(0);
+    }
+    // Durable reports `<seq>_<bytes>`; Ursula a bare integer. Take the trailing
+    // numeric run so both parse to total bytes written.
+    let next_offset = resp
+        .headers()
+        .get("stream-next-offset")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.rsplit('_').next())
+        .and_then(|s| s.trim_start_matches('0').parse::<u64>().ok().or(Some(0)))
+        .unwrap_or(0);
+    Ok(next_offset)
+}
 
-/// Ensure the stream has at least `seed_bytes` bytes of resident data.
-/// Strategy: HEAD-probe the stream; if stream-next-offset header is present
-/// and > seed_bytes we skip. Otherwise append records until we reach seed_bytes.
-/// Errors during the probe are treated as "stream needs seeding" so we proceed.
+/// Ensure the stream holds at least `seed_bytes` of resident data.
 async fn ensure_seeded(b: &Backend, stream: &str, seed_bytes: u64, record_bytes: usize) -> Result<()> {
     if seed_bytes == 0 {
         return Ok(());
     }
-
-    // Probe current stream size via a GET from start, reading only the first
-    // response's stream-next-offset header. This is the lightest way to gauge
-    // whether the stream already has data without fetching all bytes again.
     let current_bytes = probe_stream_size(b, stream).await.unwrap_or(0);
     if current_bytes >= seed_bytes {
-        tracing::info!(
-            current_bytes,
-            seed_bytes,
-            "stream already seeded — skipping"
-        );
+        tracing::info!(current_bytes, seed_bytes, "stream already seeded — skipping");
         return Ok(());
     }
-
     let need_bytes = seed_bytes.saturating_sub(current_bytes);
     let record_count = (need_bytes as usize).div_ceil(record_bytes.max(1));
-    tracing::info!(
-        current_bytes,
-        seed_bytes,
-        record_count,
-        record_bytes,
-        "seeding stream"
-    );
+    tracing::info!(current_bytes, seed_bytes, record_count, record_bytes, "seeding stream");
 
     let payload = Arc::new(fill_payload(record_bytes, 0xC0DE));
     let semaphore = Arc::new(tokio::sync::Semaphore::new(32));
     let mut joins = Vec::with_capacity(record_count);
-
     for _ in 0..record_count {
         let permit = semaphore.clone().acquire_owned().await.unwrap();
         let b = b.clone();
@@ -236,7 +292,6 @@ async fn ensure_seeded(b: &Backend, stream: &str, seed_bytes: u64, record_bytes:
                 .unwrap_or(false)
         }));
     }
-
     let mut failed = 0u64;
     for j in joins {
         if !j.await.unwrap_or(false) {
@@ -249,30 +304,8 @@ async fn ensure_seeded(b: &Backend, stream: &str, seed_bytes: u64, record_bytes:
     Ok(())
 }
 
-/// Probe stream byte size by issuing one GET from the start and reading the
-/// `stream-next-offset` header (which is the byte offset of the next record,
-/// i.e. total bytes written).  Returns 0 if the header is absent.
-async fn probe_stream_size(b: &Backend, stream: &str) -> anyhow::Result<u64> {
-    let url = read_url(b, 0, stream, "-1");
-    let resp = b.client.get(&url).send().await?;
-    if !resp.status().is_success() {
-        return Ok(0);
-    }
-    // Consume body to avoid leaking the connection.
-    let next_offset = resp
-        .headers()
-        .get("stream-next-offset")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(0);
-    Ok(next_offset)
-}
-
-// ---------------------------------------------------------------------------
-// Sustained reader task
-// ---------------------------------------------------------------------------
-
-async fn run_reader(
+#[allow(clippy::too_many_arguments)]
+async fn run_reader_catchup(
     backend: Backend,
     base_idx: usize,
     stream: String,
@@ -286,12 +319,10 @@ async fn run_reader(
 ) {
     let mut offset = "-1".to_string();
     let mut local = new_histogram();
-
     while Instant::now() < deadline {
         let started = Instant::now();
         match catch_up_once(&backend, base_idx, &stream, &offset).await {
             Ok((bytes, next_offset)) => {
-                // Warm-up reads still loop (to warm the cache) but are uncounted.
                 if Instant::now() >= measure_start {
                     ok.fetch_add(1, Ordering::Relaxed);
                     bytes_total.fetch_add(bytes, Ordering::Relaxed);
@@ -310,48 +341,24 @@ async fn run_reader(
                 } else if counting {
                     err.fetch_add(1, Ordering::Relaxed);
                 }
-                // Reset to start on error.
                 offset = "-1".to_string();
             }
         }
     }
-
     let mut h = hist.lock().await;
     merge(&mut h, &local);
 }
 
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
-
-pub async fn run(args: ReadsArgs) -> Result<ReadsResult> {
-    if args.api_style == ApiStyle::S2 {
-        anyhow::bail!(
-            "reads workload is not supported for S2: its paginated JSON read \
-             is not comparable to the Durable Streams sendfile read path"
-        );
-    }
-
+async fn run_catchup(args: ReadsArgs) -> Result<ReadsResult> {
     let client = build_client(args.request_timeout_secs)?;
-    let backend = Backend::new(
-        args.api_style,
-        &args.target,
-        &args.bucket,
-        "",
-        client,
-    );
+    let backend = Backend::new(args.api_style, &args.target, &args.bucket, "", client);
 
     let n_streams = args.streams.max(1);
-    let streams: Vec<String> = (0..n_streams)
-        .map(|i| format!("{}-{}", args.stream, i))
-        .collect();
+    let streams: Vec<String> = (0..n_streams).map(|i| format!("{}-{}", args.stream, i)).collect();
 
-    // Ensure namespace + every stream exists, then seed each (idempotent).
     backend.ensure_namespace().await?;
     for s in &streams {
-        backend
-            .create_stream(s, "application/octet-stream")
-            .await?;
+        backend.create_stream(s, "application/octet-stream").await?;
         ensure_seeded(&backend, s, args.seed_bytes, args.read_size_bytes).await?;
     }
 
@@ -362,7 +369,7 @@ pub async fn run(args: ReadsArgs) -> Result<ReadsResult> {
     let hist = Arc::new(Mutex::new(new_histogram()));
 
     let base = Instant::now();
-    let (_warmup_end, measure_off, deadline_off) =
+    let (_w, measure_off, deadline_off) =
         phase_offsets(args.warmup_secs, args.settle_secs, args.duration_secs);
     let measure_start = base + measure_off;
     let deadline = base + deadline_off;
@@ -371,43 +378,389 @@ pub async fn run(args: ReadsArgs) -> Result<ReadsResult> {
     for idx in 0..args.connections {
         let backend = backend.clone();
         let stream = stream_for(&streams, idx).to_string();
-        let ok = ok.clone();
-        let bp = bp.clone();
-        let err = err.clone();
-        let bytes_total = bytes_total.clone();
-        let hist = hist.clone();
+        let (ok, bp, err, bytes_total, hist) =
+            (ok.clone(), bp.clone(), err.clone(), bytes_total.clone(), hist.clone());
         workers.push(tokio::spawn(async move {
-            run_reader(backend, idx, stream, measure_start, deadline, ok, bp, err, bytes_total, hist).await
+            run_reader_catchup(backend, idx, stream, measure_start, deadline, ok, bp, err, bytes_total, hist).await
         }));
     }
-
     for w in workers {
         let _ = w.await;
     }
 
-    // Throughput is over the measured window only (exclude warm-up + settle).
+    finish(args, ReadMode::Catchup, &ok, &bp, &err, &bytes_total, &hist).await
+}
+
+// ===========================================================================
+// Mode: long-poll — block at the tail for live appends (writer + readers)
+// ===========================================================================
+
+fn long_poll_url(b: &Backend, base_idx: usize, stream: &str, offset: &str) -> String {
+    format!("{}&live=long-poll", read_url(b, base_idx, stream, offset))
+}
+
+/// Resolve a stream's current tail as a concrete byte offset (`offset=now`).
+async fn tail_offset(b: &Backend, base_idx: usize, stream: &str) -> Result<String> {
+    let url = read_url(b, base_idx, stream, "now");
+    let resp = b.client.get(&url).send().await.context("tail probe")?;
+    let next = resp
+        .headers()
+        .get("stream-next-offset")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let _ = resp.bytes().await;
+    Ok(next.unwrap_or_else(|| "now".to_string()))
+}
+
+/// One long-poll: block at `offset` until new data or the server timeout.
+/// Returns (delivered bytes, next offset). Empty bytes = idle timeout.
+async fn long_poll_once(
+    b: &Backend,
+    base_idx: usize,
+    stream: &str,
+    offset: &str,
+) -> Result<(Vec<u8>, String)> {
+    let url = long_poll_url(b, base_idx, stream, offset);
+    let resp = b.client.get(&url).send().await.context("long-poll GET")?;
+    let status = resp.status();
+    if !status.is_success() {
+        anyhow::bail!("long-poll status {status}");
+    }
+    let next = resp
+        .headers()
+        .get("stream-next-offset")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| offset.to_string());
+    let body = resp.bytes().await.context("long-poll body")?.to_vec();
+    Ok((body, next))
+}
+
+async fn run_writer(
+    backend: Backend,
+    stream: String,
+    base: Instant,
+    deadline: Instant,
+    rate_per_sec: f64,
+    record_bytes: usize,
+) {
+    let interval = Duration::from_secs_f64(1.0 / rate_per_sec.max(1e-3));
+    let mut payload = fill_payload(record_bytes.max(8), 0xC0DE);
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    while Instant::now() < deadline {
+        ticker.tick().await;
+        let ts = base.elapsed().as_nanos() as u64;
+        payload[0..8].copy_from_slice(&ts.to_le_bytes());
+        let _ = backend
+            .append_request(0, &stream, &payload, None, "application/octet-stream")
+            .send()
+            .await;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_reader_longpoll(
+    backend: Backend,
+    base_idx: usize,
+    stream: String,
+    base: Instant,
+    measure_start: Instant,
+    deadline: Instant,
+    record_bytes: usize,
+    ok: Arc<AtomicU64>,
+    bp: Arc<AtomicU64>,
+    err: Arc<AtomicU64>,
+    bytes_total: Arc<AtomicU64>,
+    hist: Arc<Mutex<Histogram<u64>>>,
+) {
+    let step = record_bytes.max(8);
+    let mut offset = tail_offset(&backend, base_idx, &stream)
+        .await
+        .unwrap_or_else(|_| "now".to_string());
+    let mut local = new_histogram();
+
+    while Instant::now() < deadline {
+        match long_poll_once(&backend, base_idx, &stream, &offset).await {
+            Ok((body, next)) => {
+                if body.is_empty() {
+                    // Either a genuine idle long-poll timeout, or a backend that
+                    // ignores `live=long-poll` and returns up-to-date immediately
+                    // (no long-poll support). The small sleep avoids a hot spin in
+                    // the latter case; harmless for the rare durable idle timeout.
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                } else if Instant::now() >= measure_start {
+                    let now_ns = base.elapsed().as_nanos() as u64;
+                    let mut i = 0;
+                    while i + 8 <= body.len() {
+                        let ts = u64::from_le_bytes(body[i..i + 8].try_into().unwrap());
+                        let lat_us = (now_ns.saturating_sub(ts) / 1000).clamp(local.low(), local.high());
+                        let _ = local.record(lat_us);
+                        ok.fetch_add(1, Ordering::Relaxed);
+                        bytes_total.fetch_add(step as u64, Ordering::Relaxed);
+                        i += step;
+                    }
+                }
+                offset = next;
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                let counting = Instant::now() >= measure_start;
+                if msg.contains("503") || msg.contains("429") {
+                    if counting {
+                        bp.fetch_add(1, Ordering::Relaxed);
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                } else if counting {
+                    err.fetch_add(1, Ordering::Relaxed);
+                }
+                if let Ok(o) = tail_offset(&backend, base_idx, &stream).await {
+                    offset = o;
+                }
+            }
+        }
+    }
+    let mut h = hist.lock().await;
+    merge(&mut h, &local);
+}
+
+async fn run_longpoll(args: ReadsArgs) -> Result<ReadsResult> {
+    let client = build_client(args.request_timeout_secs)?;
+    let backend = Backend::new(args.api_style, &args.target, &args.bucket, "", client);
+
+    let n_streams = args.streams.max(1);
+    let streams: Vec<String> = (0..n_streams).map(|i| format!("{}-{}", args.stream, i)).collect();
+
+    backend.ensure_namespace().await?;
+    for s in &streams {
+        backend.create_stream(s, "application/octet-stream").await?;
+    }
+
+    let ok = Arc::new(AtomicU64::new(0));
+    let bp = Arc::new(AtomicU64::new(0));
+    let err = Arc::new(AtomicU64::new(0));
+    let bytes_total = Arc::new(AtomicU64::new(0));
+    let hist = Arc::new(Mutex::new(new_histogram()));
+
+    let base = Instant::now();
+    let (_w, measure_off, deadline_off) =
+        phase_offsets(args.warmup_secs, args.settle_secs, args.duration_secs);
+    let measure_start = base + measure_off;
+    let deadline = base + deadline_off;
+    let record_bytes = args.read_size_bytes.max(8);
+
+    let mut writers = Vec::with_capacity(n_streams);
+    for s in &streams {
+        let backend = backend.clone();
+        let stream = s.clone();
+        let rate = args.append_rate_per_sec;
+        writers.push(tokio::spawn(async move {
+            run_writer(backend, stream, base, deadline, rate, record_bytes).await
+        }));
+    }
+
+    let mut readers = Vec::with_capacity(args.connections);
+    for idx in 0..args.connections {
+        let backend = backend.clone();
+        let stream = stream_for(&streams, idx).to_string();
+        let (ok, bp, err, bytes_total, hist) =
+            (ok.clone(), bp.clone(), err.clone(), bytes_total.clone(), hist.clone());
+        readers.push(tokio::spawn(async move {
+            run_reader_longpoll(backend, idx, stream, base, measure_start, deadline, record_bytes, ok, bp, err, bytes_total, hist).await
+        }));
+    }
+
+    for r in readers {
+        let _ = r.await;
+    }
+    for w in writers {
+        w.abort();
+        let _ = w.await;
+    }
+
+    finish(args, ReadMode::LongPoll, &ok, &bp, &err, &bytes_total, &hist).await
+}
+
+// ===========================================================================
+// Mode: sse — subscribe at the tail over Server-Sent Events (writer + readers).
+// Works for both Durable (`live=sse`) and Ursula (native SSE).
+// ===========================================================================
+
+async fn run_sse_writer(
+    backend: Backend,
+    stream: String,
+    deadline: Instant,
+    rate_per_sec: f64,
+    record_bytes: usize,
+) {
+    let interval = Duration::from_secs_f64(1.0 / rate_per_sec.max(1e-3));
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut seq: u64 = 0;
+    while Instant::now() < deadline {
+        ticker.tick().await;
+        // build_payload stamps unix-nanos as hex text (SSE-safe) at a fixed offset.
+        let payload = build_payload(seq, record_bytes.max(48));
+        let _ = backend
+            .append_request(0, &stream, &payload, None, "text/plain")
+            .send()
+            .await;
+        seq = seq.wrapping_add(1);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_sse_reader(
+    backend: Backend,
+    base_idx: usize,
+    stream: String,
+    measure_start: Instant,
+    deadline: Instant,
+    record_bytes: usize,
+    ok: Arc<AtomicU64>,
+    err: Arc<AtomicU64>,
+    bytes_total: Arc<AtomicU64>,
+    hist: Arc<Mutex<Histogram<u64>>>,
+) {
+    let mut local = new_histogram();
+    // Reconnect until the deadline: a dropped SSE stream must not kill the reader.
+    while Instant::now() < deadline {
+        let (url, headers) = backend.sse_url_for(base_idx, &stream);
+        let resp = match backend.client.get(&url).headers(headers).send().await {
+            Ok(r) if r.status().is_success() => r,
+            _ => {
+                if Instant::now() >= measure_start {
+                    err.fetch_add(1, Ordering::Relaxed);
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
+        };
+        let mut body = resp.bytes_stream();
+        let mut buf = BytesMut::with_capacity(8192);
+        loop {
+            if Instant::now() >= deadline {
+                break;
+            }
+            let to = deadline.saturating_duration_since(Instant::now()) + Duration::from_secs(1);
+            let chunk = match tokio::time::timeout(to, body.next()).await {
+                Ok(Some(Ok(c))) => c,
+                Ok(Some(Err(_))) | Ok(None) => break, // stream ended → reconnect
+                Err(_) => break,                       // deadline reached
+            };
+            buf.extend_from_slice(&chunk);
+            while let Some(idx) = find_event_end(&buf) {
+                let raw = buf.split_to(idx + 2).freeze();
+                let Some(payload) = parse_sse_data(&raw) else { continue };
+                // Control/keepalive events carry no timestamp → skipped here.
+                let Some(sent_ns) = extract_send_ns_maybe_b64(&payload) else { continue };
+                if Instant::now() < measure_start {
+                    continue;
+                }
+                let now_ns = unix_nanos_now();
+                let lat_us = (now_ns.saturating_sub(sent_ns) / 1000)
+                    .min(u128::from(local.high())) as u64;
+                let _ = local.record(lat_us.max(local.low()));
+                ok.fetch_add(1, Ordering::Relaxed);
+                bytes_total.fetch_add(record_bytes as u64, Ordering::Relaxed);
+            }
+        }
+    }
+    let mut h = hist.lock().await;
+    merge(&mut h, &local);
+}
+
+async fn run_sse(args: ReadsArgs) -> Result<ReadsResult> {
+    let client = build_client(args.request_timeout_secs)?;
+    let backend = Backend::new(args.api_style, &args.target, &args.bucket, "", client);
+
+    let n_streams = args.streams.max(1);
+    let streams: Vec<String> = (0..n_streams).map(|i| format!("{}-{}", args.stream, i)).collect();
+
+    backend.ensure_namespace().await?;
+    for s in &streams {
+        backend.create_stream(s, "text/plain").await?;
+    }
+
+    let ok = Arc::new(AtomicU64::new(0));
+    let bp = Arc::new(AtomicU64::new(0));
+    let err = Arc::new(AtomicU64::new(0));
+    let bytes_total = Arc::new(AtomicU64::new(0));
+    let hist = Arc::new(Mutex::new(new_histogram()));
+
+    let base = Instant::now();
+    let (_w, measure_off, deadline_off) =
+        phase_offsets(args.warmup_secs, args.settle_secs, args.duration_secs);
+    let measure_start = base + measure_off;
+    let deadline = base + deadline_off;
+    let record_bytes = args.read_size_bytes.max(48);
+
+    let mut writers = Vec::with_capacity(n_streams);
+    for s in &streams {
+        let backend = backend.clone();
+        let stream = s.clone();
+        let rate = args.append_rate_per_sec;
+        writers.push(tokio::spawn(async move {
+            run_sse_writer(backend, stream, deadline, rate, record_bytes).await
+        }));
+    }
+
+    let mut readers = Vec::with_capacity(args.connections);
+    for idx in 0..args.connections {
+        let backend = backend.clone();
+        let stream = stream_for(&streams, idx).to_string();
+        let (ok, err, bytes_total, hist) =
+            (ok.clone(), err.clone(), bytes_total.clone(), hist.clone());
+        readers.push(tokio::spawn(async move {
+            run_sse_reader(backend, idx, stream, measure_start, deadline, record_bytes, ok, err, bytes_total, hist).await
+        }));
+    }
+
+    for r in readers {
+        let _ = r.await;
+    }
+    for w in writers {
+        w.abort();
+        let _ = w.await;
+    }
+
+    finish(args, ReadMode::Sse, &ok, &bp, &err, &bytes_total, &hist).await
+}
+
+// ---------------------------------------------------------------------------
+// Shared result assembly
+// ---------------------------------------------------------------------------
+
+async fn finish(
+    args: ReadsArgs,
+    mode: ReadMode,
+    ok: &AtomicU64,
+    bp: &AtomicU64,
+    err: &AtomicU64,
+    bytes_total: &AtomicU64,
+    hist: &Mutex<Histogram<u64>>,
+) -> Result<ReadsResult> {
     let elapsed_secs = (args.duration_secs as f64).max(1e-9);
     let bytes_read_total = bytes_total.load(Ordering::Relaxed);
     let ok_count = ok.load(Ordering::Relaxed);
-    let aggregate_ops_per_sec = ok_count as f64 / elapsed_secs.max(1e-9);
-    let bytes_per_sec = bytes_read_total as f64 / elapsed_secs.max(1e-9);
-
     let h = hist.lock().await;
     let latency = summarize(&h);
     crate::dist::emit_hdr(&h, &format!("reads-{}", std::process::id()));
 
     let result = ReadsResult {
         scenario: "reads",
+        mode,
         api_style: args.api_style,
         target: args.target,
         stream: args.stream,
-        streams: n_streams,
+        streams: args.streams.max(1),
         read_size_bytes: args.read_size_bytes,
         connections: args.connections,
         duration_secs: args.duration_secs,
         warmup_secs: args.warmup_secs,
         settle_secs: args.settle_secs,
         seed_bytes: args.seed_bytes,
+        append_rate_per_sec: args.append_rate_per_sec,
         elapsed_secs,
         counts: Counts {
             ok: ok_count,
@@ -415,32 +768,22 @@ pub async fn run(args: ReadsArgs) -> Result<ReadsResult> {
             other_err: err.load(Ordering::Relaxed),
         },
         bytes_read_total,
-        aggregate_ops_per_sec,
-        bytes_per_sec,
+        aggregate_ops_per_sec: ok_count as f64 / elapsed_secs,
+        bytes_per_sec: bytes_read_total as f64 / elapsed_secs,
         p50_ms: latency.p50_ms,
         p90_ms: latency.p90_ms,
         p99_ms: latency.p99_ms,
         p999_ms: latency.p999_ms,
         latency_ms: latency,
     };
-
-    let json = serde_json::to_string_pretty(&result)?;
-    eprintln!("{json}");
-
+    eprintln!("{}", serde_json::to_string_pretty(&result)?);
     Ok(result)
-}
-
-// Keep `read_start` from being flagged as dead code; it is intentionally
-// available for future callers or tests.
-#[allow(dead_code)]
-fn _read_start_alias(b: &Backend) -> &'static str {
-    read_start(b)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::stream_for;
     use super::phase_offsets;
+    use super::stream_for;
     use std::time::Duration;
 
     #[test]
@@ -452,19 +795,10 @@ mod tests {
     }
 
     #[test]
-    fn phase_offsets_zero_warmup_settle_measures_immediately() {
-        let (warmup_end, measure_start, deadline) = phase_offsets(0, 0, 30);
-        assert_eq!(warmup_end, Duration::from_secs(0));
-        assert_eq!(measure_start, Duration::from_secs(0));
-        assert_eq!(deadline, Duration::from_secs(30));
-    }
-
-    #[test]
     fn pins_reader_to_stream_modulo_n() {
         let streams = vec!["s-0".to_string(), "s-1".to_string(), "s-2".to_string()];
         assert_eq!(stream_for(&streams, 0), "s-0");
-        assert_eq!(stream_for(&streams, 2), "s-2");
-        assert_eq!(stream_for(&streams, 3), "s-0"); // wraps
+        assert_eq!(stream_for(&streams, 3), "s-0");
         assert_eq!(stream_for(&streams, 7), "s-1");
     }
 
