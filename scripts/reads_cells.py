@@ -69,7 +69,16 @@ def status_of(path, stream_count, image_digest):
     cell = _load(path)["cells"].get(str(stream_count))
     if cell is None or cell.get("image_digest") != image_digest:
         return "absent"
-    return "done" if cell.get("complete") else "absent"
+    if not cell.get("complete"):
+        return "absent"
+    # A completed cell whose sweep left an errored connection level must NOT be
+    # treated as "done" — the runner skips only on "done", so returning "error"
+    # here lets a resume RE-RUN the cell and retry the failed levels (conn_status
+    # returns "absent" for the errored sub-cells, "done" for the ok ones). This
+    # mirrors catchup/sustained, which re-run error cells rather than stranding them.
+    if any(sub.get("status") == "error" for sub in cell.get("connections", {}).values()):
+        return "error"
+    return "done"
 
 
 def all_cells(path):

@@ -41,6 +41,25 @@ class ReadsCellsTest(unittest.TestCase):
         self.assertEqual(len(cells), 1)
         self.assertEqual(set(cells[0]["connections"].keys()), {"8", "32"})
 
+    def test_completed_cell_with_errored_level_reruns(self):
+        # A completed cell whose sweep left an errored level must report "error"
+        # (not "done") so a resume re-runs it instead of stranding the failure.
+        self._rec(10, 8)  # ok
+        reads_cells.record(self.p, 10, 32, image_digest="dig1",
+                           ops_per_sec=0.0, bytes_per_sec=0.0, p50=None, p99=None,
+                           backpressure=0, other_err=0, status="error", reason="no_reads")
+        reads_cells.mark_complete(self.p, 10, "dig1")
+        self.assertEqual(reads_cells.status_of(self.p, 10, "dig1"), "error")
+        # the ok level stays "done"; the errored level is "absent" so it re-runs
+        self.assertEqual(reads_cells.conn_status(self.p, 10, 8, "dig1"), "done")
+        self.assertEqual(reads_cells.conn_status(self.p, 10, 32, "dig1"), "absent")
+
+    def test_all_ok_completed_cell_is_done(self):
+        self._rec(10, 8)
+        self._rec(10, 32)
+        reads_cells.mark_complete(self.p, 10, "dig1")
+        self.assertEqual(reads_cells.status_of(self.p, 10, "dig1"), "done")
+
 
 import json as _json
 import report as _report
