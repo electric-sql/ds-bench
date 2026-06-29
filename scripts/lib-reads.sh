@@ -64,6 +64,11 @@ run_reads_cell() {
       echo "[reads $mode n$sc c$conn] already done, skip" >&2; continue
     fi
     export READS_CONN="$conn"
+    # _sat_cell_dir (lib-saturate) builds the cell path from $SAT_SC under `set -u`.
+    # Encode the connection level into SAT_SC so each (sc,conn) gets its OWN cell dir
+    # (.../n<sc>-c<conn>/p1-r1) — otherwise every connection level would overwrite the
+    # same merged.json. READS_SC stays the bare integer used for `--streams`.
+    export SAT_SC="${sc}-c${conn}"
     SAT_REP=1; reset_state "$mode" >&2
     "$fn" "$pods" >/dev/null   # progress on stderr; metrics from merged.json below
 
