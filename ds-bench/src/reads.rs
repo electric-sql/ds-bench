@@ -58,6 +58,14 @@ pub struct ReadsArgs {
     #[arg(long, default_value_t = 60)]
     pub duration_secs: u64,
 
+    /// Warm-up seconds: readers run but are not counted (warms the cache).
+    #[arg(long, default_value_t = 0)]
+    pub warmup_secs: u64,
+
+    /// Settle seconds: idle gap between warm-up and the measured window.
+    #[arg(long, default_value_t = 0)]
+    pub settle_secs: u64,
+
     /// Total bytes to pre-seed the stream with. Each record is `--read-size-bytes`
     /// bytes. Seeding is idempotent: if the stream already holds at least this
     /// many bytes, seeding is skipped.
@@ -79,6 +87,8 @@ pub struct ReadsResult {
     pub read_size_bytes: usize,
     pub connections: usize,
     pub duration_secs: u64,
+    pub warmup_secs: u64,
+    pub settle_secs: u64,
     pub seed_bytes: u64,
     pub elapsed_secs: f64,
     pub counts: Counts,
@@ -113,6 +123,19 @@ fn read_start(_b: &Backend) -> &'static str {
 /// Pin a reader to a stream: reader `idx` reads `streams[idx % streams.len()]`.
 fn stream_for(streams: &[String], idx: usize) -> &str {
     &streams[idx % streams.len()]
+}
+
+/// Offsets from a common base for the three phases: warmup (read, uncounted) →
+/// settle (idle) → measure (read + counted, length = duration_secs).
+fn phase_offsets(
+    warmup_secs: u64,
+    settle_secs: u64,
+    duration_secs: u64,
+) -> (Duration, Duration, Duration) {
+    let warmup_end = Duration::from_secs(warmup_secs);
+    let measure_start = Duration::from_secs(warmup_secs + settle_secs);
+    let deadline = Duration::from_secs(warmup_secs + settle_secs + duration_secs);
+    (warmup_end, measure_start, deadline)
 }
 
 // ---------------------------------------------------------------------------
@@ -253,6 +276,7 @@ async fn run_reader(
     backend: Backend,
     base_idx: usize,
     stream: String,
+    measure_start: Instant,
     deadline: Instant,
     ok: Arc<AtomicU64>,
     bp: Arc<AtomicU64>,
@@ -267,17 +291,23 @@ async fn run_reader(
         let started = Instant::now();
         match catch_up_once(&backend, base_idx, &stream, &offset).await {
             Ok((bytes, next_offset)) => {
-                ok.fetch_add(1, Ordering::Relaxed);
-                bytes_total.fetch_add(bytes, Ordering::Relaxed);
-                record(&mut local, started);
+                // Warm-up reads still loop (to warm the cache) but are uncounted.
+                if Instant::now() >= measure_start {
+                    ok.fetch_add(1, Ordering::Relaxed);
+                    bytes_total.fetch_add(bytes, Ordering::Relaxed);
+                    record(&mut local, started);
+                }
                 offset = next_offset;
             }
             Err(e) => {
                 let msg = e.to_string();
+                let counting = Instant::now() >= measure_start;
                 if msg.contains("503") || msg.contains("429") {
-                    bp.fetch_add(1, Ordering::Relaxed);
+                    if counting {
+                        bp.fetch_add(1, Ordering::Relaxed);
+                    }
                     tokio::time::sleep(Duration::from_millis(20)).await;
-                } else {
+                } else if counting {
                     err.fetch_add(1, Ordering::Relaxed);
                 }
                 // Reset to start on error.
@@ -331,8 +361,11 @@ pub async fn run(args: ReadsArgs) -> Result<ReadsResult> {
     let bytes_total = Arc::new(AtomicU64::new(0));
     let hist = Arc::new(Mutex::new(new_histogram()));
 
-    let deadline = Instant::now() + Duration::from_secs(args.duration_secs);
-    let start = Instant::now();
+    let base = Instant::now();
+    let (_warmup_end, measure_off, deadline_off) =
+        phase_offsets(args.warmup_secs, args.settle_secs, args.duration_secs);
+    let measure_start = base + measure_off;
+    let deadline = base + deadline_off;
 
     let mut workers = Vec::with_capacity(args.connections);
     for idx in 0..args.connections {
@@ -344,7 +377,7 @@ pub async fn run(args: ReadsArgs) -> Result<ReadsResult> {
         let bytes_total = bytes_total.clone();
         let hist = hist.clone();
         workers.push(tokio::spawn(async move {
-            run_reader(backend, idx, stream, deadline, ok, bp, err, bytes_total, hist).await
+            run_reader(backend, idx, stream, measure_start, deadline, ok, bp, err, bytes_total, hist).await
         }));
     }
 
@@ -352,8 +385,8 @@ pub async fn run(args: ReadsArgs) -> Result<ReadsResult> {
         let _ = w.await;
     }
 
-    let elapsed = start.elapsed();
-    let elapsed_secs = elapsed.as_secs_f64();
+    // Throughput is over the measured window only (exclude warm-up + settle).
+    let elapsed_secs = (args.duration_secs as f64).max(1e-9);
     let bytes_read_total = bytes_total.load(Ordering::Relaxed);
     let ok_count = ok.load(Ordering::Relaxed);
     let aggregate_ops_per_sec = ok_count as f64 / elapsed_secs.max(1e-9);
@@ -372,6 +405,8 @@ pub async fn run(args: ReadsArgs) -> Result<ReadsResult> {
         read_size_bytes: args.read_size_bytes,
         connections: args.connections,
         duration_secs: args.duration_secs,
+        warmup_secs: args.warmup_secs,
+        settle_secs: args.settle_secs,
         seed_bytes: args.seed_bytes,
         elapsed_secs,
         counts: Counts {
@@ -405,6 +440,24 @@ fn _read_start_alias(b: &Backend) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::stream_for;
+    use super::phase_offsets;
+    use std::time::Duration;
+
+    #[test]
+    fn phase_offsets_stack_warmup_settle_measure() {
+        let (warmup_end, measure_start, deadline) = phase_offsets(10, 5, 60);
+        assert_eq!(warmup_end, Duration::from_secs(10));
+        assert_eq!(measure_start, Duration::from_secs(15));
+        assert_eq!(deadline, Duration::from_secs(75));
+    }
+
+    #[test]
+    fn phase_offsets_zero_warmup_settle_measures_immediately() {
+        let (warmup_end, measure_start, deadline) = phase_offsets(0, 0, 30);
+        assert_eq!(warmup_end, Duration::from_secs(0));
+        assert_eq!(measure_start, Duration::from_secs(0));
+        assert_eq!(deadline, Duration::from_secs(30));
+    }
 
     #[test]
     fn pins_reader_to_stream_modulo_n() {

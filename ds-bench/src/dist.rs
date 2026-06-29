@@ -99,6 +99,12 @@ pub struct MergeSummary {
     /// Summed bytes/sec — reads scenario only (cold-tier GB/s, splice MB/s).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bytes_per_sec: Option<f64>,
+    /// Summed backpressure (503/429) responses across pods — reads scenario only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backpressure_total: Option<u64>,
+    /// Summed non-backpressure errors across pods — reads scenario only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub other_err_total: Option<u64>,
 }
 
 /// Accumulators built from scanning the per-pod JSONs in the results dir.
@@ -117,6 +123,9 @@ struct HeadlineAcc {
     /// Summed bytes/sec from reads pods (bytes_per_sec field in per-pod JSON).
     saw_reads: bool,
     reads_bytes_per_sec: f64,
+    /// Summed counts.{backpressure,other_err} from reads pods.
+    reads_backpressure: u64,
+    reads_other_err: u64,
 }
 
 fn scan_headlines(results_dir: Option<&Path>) -> HeadlineAcc {
@@ -162,6 +171,12 @@ fn scan_headlines(results_dir: Option<&Path>) -> HeadlineAcc {
             if let Some(bps) = v.get("bytes_per_sec").and_then(|x| x.as_f64()) {
                 acc.saw_reads = true;
                 acc.reads_bytes_per_sec += bps;
+            }
+            if let Some(counts) = v.get("counts") {
+                acc.reads_backpressure +=
+                    counts.get("backpressure").and_then(|x| x.as_u64()).unwrap_or(0);
+                acc.reads_other_err +=
+                    counts.get("other_err").and_then(|x| x.as_u64()).unwrap_or(0);
             }
         } else {
             // multi-stream-write / mixed (and any future ops/s workload).
@@ -210,6 +225,11 @@ pub fn merge_summary_filtered(
         // No per-pod JSON (e.g. tests merging raw .hdr only): omit all headlines.
         (None, None, None, None, None, None, None)
     };
+    let (backpressure_total, other_err_total) = if acc.saw_reads {
+        (Some(acc.reads_backpressure), Some(acc.reads_other_err))
+    } else {
+        (None, None)
+    };
     Ok(MergeSummary {
         merged_count: h.len(),
         p50_ms: ms(h.value_at_quantile(0.5)),
@@ -224,6 +244,8 @@ pub fn merge_summary_filtered(
         events_per_sec,
         aggregate_events_per_sec,
         bytes_per_sec,
+        backpressure_total,
+        other_err_total,
     })
 }
 
