@@ -39,6 +39,12 @@ pub struct ReadsArgs {
     #[arg(long, default_value = "bench-reads-stream")]
     pub stream: String,
 
+    /// Number of streams to seed and read across. Readers are pinned to
+    /// stream `reader_idx % streams` (the cardinality axis). Stream names are
+    /// `{stream}-{i}` for i in 0..streams.
+    #[arg(long, default_value_t = 1)]
+    pub streams: usize,
+
     /// Payload size per record in bytes (used both for seeding and as the unit
     /// of per-read latency measurement).
     #[arg(long, default_value_t = 4096)]
@@ -69,6 +75,7 @@ pub struct ReadsResult {
     pub api_style: ApiStyle,
     pub target: String,
     pub stream: String,
+    pub streams: usize,
     pub read_size_bytes: usize,
     pub connections: usize,
     pub duration_secs: u64,
@@ -101,6 +108,11 @@ fn read_url(b: &Backend, base_idx: usize, stream: &str, offset: &str) -> String 
 fn read_start(_b: &Backend) -> &'static str {
     // Both Durable and Ursula accept -1 = stream start.
     "-1"
+}
+
+/// Pin a reader to a stream: reader `idx` reads `streams[idx % streams.len()]`.
+fn stream_for(streams: &[String], idx: usize) -> &str {
+    &streams[idx % streams.len()]
 }
 
 // ---------------------------------------------------------------------------
@@ -299,14 +311,19 @@ pub async fn run(args: ReadsArgs) -> Result<ReadsResult> {
         client,
     );
 
-    // Ensure namespace + stream exist.
-    backend.ensure_namespace().await?;
-    backend
-        .create_stream(&args.stream, "application/octet-stream")
-        .await?;
+    let n_streams = args.streams.max(1);
+    let streams: Vec<String> = (0..n_streams)
+        .map(|i| format!("{}-{}", args.stream, i))
+        .collect();
 
-    // Seed if needed (idempotent).
-    ensure_seeded(&backend, &args.stream, args.seed_bytes, args.read_size_bytes).await?;
+    // Ensure namespace + every stream exists, then seed each (idempotent).
+    backend.ensure_namespace().await?;
+    for s in &streams {
+        backend
+            .create_stream(s, "application/octet-stream")
+            .await?;
+        ensure_seeded(&backend, s, args.seed_bytes, args.read_size_bytes).await?;
+    }
 
     let ok = Arc::new(AtomicU64::new(0));
     let bp = Arc::new(AtomicU64::new(0));
@@ -320,7 +337,7 @@ pub async fn run(args: ReadsArgs) -> Result<ReadsResult> {
     let mut workers = Vec::with_capacity(args.connections);
     for idx in 0..args.connections {
         let backend = backend.clone();
-        let stream = args.stream.clone();
+        let stream = stream_for(&streams, idx).to_string();
         let ok = ok.clone();
         let bp = bp.clone();
         let err = err.clone();
@@ -351,6 +368,7 @@ pub async fn run(args: ReadsArgs) -> Result<ReadsResult> {
         api_style: args.api_style,
         target: args.target,
         stream: args.stream,
+        streams: n_streams,
         read_size_bytes: args.read_size_bytes,
         connections: args.connections,
         duration_secs: args.duration_secs,
@@ -382,4 +400,25 @@ pub async fn run(args: ReadsArgs) -> Result<ReadsResult> {
 #[allow(dead_code)]
 fn _read_start_alias(b: &Backend) -> &'static str {
     read_start(b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stream_for;
+
+    #[test]
+    fn pins_reader_to_stream_modulo_n() {
+        let streams = vec!["s-0".to_string(), "s-1".to_string(), "s-2".to_string()];
+        assert_eq!(stream_for(&streams, 0), "s-0");
+        assert_eq!(stream_for(&streams, 2), "s-2");
+        assert_eq!(stream_for(&streams, 3), "s-0"); // wraps
+        assert_eq!(stream_for(&streams, 7), "s-1");
+    }
+
+    #[test]
+    fn single_stream_pins_all_readers_to_it() {
+        let streams = vec!["only-0".to_string()];
+        assert_eq!(stream_for(&streams, 0), "only-0");
+        assert_eq!(stream_for(&streams, 99), "only-0");
+    }
 }
