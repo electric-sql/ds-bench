@@ -42,5 +42,41 @@ class ReadsCellsTest(unittest.TestCase):
         self.assertEqual(set(cells[0]["connections"].keys()), {"8", "32"})
 
 
+import json as _json
+import report as _report
+
+
+class ReadsSuiteStatusTest(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.d, "wal"))
+        self.suite = os.path.join(self.d, "reads-x.json")
+        with open(self.suite, "w") as f:
+            _json.dump({"suite": "reads-x", "workload": "reads",
+                        "cluster": {}, "modes": ["wal"],
+                        "stream_counts": [10],
+                        "reads": {"connection_levels": [8, 32]}}, f)
+
+    def _cells(self):
+        return os.path.join(self.d, "wal", "cells.json")
+
+    def test_incomplete_when_cell_missing(self):
+        self.assertEqual(_report.suite_status(self.suite, self.d), "incomplete")
+
+    def test_complete_when_marked(self):
+        reads_cells.record(self._cells(), 10, 8, image_digest="d", ops_per_sec=1,
+            bytes_per_sec=1, p50=1, p99=2, backpressure=0, other_err=0,
+            status="ok", reason="complete")
+        reads_cells.mark_complete(self._cells(), 10, "d")
+        self.assertEqual(_report.suite_status(self.suite, self.d), "complete")
+
+    def test_errors_when_subcell_errored(self):
+        reads_cells.record(self._cells(), 10, 8, image_digest="d", ops_per_sec=0,
+            bytes_per_sec=0, p50=None, p99=None, backpressure=0, other_err=5,
+            status="error", reason="no_reads")
+        reads_cells.mark_complete(self._cells(), 10, "d")
+        self.assertEqual(_report.suite_status(self.suite, self.d), "errors")
+
+
 if __name__ == "__main__":
     unittest.main()
