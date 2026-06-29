@@ -27,6 +27,8 @@ class Suite:
     def sustained(self):       return dict(self._d.get("sustained", {}))
     @property
     def catchup(self):         return dict(self._d.get("catchup", {}))
+    @property
+    def reads(self):           return dict(self._d.get("reads", {}))
 
     def ladder_for(self, stream_count):
         ladder = self._d["pod_ladder"]
