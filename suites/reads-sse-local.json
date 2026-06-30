@@ -1,0 +1,24 @@
+{
+  "suite": "reads-sse-local",
+  "workload": "reads",
+  "cluster": {
+    "server_machine": "kind",
+    "client_machine": "kind",
+    "client_nodes": 1,
+    "region": "local"
+  },
+  "reads": {
+    "mode": "sse",
+    "read_size_bytes": 256,
+    "append_rate_per_sec": 50,
+    "seed_bytes": 0,
+    "duration_secs": 8,
+    "warmup_secs": 2,
+    "settle_secs": 1,
+    "connection_levels": [16, 64],
+    "pods": 1,
+    "repeats": 1
+  },
+  "modes": ["wal", "ursula"],
+  "stream_counts": [10]
+}

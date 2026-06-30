@@ -18,7 +18,7 @@ measure_reads() {
   local mode="${SAT_MODE:?measure_reads: SAT_MODE unset}"
   local rep="${SAT_REP:-1}"
   local cell_dir; cell_dir="$(_sat_cell_dir "$pods" "$rep")"; mkdir -p "$cell_dir"
-  READS_BENCH_CMD="reads --target ${T_TARGET:?} --api-style ${T_API:?} ${T_NS:-} --streams ${sc} --connections ${conn} --read-size-bytes ${RD_READ_SIZE} --seed-bytes ${RD_SEED} --duration-secs ${RD_DURATION} --warmup-secs ${RD_WARMUP} --settle-secs ${RD_SETTLE}"
+  READS_BENCH_CMD="reads --mode ${RD_MODE:-catchup} --target ${T_TARGET:?} --api-style ${T_API:?} ${T_NS:-} --streams ${sc} --connections ${conn} --read-size-bytes ${RD_READ_SIZE} --seed-bytes ${RD_SEED} --append-rate-per-sec ${RD_APPEND_RATE:-50} --duration-secs ${RD_DURATION} --warmup-secs ${RD_WARMUP} --settle-secs ${RD_SETTLE}"
   local merge_cmd="ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix reads-"
   _run_cell_one "${mode}-reads-n${sc}-c${conn}" "$READS_BENCH_CMD" "reads" "$merge_cmd" "$pods" "$rep" "$cell_dir"
 }
@@ -49,6 +49,8 @@ reads_cells.record(sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), image_digest
 run_reads_cell() {
   local mode="$1" sc="$2" cells_json="$3" digest="$4"
   export SAT_MODE="$mode" READS_SC="$sc"
+  export RD_MODE;      RD_MODE="$(_sat_get s 's.reads.get("mode","catchup")')"
+  export RD_APPEND_RATE; RD_APPEND_RATE="$(_sat_get s 's.reads.get("append_rate_per_sec",50)')"
   export RD_READ_SIZE; RD_READ_SIZE="$(_sat_get s 's.reads.get("read_size_bytes",4096)')"
   export RD_SEED;      RD_SEED="$(_sat_get s 's.reads.get("seed_bytes",16777216)')"
   export RD_DURATION;  RD_DURATION="$(_sat_get s 's.reads.get("duration_secs",60)')"

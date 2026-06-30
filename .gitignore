@@ -25,3 +25,6 @@ __pycache__/
 kubeconfig*
 *-credentials*.json
 service-account*.json
+
+# local beads/dolt issue-tracker state
+.beads/
