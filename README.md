@@ -4,18 +4,19 @@ A reproducible, single-node benchmark harness for durable-stream servers: declar
 
 **Currently supported implementations:** **durable-streams** (Rust), the **Node.js reference server** (`@durable-streams/server`), **ursula**, and **S2 (s2lite)**.
 
-Results from a run across them: **[`results/REPORT.md`](results/REPORT.md)**.
+Results from a full-matrix run across them: **[`results-2026-06-30/REPORT.md`](results-2026-06-30/REPORT.md)** (an earlier baseline is archived under [`results-2026-06-25/`](results-2026-06-25/)).
 
 ## How it works
 
 A suite is a JSON file (`suites/*.json`) that declares the workload, the systems and configs, and the sweep. `scripts/bench` brings up a cluster, deploys each server fresh, drives a Kubernetes client fleet, merges per-pod HDR histograms into fleet-wide percentiles, records per-cell results under `results/<suite>/`, and tears down. Reports regenerate from local results, no cluster required.
 
-Each of the four workloads is its own declarative suite:
+Each workload is its own declarative suite:
 
 - **Write throughput** — *append/s at saturation, plus tail latency and pod memory* — `suites/run-{durable,ursula,s2,node}.json`. Drives concurrent appends across many streams while the client fleet ramps a per-cardinality pod ladder; once server throughput stops climbing it pins the load and confirms the peak append rate, the latency at that peak, and the server's peak pod memory. This *saturation walk* finds the server's ceiling rather than assuming a pod count. The memory figure is the pod cgroup working set (anon plus active page cache), so a resident cache and an OS-paging design are compared on equal terms across every implementation.
 - **Sustained load** — *latency and server-memory stability over time* — `suites/sustained.json`. Holds a fixed, modest append rate across a set of streams for a long window and watches whether latency and the server's resident memory stay flat, surfacing slow drift or leaks that a short burst would miss.
-- **Catch-up / reconnect** — *per-client catch-up latency and body size* — `suites/catchup-{durable,ursula,s2}.json`. Pre-populates a stream, then has many clients reconnect and replay it from the beginning all at once, recording how long each client takes to catch up, how large its response is, and the aggregate replay throughput. Each implementation replays through whatever native read path it offers, whether a snapshot plus the tail since that snapshot or a full scan of the log.
+- **Catch-up / reconnect** — *per-client catch-up latency and body size* — `suites/catchup-{durable,ursula,s2,node}.json`. Pre-populates a stream, then has many clients reconnect and replay it from the beginning all at once, recording how long each client takes to catch up, how large its response is, and the aggregate replay throughput. Each implementation replays through whatever native read path it offers, whether a snapshot plus the tail since that snapshot or a full scan of the log.
 - **SSE fan-out** — *per-event delivery latency and memory vs subscriber count* — `scripts/run-sse.sh`. Has a single writer publish to one stream while a growing number of subscribers stream it, measuring the per-event end-to-end delivery latency as the fan-out widens.
+- **Read scalability** — *delivery/replay latency vs concurrent-connection count, across three read modes* — `suites/reads-{catchup,longpoll,sse-remote}.json`. Sweeps a growing ladder of concurrent read connections against the same stream set and compares how each read path holds up: **catch-up** is a hot resident re-scan (every reader downloads the full stream); **long-poll** and **sse** tail new appends fed by a light per-stream writer, so their metric is per-record delivery latency. This surfaces where the resident-per-reader replay model hits a ceiling and where the streamed, shared-buffer paths keep scaling. `*-local` variants (`reads-local.json`, `reads-sse-local.json`) fit a single kind node.
 
 ## Prerequisites
 
@@ -63,9 +64,9 @@ Adding another implementation comes down to a deployment manifest, a `ds-bench` 
 
 ## Results & reproducing
 
-- **Run** the write-throughput suites individually (`scripts/bench suites/run-<system>.json run`) or all at once with `scripts/run-matrix.sh` (≤3 GKE clusters in parallel).
+- **Run** the write-throughput suites individually (`scripts/bench suites/run-<system>.json run`) or all at once with `scripts/run-matrix.sh` (≤3 GKE clusters in parallel); the read-scalability modes run with `scripts/bench suites/reads-<mode>.json run`.
 - **Raw data:** each run writes its per-cell data under `results/<suite>/` — the `cells.json` result-and-resume store, the merged HDR histograms, and the sidecar `samples.csv`.
-- **Published dataset:** the report and curated data for the run in this repo live in **`results/`**.
+- **Published dataset:** the report and curated per-cell data for a run are snapshotted into a dated directory. The latest is **[`results-2026-06-30/`](results-2026-06-30/)** (full matrix on the durable-streams reactor build, with read-scalability); the **[`results-2026-06-25/`](results-2026-06-25/)** baseline is archived alongside it. Each snapshot carries a `REPORT.md` and a `PROVENANCE.md` (commit hashes, image digests, cell-level status).
 - **Regenerate reports** (purely from local files, no cluster): `scripts/bench suites/<suite>.json report` for most workloads, `python3 scripts/catchup_report.py suites/catchup-*.json` for catch-up, and `scripts/run-sse.sh` for SSE.
 
 ## Tests
@@ -77,7 +78,7 @@ cd scripts && for t in *_test.py; do python3 "$t"; done
 for t in scripts/*_test.sh; do bash "$t"; done
 ```
 
-These cover the suite loader, the per-cell result stores, the saturation classifier, the catch-up and sustained runners, and the report renderers.
+These cover the suite loader, the per-cell result stores, the saturation classifier, the catch-up / sustained / read-scalability runners, and the report renderers.
 
 ## Fairness & disclosure
 
