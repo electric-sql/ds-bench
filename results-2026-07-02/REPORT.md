@@ -36,20 +36,58 @@ Peak append/s at saturation (256 B payloads, saturation pod-ladder per cardinali
 
 ## 2. SSE fan-out (`sse-comparison.md` — 1 stream, 50 ev/s, no cache variant)
 
-Delivery p50 (ms) vs subscribers: durable wal 0.36 / 0.48 / 0.91 / 3.6 at
-1 / 10 / 100 / 1000 subs — sub-ms to 100 subscribers, ~2× better than ursula-disk,
+Delivery latency vs subscriber count (1 stream, 1 writer @ 50 ev/s, writer-paced):
+
+**Delivery p50 (ms)**
+
+| config \ subscribers | 1 | 10 | 100 | 1000 |
+|---|---|---|---|---|
+| wal (cache off) | 0.359 | 0.482 | 0.905 | 3.645 |
+| ursula in-memory | 0.396 | 0.504 | 0.835 | 2.979 |
+| ursula disk | 1.307 | 1.822 | 2.135 | 4.247 |
+
+**Delivery p99 (ms)**
+
+| config \ subscribers | 1 | 10 | 100 | 1000 |
+|---|---|---|---|---|
+| wal (cache off) | 0.577 | 0.717 | 1.276 | 5.079 |
+| ursula in-memory | 0.589 | 0.748 | 1.192 | 4.511 |
+| ursula disk | 1.528 | 2.261 | 2.761 | 5.867 |
+
+Durable wal stays sub-ms through 100 subscribers — ~2× better than ursula-disk,
 on par with ursula-memory. (Single-stream fan-out is a micro-benchmark; the
 spread-subscriber story is §4.)
 
 ## 3. Read scalability (`reads-catchup`, `reads-sse-remote`; long-poll dropped)
 
-- **SSE tail**: durable wal delivers **102.5k records/s to 2048 concurrent
-  connections at p99 2.8–2.9 ms**, flat across 10 → 100 streams. ursula matches at
-  10 streams but degrades to p99 63 ms at 100 streams.
-- **Catch-up (hot resident re-scan)**: both wal and ursula plateau ~2.4 GiB/s at 32
-  connections at 10 streams (durable p99 237 ms vs ursula 517 ms); higher
-  connection levels hit the documented client-pod OOM ceiling (AGENTS.md §8), and
-  ursula @ 100 streams OOMs at every level — client-bound cells, not server data.
+**SSE tail** (`reads-sse-remote`; cell = ops/s @ p99 ms per connection level):
+
+| system, streams | 64 conns | 256 | 1024 | 2048 |
+|---|---|---|---|---|
+| wal, 10 | 3.2k @ 1.4 | 12.8k @ 2.1 | 51.3k @ 2.6 | 102.5k @ 2.9 |
+| wal, 100 | 3.2k @ 1.2 | 12.8k @ 2.3 | 51.3k @ 2.4 | 102.5k @ 2.8 |
+| ursula, 10 | 3.2k @ 1.5 | 12.8k @ 1.9 | 51.3k @ 2.7 | 102.5k @ 2.8 |
+| ursula, 100 | 3.1k @ 42.2 | 11.8k @ 47.3 | 44.1k @ 56.7 | 80.6k @ 62.9 |
+
+Durable wal is flat across 10 → 100 streams all the way to 2048 concurrent
+connections; ursula matches at 10 streams but degrades to p99 ~63 ms at 100
+streams.
+
+**Catch-up (hot resident re-scan)** (`reads-catchup`; cell = MiB/s @ p99 ms):
+
+| system, streams | 8 conns | 32 | 128 | 512 |
+|---|---|---|---|---|
+| wal, 10 | 1345 @ 110.8 | 2381 @ 237.3 | OOM | OOM |
+| wal, 100 | 1333 @ 111.7 | 2382 @ 238.2 | OOM | OOM |
+| ursula, 10 | 2351 @ 85.9 | 2375 @ 516.6 | OOM | OOM |
+| ursula, 100 | OOM | OOM | OOM | OOM |
+
+_OOM cells are the documented client-pod OOM ceiling (AGENTS.md §8) — client-bound
+cells, not server data._
+
+Both wal and ursula plateau ~2.4 GiB/s at 32 connections at 10 streams, with
+durable holding a ~2× better p99 there (237 ms vs 517 ms); ursula @ 100 streams
+OOMs at every level.
 
 ## 4. Mixed read/write interference (NEW — `mixed-*`)
 
