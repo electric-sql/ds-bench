@@ -49,6 +49,21 @@ def suite_status(suite_path, results_root):
                 if any(cc.get("status") == "error" for cc in c["connections"].values()):
                     saw_error = True
         return "errors" if saw_error else "complete"
+    if s.workload == "mixed":
+        # Mixed cells mirror reads: a per-level map + `complete`, keyed by
+        # stream_count; an errored level makes the suite "errors" (resumable).
+        import mixed_cells
+        saw_error = False
+        for label in s.labels():
+            p = os.path.join(results_root, label, "cells.json")
+            by_sc = {c["stream_count"]: c for c in mixed_cells.all_cells(p)} if os.path.exists(p) else {}
+            for sc in s.stream_counts:
+                c = by_sc.get(sc)
+                if c is None or not c.get("complete"):
+                    return "incomplete"
+                if any(cc.get("status") == "error" for cc in c["levels"].values()):
+                    saw_error = True
+        return "errors" if saw_error else "complete"
     if s.workload == "catchup":
         import catchup_cells as cu_cells
         key = "pre_events"

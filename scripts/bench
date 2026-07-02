@@ -49,6 +49,7 @@ cmd_report() {
     sustained) python3 scripts/sustained_report.py "$SUITE_FILE" ;;
     catchup)   python3 scripts/catchup_report.py "$SUITE_FILE" ;;
     reads)     python3 scripts/reads_report.py "$SUITE_FILE" ;;
+    mixed)     python3 scripts/mixed_report.py "$SUITE_FILE" ;;
     *)         # backfill peak + p50 pod memory from the saved samples, then render
                python3 scripts/podmem.py "results/${SUITE_NAME}" >/dev/null 2>&1 || true
                python3 scripts/report.py "$SUITE_FILE" ;;
@@ -144,6 +145,7 @@ run_mode() {
     sustained) . scripts/lib-sustained.sh ;;
     catchup)   . scripts/lib-catchup.sh ;;
     reads)     . scripts/lib-reads.sh ;;
+    mixed)     . scripts/lib-mixed.sh ;;
     *)         . scripts/lib-saturate.sh ;;
   esac
   ensure_metrics_configmap >&2 || true
@@ -182,6 +184,7 @@ run_mode() {
       sustained) store=sustained_cells; skip=done; verb="sustained run" ;;
       catchup)   store=catchup_cells;   skip=done; verb="catch-up run" ;;
       reads)     store=reads_cells;     skip=done; verb="reads run" ;;
+      mixed)     store=mixed_cells;     skip=done; verb="mixed run" ;;
       *)         store=cells;           skip=saturated; verb="walking ladder" ;;
     esac
     for sc in $(_suite "' '.join(map(str,s.stream_counts))"); do
@@ -194,6 +197,7 @@ run_mode() {
         sustained) run_sustained_cell "$mode" "$sc" "$label_cells" "$digest" ;;
         catchup)   run_catchup_cell   "$mode" "$sc" "$label_cells" "$digest" ;;
         reads)     run_reads_cell      "$mode" "$sc" "$label_cells" "$digest" ;;
+        mixed)     run_mixed_cell      "$mode" "$sc" "$label_cells" "$digest" ;;
         *)         walk_cell           "$mode" "$sc" "$label_cells" "$digest" ;;
       esac
     done
