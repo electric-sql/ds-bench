@@ -84,8 +84,11 @@ SKIP_BUILD=1 MAX_PARALLEL_CLUSTERS=3 scripts/run-matrix.sh $WRITE_SUITES > /tmp/
 echo "write matrix done $(date -u)"
 
 # ---- Phase C: SSE fan-out (delivery latency + memory vs subscribers) ----
+# No tailcache variant: single-stream high-fan-out SSE is a micro-benchmark; the
+# spread-subscriber fan-out story lives in mixed-delivery (Phase D2).
 echo "===== PHASE C: SSE fan-out $(date -u) ====="
-SKIP_BUILD=1 ZONE=europe-west4-a scripts/run-sse.sh > /tmp/fm-sse.log 2>&1 || echo "[sse rc=$?]"
+SSE_SYSTEMS="durable:walnew ursula:memory ursula:disk s2:_" \
+  SKIP_BUILD=1 ZONE=europe-west4-a scripts/run-sse.sh > /tmp/fm-sse.log 2>&1 || echo "[sse rc=$?]"
 echo "sse done $(date -u)"
 
 # ---- Phase D: reads (catchup / long-poll / sse) ----
@@ -160,7 +163,8 @@ validation this extends).
 ## Workloads
 - **Write** saturation: \`run-durable\` (wal, wal-tailcache, memory — streams up to
   **500k**), \`run-ursula\` (memory, disk), \`run-node\`, \`run-s2\`.
-- **SSE fan-out**: \`run-sse.sh\` — subscribers 1/10/100/1000.
+- **SSE fan-out**: \`run-sse.sh\` — subscribers 1/10/100/1000, **no tailcache variant**
+  (single-stream fan-out is a micro-benchmark; spread fan-out is mixed-delivery's job).
 - **Reads**: \`reads-catchup\`, \`reads-sse-remote\` (wal + ursula; long-poll dropped this run).
 - **Mixed interference** (NEW): \`mixed-cal\` (ceiling anchor), \`mixed-writes\`
   (readers 0→**100k**, one staggered replay/30s each, vs a 60%-pinned write load over
