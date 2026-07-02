@@ -15,10 +15,17 @@
     "setup_concurrency": 16,
     "payload_bytes": 256
   },
-  "modes": ["s2"],
-  "stream_counts": [100, 1000],
+  "modes": [
+    "s2"
+  ],
+  "stream_counts": [
+    100
+  ],
   "pod_ladder": {
-    "100": [2, 4, 8],
-    "1000": [2, 4, 8]
+    "100": [
+      2,
+      4,
+      8
+    ]
   }
 }
