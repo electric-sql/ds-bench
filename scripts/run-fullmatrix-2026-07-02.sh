@@ -58,6 +58,12 @@ echo "clean slate complete"
 # ---- Phase A2: images. ds-bench (new mixed scenario) + durable from the PERF BRANCH
 # crate (AGENTS.md §4: never let the matrix rebuild durable from the default source —
 # build it ourselves, then SKIP_BUILD=1 everywhere). node/ursula/s2 images unchanged.
+# RESUME=1 (relaunch after an interrupted run): images are already in AR and, more
+# importantly, the results dirs hold completed cells the suites will skip — so
+# Phase A2 (rebuild) and Phase A3 (rm -rf results) are both skipped.
+if [ "${RESUME:-0}" = "1" ]; then
+  echo "===== RESUME: skipping images + results wipe $(date -u) ====="
+else
 echo "===== PHASE A2: images $(date -u) ====="
 ( cd "$DS_RUST_CRATE" && [ "$(git branch --show-current)" = "bench/mixed-interference-validation" ] ) \
   || { echo "FATAL: $DS_RUST_CRATE not on bench/mixed-interference-validation"; exit 1; }
@@ -73,6 +79,7 @@ echo "images pushed"
 
 # ---- Phase A3: force true re-runs (resume digest is tag-based, not content-based) ----
 for s in $WRITE_SUITES $READ_SUITES $MIXED_SUITES; do rm -rf "results/$s"; done
+fi   # end RESUME skip
 
 # ---- arm watchdog (8h hard deadline; stands down when $DONE_MARKER appears) ----
 DEADLINE_SECS=28800 nohup bash scripts/teardown-watchdog.sh >/tmp/teardown-watchdog.log 2>&1 &
