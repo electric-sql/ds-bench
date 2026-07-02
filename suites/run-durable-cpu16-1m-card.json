@@ -1,0 +1,43 @@
+{
+  "suite": "run-durable-cpu16-1m-card",
+  "_doc": "Cardinality-fix validation at 16 vCPU: 1M + 500k streams on the combined stack PLUS the 2026-07-02 cardinality fixes (O(1) dirty drain, checkpoint fully off-runtime + concurrent shards, resident tails map, meta sidecar flush moved to checkpoint, single registry lookup). Image = durable-streams:combined-card @ 662b0c845. Direct baseline: run-durable-cpu16-1m-p99-combined (862k ops/s, p50 3.3/p99 32ms @ 32 pods, 77% of 16 cores, image f04baa64e). Ladder 32/48/64 pods at 1M finds the new ceiling (>=1M ops/s target); 500k rung quantifies the 500k->1M slope. clean config = NO --wal-stats (tail-accurate); stats config = one 48-pod rung with --wal-stats 1 to read WAL_CONT + WAL_CKPT (checkpoint meta/fsync phase behavior at 1M on real NVMe). SERVER_CPUS=16 on c4d-standard-16-lssd, --wal-shards 16 --worker-threads 16. Client fleet: 6x n2d-standard-32 (64 pods = 16384 conns).",
+  "cluster": {
+    "server_machine": "c4d-standard-16-lssd",
+    "client_machine": "n2d-standard-32",
+    "client_nodes": 6,
+    "region": "europe-west4"
+  },
+  "saturation": {
+    "plateau_pct": -100,
+    "fleet_cpu": 2,
+    "connections": 256,
+    "repeats": 1,
+    "warmup_secs": 15,
+    "measure_secs": 60,
+    "setup_concurrency": 16,
+    "payload_bytes": 256
+  },
+  "modes": [
+    "wal"
+  ],
+  "server_configs": {
+    "wal": [
+      {
+        "label": "cpu16-card-clean",
+        "args": "--wal-shards 16 --worker-threads 16"
+      }
+    ]
+  },
+  "stream_counts": [
+    500000,
+    1000000
+  ],
+  "pod_ladder": {
+    "500000": [
+      48
+    ],
+    "1000000": [
+      32
+    ]
+  }
+}

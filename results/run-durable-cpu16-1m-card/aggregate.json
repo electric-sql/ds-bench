@@ -1,0 +1,40 @@
+[
+  {
+    "mode": "cpu16-card-clean",
+    "stream_count": 500000,
+    "pods": 48,
+    "throughput": 1110267.65,
+    "p50": null,
+    "p99": null,
+    "pod_mem_mb": 490,
+    "pod_mem_p50_mb": 441,
+    "saturated": false,
+    "status": "ok",
+    "reason": "ladder_exhausted",
+    "walk": [
+      [
+        48,
+        1110267.65
+      ]
+    ]
+  },
+  {
+    "mode": "cpu16-card-clean",
+    "stream_count": 1000000,
+    "pods": 32,
+    "throughput": 898581.8833333334,
+    "p50": null,
+    "p99": null,
+    "pod_mem_mb": 962,
+    "pod_mem_p50_mb": 938,
+    "saturated": false,
+    "status": "ok",
+    "reason": "ladder_exhausted",
+    "walk": [
+      [
+        32,
+        898581.8833333334
+      ]
+    ]
+  }
+]
