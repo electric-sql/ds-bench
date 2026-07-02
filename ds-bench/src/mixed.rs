@@ -67,6 +67,19 @@ pub struct MixedArgs {
     #[arg(long, default_value_t = 0)]
     pub read_rate: u64,
 
+    /// Milliseconds between replays PER READER (sub-1/s pacing for very large
+    /// reader fleets, e.g. 100k readers × one replay/30s). Takes precedence
+    /// over --read-rate when > 0. Reader starts are staggered evenly across
+    /// one interval so a fleet never replays as a thundering herd.
+    #[arg(long, default_value_t = 0)]
+    pub read_interval_ms: u64,
+
+    /// Events pre-loaded into each stream before the drive window, so catch-up
+    /// readers have a body to replay from the first second. Lower it at high
+    /// stream counts (streams × backfill appends run in setup).
+    #[arg(long, default_value_t = 200)]
+    pub backfill_events: usize,
+
     /// Number of SSE subscriber tasks.
     #[arg(long, default_value_t = 50)]
     pub subscribers: usize,
@@ -102,6 +115,8 @@ pub struct MixedResult {
     pub writers_per_stream: usize,
     pub readers: usize,
     pub read_rate: u64,
+    pub read_interval_ms: u64,
+    pub backfill_events: usize,
     pub subscribers: usize,
     pub writer_rate: u64,
     pub duration_secs: u64,
@@ -148,7 +163,7 @@ pub async fn run(args: MixedArgs) -> Result<MixedResult> {
     create_streams(&backend, args.streams, args.setup_concurrency).await?;
 
     // Pre-load each stream with a small backfill so catch-up readers have data.
-    let backfill_events = 200usize;
+    let backfill_events = args.backfill_events;
     preload_streams(
         &backend,
         args.streams,
@@ -256,6 +271,15 @@ pub async fn run(args: MixedArgs) -> Result<MixedResult> {
     }
 
     // --- Catch-up reader tasks (barrier participants like the other classes) ---
+    // Pacing: --read-interval-ms wins (sub-1/s pacing for huge fleets), else
+    // --read-rate replays/s, else unpaced hot loop.
+    let read_interval = if args.read_interval_ms > 0 {
+        Some(Duration::from_millis(args.read_interval_ms))
+    } else if args.read_rate > 0 {
+        Some(Duration::from_micros(1_000_000 / args.read_rate.max(1)))
+    } else {
+        None
+    };
     for reader_idx in 0..args.readers {
         let backend = backend.clone();
         let stream_idx = reader_idx % args.streams;
@@ -267,13 +291,14 @@ pub async fn run(args: MixedArgs) -> Result<MixedResult> {
         let read_hist = read_hist.clone();
         let barrier = ready_barrier.clone();
         let deadline_cell = deadline_cell.clone();
-        let rate = args.read_rate;
+        let total_readers = args.readers;
         handles.push(tokio::spawn(async move {
             run_reader_task(
                 backend,
                 reader_idx,
+                total_readers,
                 stream,
-                rate,
+                read_interval,
                 duration_secs,
                 barrier,
                 deadline_cell,
@@ -332,6 +357,8 @@ pub async fn run(args: MixedArgs) -> Result<MixedResult> {
         writers_per_stream: args.writers_per_stream,
         readers: args.readers,
         read_rate: args.read_rate,
+        read_interval_ms: args.read_interval_ms,
+        backfill_events: args.backfill_events,
         subscribers: args.subscribers,
         writer_rate: args.writer_rate,
         duration_secs: args.duration_secs,
@@ -551,8 +578,9 @@ async fn run_subscriber_task(
 async fn run_reader_task(
     backend: Backend,
     base_idx: usize,
+    total_readers: usize,
     stream: String,
-    rate: u64,
+    interval: Option<Duration>,
     duration_secs: u64,
     barrier: Arc<Barrier>,
     deadline_cell: Arc<tokio::sync::OnceCell<Instant>>,
@@ -570,13 +598,17 @@ async fn run_reader_task(
         .get_or_init(|| async { Instant::now() + Duration::from_secs(duration_secs) })
         .await;
 
-    // rate > 0 paces replay STARTS (like the writer's append pacing); 0 keeps
-    // the unpaced hot loop (the adversarial read-saturation mode).
-    let interval = if rate > 0 {
-        Some(Duration::from_micros(1_000_000 / rate.max(1)))
-    } else {
-        None
-    };
+    // Paced readers stagger their first replay evenly across one interval so a
+    // large fleet offers a steady replay rate instead of a barrier-aligned
+    // thundering herd (100k readers × 30s interval → ~3.3k replays/s, flat).
+    if let Some(iv) = interval
+        && total_readers > 0
+    {
+        let offset = iv.mul_f64(base_idx as f64 / total_readers as f64);
+        if !offset.is_zero() {
+            tokio::time::sleep(offset).await;
+        }
+    }
     let mut next_at = Instant::now();
     let mut local = new_histogram();
     while Instant::now() < deadline {

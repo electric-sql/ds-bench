@@ -26,7 +26,7 @@ measure_mixed() {
   local mode="${SAT_MODE:?measure_mixed: SAT_MODE unset}"
   local rep="${SAT_REP:-1}"
   local cell_dir; cell_dir="$(_sat_cell_dir "$pods" "$rep")"; mkdir -p "$cell_dir"
-  MIXED_BENCH_CMD="mixed --target ${T_TARGET:?} --api-style ${T_API:?} ${T_NS:-} --streams ${sc} --writers-per-stream ${MX_WPS} --writer-rate ${MX_RATE} --readers ${MX_READERS} --read-rate ${MX_READRATE} --subscribers ${MX_SUBS} --duration-secs ${MX_DURATION} --payload-bytes ${MX_PAYLOAD} --setup-concurrency ${MX_SETUP}"
+  MIXED_BENCH_CMD="mixed --target ${T_TARGET:?} --api-style ${T_API:?} ${T_NS:-} --streams ${sc} --writers-per-stream ${MX_WPS} --writer-rate ${MX_RATE} --readers ${MX_READERS} --read-rate ${MX_READRATE} --read-interval-ms ${MX_READINT} --backfill-events ${MX_BACKFILL} --subscribers ${MX_SUBS} --duration-secs ${MX_DURATION} --payload-bytes ${MX_PAYLOAD} --setup-concurrency ${MX_SETUP}"
   _run_cell_one "${mode}-mixed-n${sc}-l${MIXED_LEVEL}" "$MIXED_BENCH_CMD" "mixed" "$MIXED_MERGE_CMD" "$pods" "$rep" "$cell_dir"
 }
 
@@ -53,6 +53,8 @@ run_mixed_cell() {
   export MX_PAYLOAD;  MX_PAYLOAD="$(_sat_get s 's.mixed.get("payload_bytes",256)')"
   export MX_SETUP;    MX_SETUP="$(_sat_get s 's.mixed.get("setup_concurrency",16)')"
   export MX_READRATE; MX_READRATE="$(_sat_get s 's.mixed.get("read_rate",0)')"
+  export MX_READINT;  MX_READINT="$(_sat_get s 's.mixed.get("read_interval_ms",0)')"
+  export MX_BACKFILL; MX_BACKFILL="$(_sat_get s 's.mixed.get("backfill_events",200)')"
   local fixed_rate;    fixed_rate="$(_sat_get s 's.mixed.get("writer_rate",50)')"
   local fixed_readers; fixed_readers="$(_sat_get s 's.mixed.get("readers",0)')"
   local fixed_subs;    fixed_subs="$(_sat_get s 's.mixed.get("subscribers",0)')"
@@ -60,8 +62,10 @@ run_mixed_cell() {
   local pods;   pods="$(_sat_get s 's.mixed.get("pods",1)')"
   local fn="${MEASURE_FN:-measure_mixed}"
   # Setup (create streams + backfill) precedes the measured window inside one
-  # fleet run, so give the Job room beyond the drive duration.
-  export FLEET_TIMEOUT="$(( MX_DURATION + 180 ))"
+  # fleet run, so give the Job room beyond the drive duration. High-cardinality
+  # cells (streams × backfill appends) override via mixed.fleet_timeout_secs.
+  export FLEET_TIMEOUT
+  FLEET_TIMEOUT="$(_sat_get s 's.mixed.get("fleet_timeout_secs", s.mixed.get("duration_secs",20) + 180)')"
 
   local level
   for level in $levels; do

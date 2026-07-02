@@ -10,7 +10,11 @@
   },
   "mixed": {
     "sweep": "readers",
-    "levels": [4, 16, 64],
+    "levels": [
+      16,
+      64,
+      256
+    ],
     "writers_per_stream": 1,
     "writer_rate": 0,
     "read_rate": 0,
@@ -20,6 +24,10 @@
     "setup_concurrency": 16,
     "pods": 1
   },
-  "modes": ["wal"],
-  "stream_counts": [50]
+  "modes": [
+    "wal"
+  ],
+  "stream_counts": [
+    50
+  ]
 }

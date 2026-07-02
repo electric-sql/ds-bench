@@ -10,21 +10,35 @@
   },
   "mixed": {
     "sweep": "writer_rate",
-    "levels": [0],
+    "levels": [
+      0
+    ],
     "writers_per_stream": 1,
     "readers": 0,
-    "subscribers": 100,
-    "duration_secs": 20,
+    "subscribers": 2000,
+    "duration_secs": 30,
     "payload_bytes": 256,
-    "setup_concurrency": 16,
-    "pods": 1
+    "setup_concurrency": 64,
+    "pods": 1,
+    "backfill_events": 50,
+    "fleet_timeout_secs": 900
   },
-  "modes": ["wal"],
+  "modes": [
+    "wal"
+  ],
   "server_configs": {
     "wal": [
-      { "label": "wal", "args": "" },
-      { "label": "memory", "args": "--durability memory" }
+      {
+        "label": "wal",
+        "args": ""
+      },
+      {
+        "label": "memory",
+        "args": "--durability memory"
+      }
     ]
   },
-  "stream_counts": [50]
+  "stream_counts": [
+    2000
+  ]
 }

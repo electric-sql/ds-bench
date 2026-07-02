@@ -16,7 +16,7 @@ mkdir -p .bench-state
 rm -f "$DONE_MARKER"
 
 WRITE_SUITES="run-durable run-ursula run-s2 run-node"
-READ_SUITES="reads-catchup reads-longpoll reads-sse-remote"
+READ_SUITES="reads-catchup reads-sse-remote"   # long-poll dropped per 2026-07-02 scope
 MIXED_SUITES="mixed-cal mixed-writes mixed-writes-hot mixed-delivery"
 
 REG="europe-west1-docker.pkg.dev/$PROJECT/ds-bench"
@@ -108,16 +108,21 @@ if [ "${CEIL:-0}" -gt 0 ] 2>/dev/null; then
   echo "  mixed ceiling: ${CEIL} ops/s — anchoring sweep suites"
   python3 - "$CEIL" <<'PY'
 import json, sys
-c = int(sys.argv[1]); writers = 50
+c = int(sys.argv[1])
 def patch(path, fn):
     d = json.load(open(path)); fn(d)
     json.dump(d, open(path, "w"), indent=2); open(path, "a").write("\n")
-pin = max(1, round(0.6 * c / writers))
-patch("suites/mixed-writes.json",     lambda d: d["mixed"].update(writer_rate=pin))
-patch("suites/mixed-writes-hot.json", lambda d: d["mixed"].update(writer_rate=pin))
-levels = [max(1, round(f * c / writers)) for f in (0.05, 0.2, 0.5, 0.8)] + [0]
-patch("suites/mixed-delivery.json",   lambda d: d["mixed"].update(levels=levels))
-print(f"  writer_rate pin={pin}/writer, delivery levels={levels}")
+def writers(path):
+    # writers_per_stream is 1 in all mixed suites, so writer count = streams.
+    return json.load(open(path))["stream_counts"][0]
+for p in ("suites/mixed-writes.json", "suites/mixed-writes-hot.json"):
+    pin = max(1, round(0.6 * c / writers(p)))
+    patch(p, lambda d, pin=pin: d["mixed"].update(writer_rate=pin))
+    print(f"  {p}: writer_rate pin={pin}/writer over {writers(p)} writers")
+w = writers("suites/mixed-delivery.json")
+levels = sorted(set(max(1, round(f * c / w)) for f in (0.05, 0.2, 0.5, 0.8))) + [0]
+patch("suites/mixed-delivery.json", lambda d: d["mixed"].update(levels=levels))
+print(f"  delivery levels={levels} over {w} writers")
 PY
   for s in mixed-writes mixed-writes-hot mixed-delivery; do
     echo "  running $s $(date -u)"
@@ -153,13 +158,14 @@ validation this extends).
 - **ursula**: \`ghcr.io/tonbo-io/ursula:v0.1.5\` · **Node.js reference**: \`durable-node:dev\` · **S2**: \`ghcr.io/s2-streamstore/s2\`
 
 ## Workloads
-- **Write** saturation: \`run-durable\` (wal, wal-tailcache, memory), \`run-ursula\`
-  (memory, disk), \`run-node\`, \`run-s2\`.
+- **Write** saturation: \`run-durable\` (wal, wal-tailcache, memory — streams up to
+  **500k**), \`run-ursula\` (memory, disk), \`run-node\`, \`run-s2\`.
 - **SSE fan-out**: \`run-sse.sh\` — subscribers 1/10/100/1000.
-- **Reads**: \`reads-catchup\`, \`reads-longpoll\`, \`reads-sse-remote\` (wal + ursula).
+- **Reads**: \`reads-catchup\`, \`reads-sse-remote\` (wal + ursula; long-poll dropped this run).
 - **Mixed interference** (NEW): \`mixed-cal\` (ceiling anchor), \`mixed-writes\`
-  (paced readers vs 60%-pinned writes), \`mixed-writes-hot\` (unpaced adversarial),
-  \`mixed-delivery\` (100 SSE subscribers vs write-rate ladder, wal + memory).
+  (readers 0→**100k**, one staggered replay/30s each, vs a 60%-pinned write load over
+  10k streams), \`mixed-writes-hot\` (unpaced adversarial), \`mixed-delivery\`
+  (2000 SSE subscribers over 2000 streams vs write-rate ladder, wal + memory).
 
 ## Hardware
 Server \`c4d-standard-16-lssd\` pinned to 4 CPUs; client fleet \`n2d-standard-32\` Spot. europe-west4.

@@ -10,16 +10,28 @@
   },
   "mixed": {
     "sweep": "readers",
-    "levels": [0, 4, 16, 64, 128, 256],
+    "levels": [
+      0,
+      1000,
+      10000,
+      100000
+    ],
     "writers_per_stream": 1,
     "writer_rate": 0,
-    "read_rate": 1,
+    "read_rate": 0,
     "subscribers": 0,
-    "duration_secs": 20,
+    "duration_secs": 60,
     "payload_bytes": 256,
-    "setup_concurrency": 16,
-    "pods": 1
+    "setup_concurrency": 64,
+    "pods": 1,
+    "read_interval_ms": 30000,
+    "backfill_events": 50,
+    "fleet_timeout_secs": 900
   },
-  "modes": ["wal"],
-  "stream_counts": [50]
+  "modes": [
+    "wal"
+  ],
+  "stream_counts": [
+    10000
+  ]
 }
