@@ -1,0 +1,30 @@
+{
+  "suite": "mixed-delivery",
+  "workload": "mixed",
+  "cluster": {
+    "server_machine": "c4d-standard-16-lssd",
+    "client_machine": "n2d-standard-32",
+    "client_nodes": 2,
+    "region": "europe-west4",
+    "cluster_name": "bench-mixed"
+  },
+  "mixed": {
+    "sweep": "writer_rate",
+    "levels": [0],
+    "writers_per_stream": 1,
+    "readers": 0,
+    "subscribers": 100,
+    "duration_secs": 20,
+    "payload_bytes": 256,
+    "setup_concurrency": 16,
+    "pods": 1
+  },
+  "modes": ["wal"],
+  "server_configs": {
+    "wal": [
+      { "label": "wal", "args": "" },
+      { "label": "memory", "args": "--durability memory" }
+    ]
+  },
+  "stream_counts": [50]
+}
