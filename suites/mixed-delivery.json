@@ -11,6 +11,10 @@
   "mixed": {
     "sweep": "writer_rate",
     "levels": [
+      2,
+      8,
+      20,
+      33,
       0
     ],
     "writers_per_stream": 1,

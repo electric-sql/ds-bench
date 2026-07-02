@@ -1,0 +1,150 @@
+{
+  "cells": {
+    "100": {
+      "stream_count": 100,
+      "image_digest": "92f4a6387253",
+      "walk": [
+        [
+          16,
+          457133.875
+        ],
+        [
+          24,
+          482137.625
+        ]
+      ],
+      "pinned_pods": 16,
+      "throughput": 457133.875,
+      "p50": 0.235,
+      "p99": 0.38,
+      "pod_mem_mb": 95,
+      "saturated": true,
+      "status": "ok",
+      "reason": "plateau",
+      "pod_mem_p50_mb": 14
+    },
+    "1000": {
+      "stream_count": 1000,
+      "image_digest": "92f4a6387253",
+      "walk": [
+        [
+          16,
+          586828.125
+        ],
+        [
+          24,
+          655482.875
+        ],
+        [
+          32,
+          690208.25
+        ]
+      ],
+      "pinned_pods": 24,
+      "throughput": 655482.875,
+      "p50": 1.429,
+      "p99": 5.087,
+      "pod_mem_mb": 37,
+      "saturated": true,
+      "status": "ok",
+      "reason": "plateau",
+      "pod_mem_p50_mb": 27
+    },
+    "10000": {
+      "stream_count": 10000,
+      "image_digest": "92f4a6387253",
+      "walk": [
+        [
+          32,
+          815869.75
+        ],
+        [
+          48,
+          863481.875
+        ]
+      ],
+      "pinned_pods": 32,
+      "throughput": 815869.75,
+      "p50": 1.81,
+      "p99": 87.039,
+      "pod_mem_mb": 175,
+      "saturated": true,
+      "status": "ok",
+      "reason": "plateau",
+      "pod_mem_p50_mb": 75
+    },
+    "100000": {
+      "stream_count": 100000,
+      "image_digest": "92f4a6387253",
+      "walk": [
+        [
+          80,
+          810519.875
+        ],
+        [
+          100,
+          1560267.0
+        ],
+        [
+          110,
+          503403.625
+        ]
+      ],
+      "pinned_pods": 100,
+      "throughput": 1560267.0,
+      "p50": 3.227,
+      "p99": 719.359,
+      "pod_mem_mb": 915,
+      "saturated": true,
+      "status": "ok",
+      "reason": "plateau",
+      "pod_mem_p50_mb": 726
+    },
+    "200000": {
+      "stream_count": 200000,
+      "image_digest": "92f4a6387253",
+      "walk": [
+        [
+          100,
+          1503496.125
+        ],
+        [
+          160,
+          1602824.375
+        ]
+      ],
+      "pinned_pods": 100,
+      "throughput": 1503496.125,
+      "p50": 80.575,
+      "p99": 973.311,
+      "pod_mem_mb": 987,
+      "saturated": true,
+      "status": "ok",
+      "reason": "plateau",
+      "pod_mem_p50_mb": 743
+    },
+    "500000": {
+      "stream_count": 500000,
+      "image_digest": "92f4a6387253",
+      "walk": [
+        [
+          250,
+          2045868.875
+        ],
+        [
+          400,
+          1828700.75
+        ]
+      ],
+      "pinned_pods": 250,
+      "throughput": 2045868.875,
+      "p50": 151.551,
+      "p99": 2609.151,
+      "pod_mem_mb": 857,
+      "saturated": true,
+      "status": "ok",
+      "reason": "plateau",
+      "pod_mem_p50_mb": 513
+    }
+  }
+}

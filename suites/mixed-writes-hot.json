@@ -16,7 +16,7 @@
       256
     ],
     "writers_per_stream": 1,
-    "writer_rate": 0,
+    "writer_rate": 977,
     "read_rate": 0,
     "subscribers": 0,
     "duration_secs": 20,
