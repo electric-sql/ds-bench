@@ -28,9 +28,11 @@ def build(suite_path, results_root):
                     "readers": sub.get("readers"),
                     "subscribers": sub.get("subscribers"),
                     "writer_rate": sub.get("writer_rate"),
+                    "read_rate": sub.get("read_rate"),
                     "write_ops_per_sec": sub.get("write_ops_per_sec"),
                     "write_p50": sub.get("write_p50"), "write_p99": sub.get("write_p99"),
                     "read_ops_per_sec": sub.get("read_ops_per_sec"),
+                    "read_mib_per_sec": sub.get("read_mib_per_sec"),
                     "read_p50": sub.get("read_p50"), "read_p99": sub.get("read_p99"),
                     "events_per_sec": sub.get("events_per_sec"),
                     "delivery_p50": sub.get("delivery_p50"),
@@ -69,13 +71,13 @@ def _markdown(s, axis, levels, by):
     for label in labels:
         for sc in s.stream_counts:
             out += [f"## {label} — {sc} streams", ""]
-            out += [f"| {axis_col} | write ops/s | write ms | read ops/s | read ms "
-                    "| deliv ev/s | deliv ms | status |",
-                    "|---|---|---|---|---|---|---|---|"]
+            out += [f"| {axis_col} | write ops/s | write ms | read ops/s | read MiB/s | read ms "
+                    "| deliv rec/s | deliv ms | status |",
+                    "|---|---|---|---|---|---|---|---|---|"]
             for lv in levels:
                 sub = by.get((label, sc, lv))
                 if sub is None:
-                    out.append(f"| {_level_name(axis, lv)} | — | — | — | — | — | — | absent |")
+                    out.append(f"| {_level_name(axis, lv)} | — | — | — | — | — | — | — | absent |")
                     continue
                 wmark = "‡" if (sub.get("write_bp") or 0) > 0 else ""
                 rmark = "‡" if (sub.get("read_bp") or 0) > 0 else ""
@@ -84,6 +86,7 @@ def _markdown(s, axis, levels, by):
                     f"| {_n(sub.get('write_ops_per_sec'))}{wmark} "
                     f"| {_lat(sub.get('write_p50'), sub.get('write_p99'))} "
                     f"| {_n(sub.get('read_ops_per_sec'))}{rmark} "
+                    f"| {_n(sub.get('read_mib_per_sec'), '{:.1f}')} "
                     f"| {_lat(sub.get('read_p50'), sub.get('read_p99'))} "
                     f"| {_n(sub.get('events_per_sec'))} "
                     f"| {_lat(sub.get('delivery_p50'), sub.get('delivery_p99'))} "
@@ -102,9 +105,9 @@ def main():
     with open(os.path.join(root, "aggregate.json"), "w") as f:
         json.dump(rows, f, indent=2)
     fields = ["mode", "stream_count", "sweep", "level", "readers", "subscribers",
-              "writer_rate", "write_ops_per_sec", "write_p50", "write_p99",
-              "read_ops_per_sec", "read_p50", "read_p99", "events_per_sec",
-              "delivery_p50", "delivery_p99", "write_bp", "write_err",
+              "writer_rate", "read_rate", "write_ops_per_sec", "write_p50", "write_p99",
+              "read_ops_per_sec", "read_mib_per_sec", "read_p50", "read_p99",
+              "events_per_sec", "delivery_p50", "delivery_p99", "write_bp", "write_err",
               "read_bp", "read_err", "status", "reason"]
     with open(os.path.join(root, "aggregate.csv"), "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields)

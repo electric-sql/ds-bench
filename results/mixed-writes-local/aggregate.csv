@@ -1,6 +1,6 @@
-mode,stream_count,sweep,level,readers,subscribers,writer_rate,write_ops_per_sec,write_p50,write_p99,read_ops_per_sec,read_p50,read_p99,events_per_sec,delivery_p50,delivery_p99,write_bp,write_err,read_bp,read_err,status,reason
-wal,50,readers,0,0,0,240,11999.629833638764,1.721,12.335,0.0,,,0.0,,,0,0,0,0,ok,complete
-wal,50,readers,4,4,0,240,11999.378830068184,3.005,13.583,3919.9833623835693,0.779,4.487,0.0,,,0,0,0,0,ok,complete
-wal,50,readers,16,16,0,240,7268.241774048289,4.691,35.967,7853.363619262675,1.222,24.543,0.0,,,0,0,0,0,ok,complete
-wal,50,readers,64,64,0,240,4202.7250528011955,7.167,53.631,12540.560149765568,2.897,43.583,0.0,,,0,0,0,0,ok,complete
-wal,50,readers,128,128,0,240,2167.6395850110384,14.855,89.407,14866.56482854776,4.899,50.815,0.0,,,0,0,0,0,ok,complete
+mode,stream_count,sweep,level,readers,subscribers,writer_rate,read_rate,write_ops_per_sec,write_p50,write_p99,read_ops_per_sec,read_mib_per_sec,read_p50,read_p99,events_per_sec,delivery_p50,delivery_p99,write_bp,write_err,read_bp,read_err,status,reason
+wal,50,readers,0,0,0,355,1,17303.35,1.177,9.767,0.0,0.0,,,0.0,,,0,0,0,0,ok,complete
+wal,50,readers,4,4,0,355,1,17755.4,0.966,5.723,4.2,3.84564208984375,1.742,10.535,0.0,,,0,0,0,0,ok,complete
+wal,50,readers,16,16,0,355,1,17756.0,0.946,5.287,16.8,15.37923583984375,3.895,17.103,0.0,,,0,0,0,0,ok,complete
+wal,50,readers,64,64,0,355,1,17755.7,0.997,6.483,67.2,61.54200439453125,5.463,65.535,0.0,,,0,0,0,0,ok,complete
+wal,50,readers,128,128,0,355,1,17749.55,1.087,52.927,134.4,123.02186279296875,4.911,50.943,0.0,,,0,0,0,0,ok,complete

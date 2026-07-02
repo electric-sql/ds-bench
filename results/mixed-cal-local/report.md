@@ -4,9 +4,9 @@ Sweep axis: **writer_rate**. Latency cells are p50/p99 ms. ‡ = backpressure (5
 
 ## wal — 50 streams
 
-| rate/writer | write ops/s | write ms | read ops/s | read ms | deliv ev/s | deliv ms | status |
-|---|---|---|---|---|---|---|---|
-| max | 19560 | 2.1/10.4 | 0 | — | 0 | — | ok |
+| rate/writer | write ops/s | write ms | read ops/s | read MiB/s | read ms | deliv rec/s | deliv ms | status |
+|---|---|---|---|---|---|---|---|---|
+| max | 29682 | 1.5/6.4 | 0 | 0.0 | — | 0 | — | ok |
 
 ## Findings
 

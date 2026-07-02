@@ -1,6 +1,11 @@
-mode,stream_count,sweep,level,readers,subscribers,writer_rate,write_ops_per_sec,write_p50,write_p99,read_ops_per_sec,read_p50,read_p99,events_per_sec,delivery_p50,delivery_p99,write_bp,write_err,read_bp,read_err,status,reason
-wal,50,writer_rate,0,0,100,0,14883.45069000176,2.583,12.759,0.0,,,59527.728936721825,3.049,14.031,0,0,0,0,ok,complete
-wal,50,writer_rate,20,0,100,20,908.6674389583052,2.0,12.943,0.0,,,3639.2017630100704,2.315,14.071,0,0,0,0,ok,complete
-wal,50,writer_rate,80,0,100,80,3627.809371045008,1.208,14.879,0.0,,,14515.13494334193,1.408,16.751,0,0,0,0,ok,complete
-wal,50,writer_rate,200,0,100,200,9073.181844474586,1.422,11.823,0.0,,,36294.36049347131,1.723,13.711,0,0,0,0,ok,complete
-wal,50,writer_rate,315,0,100,315,13561.814715595388,2.731,14.679,0.0,,,54241.74260275776,3.211,17.263,0,0,0,0,ok,complete
+mode,stream_count,sweep,level,readers,subscribers,writer_rate,read_rate,write_ops_per_sec,write_p50,write_p99,read_ops_per_sec,read_mib_per_sec,read_p50,read_p99,events_per_sec,delivery_p50,delivery_p99,write_bp,write_err,read_bp,read_err,status,reason
+memory,50,writer_rate,0,0,100,0,0,29246.55,1.161,29.999,0.0,0.0,,,44327.75,3.295,34.751,0,0,0,0,ok,complete
+memory,50,writer_rate,30,0,100,30,0,1502.5,0.73,5.663,0.0,0.0,,,3005.0,1.42,8.743,0,0,0,0,ok,complete
+memory,50,writer_rate,120,0,100,120,0,6002.5,0.381,2.113,0.0,0.0,,,11999.5,0.764,3.453,0,0,0,0,ok,complete
+memory,50,writer_rate,300,0,100,300,0,15001.1,0.401,2.685,0.0,0.0,,,29476.7,0.921,5.083,0,0,0,0,ok,complete
+memory,50,writer_rate,475,0,100,475,0,23752.1,0.588,3.785,0.0,0.0,,,44981.9,1.305,8.463,0,0,0,0,ok,complete
+wal,50,writer_rate,0,0,100,0,0,17144.0,2.283,20.255,0.0,0.0,,,34273.15,2.803,22.559,0,0,0,0,ok,complete
+wal,50,writer_rate,30,0,100,30,0,1502.5,2.441,9.687,0.0,0.0,,,3005.0,3.201,12.351,0,0,0,0,ok,complete
+wal,50,writer_rate,120,0,100,120,0,6002.45,0.709,7.895,0.0,0.0,,,12003.3,0.903,10.103,0,0,0,0,ok,complete
+wal,50,writer_rate,300,0,100,300,0,14740.9,1.694,13.831,0.0,0.0,,,29475.0,2.145,17.167,0,0,0,0,ok,complete
+wal,50,writer_rate,475,0,100,475,0,17380.5,2.281,19.119,0.0,0.0,,,34746.35,2.799,20.943,0,0,0,0,ok,complete

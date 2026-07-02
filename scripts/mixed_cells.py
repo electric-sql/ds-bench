@@ -61,23 +61,28 @@ def _pos(x):
 def metrics_from_merged(doc):
     """Flatten the per-class composite into the metrics dict a level stores.
     Rates for read/fanout come from the per-pod MixedResults (summed counts over
-    the longest pod window); write ops/s comes from the coordinator's
-    --results-dir scan (sum of per-pod aggregate_ops_per_sec)."""
+    the drive window — barrier release → shared deadline; older pods without
+    drive_secs fall back to elapsed_secs); write ops/s comes from the
+    coordinator's --results-dir scan (sum of per-pod aggregate_ops_per_sec).
+    events_received counts timestamped data frames only (true per-record
+    deliveries); per-batch SSE control frames are carried separately."""
     pods = doc.get("pods") or []
-    elapsed = max((p.get("elapsed_secs") or 0 for p in pods), default=0)
+    window = max((p.get("drive_secs") or p.get("elapsed_secs") or 0 for p in pods), default=0)
 
     def csum(field, sub):
         return sum(((p.get(field) or {}).get(sub) or 0) for p in pods)
 
     write, fanout, read = doc.get("write") or {}, doc.get("fanout") or {}, doc.get("read") or {}
     read_ok = csum("read_counts", "ok")
+    read_bytes = sum((p.get("read_bytes_total") or 0) for p in pods)
     events = sum((p.get("events_received") or 0) for p in pods)
     return {
         "write_ops_per_sec": write.get("aggregate_ops_per_sec"),
         "write_p50": _pos(write.get("p50_ms")), "write_p99": _pos(write.get("p99_ms")),
-        "read_ops_per_sec": (read_ok / elapsed) if elapsed > 0 else None,
+        "read_ops_per_sec": (read_ok / window) if window > 0 else None,
+        "read_mib_per_sec": (read_bytes / window / 1048576.0) if window > 0 else None,
         "read_p50": _pos(read.get("p50_ms")), "read_p99": _pos(read.get("p99_ms")),
-        "events_per_sec": (events / elapsed) if elapsed > 0 else None,
+        "events_per_sec": (events / window) if window > 0 else None,
         "delivery_p50": _pos(fanout.get("p50_ms")), "delivery_p99": _pos(fanout.get("p99_ms")),
         "write_ok": csum("write_counts", "ok"),
         "write_bp": csum("write_counts", "backpressure"),
@@ -86,12 +91,14 @@ def metrics_from_merged(doc):
         "read_bp": csum("read_counts", "backpressure"),
         "read_err": csum("read_counts", "other_err"),
         "events_received": events,
-        "elapsed_secs": elapsed,
+        "control_events_received": sum((p.get("control_events_received") or 0) for p in pods),
+        "elapsed_secs": max((p.get("elapsed_secs") or 0 for p in pods), default=0),
+        "drive_secs": window,
     }
 
 
 def record_merged(path, stream_count, level, *, image_digest, merged_path,
-                  readers, subscribers, writer_rate):
+                  readers, subscribers, writer_rate, read_rate=0):
     """Parse a cell's merged.json and record the level. Validity: writers must
     have appended; a level that configured readers/subscribers but saw none of
     their traffic is an error (so a resume re-runs it)."""
@@ -116,7 +123,7 @@ def record_merged(path, stream_count, level, *, image_digest, merged_path,
     cell = _cell(data, stream_count, image_digest)
     cell["levels"][str(level)] = dict(
         m, level=level, readers=readers, subscribers=subscribers,
-        writer_rate=writer_rate, status=status, reason=reason)
+        writer_rate=writer_rate, read_rate=read_rate, status=status, reason=reason)
     _save(path, data)
     return status
 

@@ -60,6 +60,13 @@ pub struct MixedArgs {
     #[arg(long, default_value_t = 50)]
     pub readers: usize,
 
+    /// Target catch-up replays per second PER READER (0 = unpaced hot loop).
+    /// Pacing makes the read axis an offered load ("N readers × R replays/s")
+    /// instead of "N unbounded readers", so cross-implementation comparisons
+    /// don't let a faster read path self-inflict more interference.
+    #[arg(long, default_value_t = 0)]
+    pub read_rate: u64,
+
     /// Number of SSE subscriber tasks.
     #[arg(long, default_value_t = 50)]
     pub subscribers: usize,
@@ -94,13 +101,23 @@ pub struct MixedResult {
     pub streams: usize,
     pub writers_per_stream: usize,
     pub readers: usize,
+    pub read_rate: u64,
     pub subscribers: usize,
     pub writer_rate: u64,
     pub duration_secs: u64,
     pub payload_bytes: usize,
     pub elapsed_secs: f64,
+    /// The measured drive window (barrier release → shared deadline). All three
+    /// classes start and stop on it, so rates divide by this, not elapsed_secs
+    /// (which also spans setup/drain and understates them).
+    pub drive_secs: f64,
     pub write_counts: Counts,
+    /// Timestamped SSE data frames only — true per-record deliveries.
     pub events_received: u64,
+    /// Non-data SSE frames (per-batch control events); kept separate so the
+    /// delivery rate is not double-counted.
+    pub control_events_received: u64,
+    pub read_bytes_total: u64,
     pub read_counts: Counts,
     pub aggregate_ops_per_sec: f64,
     pub write_latency_ms: LatencySummary,
@@ -154,20 +171,22 @@ pub async fn run(args: MixedArgs) -> Result<MixedResult> {
     let read_err = Arc::new(AtomicU64::new(0));
 
     let events_received = Arc::new(AtomicU64::new(0));
+    let control_events = Arc::new(AtomicU64::new(0));
+    let read_bytes = Arc::new(AtomicU64::new(0));
 
     let start = Instant::now();
 
     let payload_bytes = args.payload_bytes.max(49); // min for timestamp embedding
 
-    // Barrier: all subscribers connect first, then they and the writers all
-    // release together so writers never send before any subscriber is live.
-    // Participants = subscribers + total_writers (each writer waits once).
+    // Barrier: all subscribers connect first, then they, the writers AND the
+    // readers all release together — every class shares the same wall-clock
+    // window, so per-class rates divide cleanly by the drive duration.
     let total_writers = args.writers_per_stream * args.streams;
-    let barrier_n = args.subscribers + total_writers;
+    let barrier_n = args.subscribers + total_writers + args.readers;
     let ready_barrier = Arc::new(Barrier::new(barrier_n.max(1)));
 
-    // deadline is set by the first writer to cross the barrier, so subscribers
-    // get the same wall-clock window.
+    // deadline is set by whichever task crosses the barrier first (they all
+    // race get_or_init immediately after release, so it is one instant).
     let deadline_cell = Arc::new(tokio::sync::OnceCell::<Instant>::new());
     let duration_secs = args.duration_secs;
 
@@ -180,6 +199,7 @@ pub async fn run(args: MixedArgs) -> Result<MixedResult> {
         let stream_idx = sub_idx % args.streams;
         let stream = stream_name(stream_idx);
         let recv = events_received.clone();
+        let ctrl = control_events.clone();
         let fanout_hist = fanout_hist.clone();
         let barrier = ready_barrier.clone();
         let deadline_cell = deadline_cell.clone();
@@ -191,6 +211,7 @@ pub async fn run(args: MixedArgs) -> Result<MixedResult> {
                 barrier,
                 deadline_cell,
                 recv,
+                ctrl,
                 fanout_hist,
                 idle,
             )
@@ -234,9 +255,7 @@ pub async fn run(args: MixedArgs) -> Result<MixedResult> {
         }));
     }
 
-    // --- Catch-up reader tasks (no barrier needed — they replay from offset -1) ---
-    // Readers share the same deadline_cell as writers/subscribers so all three
-    // groups run over an identical wall-clock window.
+    // --- Catch-up reader tasks (barrier participants like the other classes) ---
     for reader_idx in 0..args.readers {
         let backend = backend.clone();
         let stream_idx = reader_idx % args.streams;
@@ -244,18 +263,24 @@ pub async fn run(args: MixedArgs) -> Result<MixedResult> {
         let read_ok = read_ok.clone();
         let read_bp = read_bp.clone();
         let read_err = read_err.clone();
+        let read_bytes = read_bytes.clone();
         let read_hist = read_hist.clone();
+        let barrier = ready_barrier.clone();
         let deadline_cell = deadline_cell.clone();
+        let rate = args.read_rate;
         handles.push(tokio::spawn(async move {
             run_reader_task(
                 backend,
                 reader_idx,
                 stream,
+                rate,
+                duration_secs,
+                barrier,
                 deadline_cell,
-                idle,
                 read_ok,
                 read_bp,
                 read_err,
+                read_bytes,
                 read_hist,
             )
             .await
@@ -293,7 +318,10 @@ pub async fn run(args: MixedArgs) -> Result<MixedResult> {
     crate::dist::emit_hdr(&fh, &format!("mixed-fanout-{pid}"));
     crate::dist::emit_hdr(&rh, &format!("mixed-read-{pid}"));
 
-    let aggregate_ops_per_sec = write_counts.ok as f64 / elapsed_secs.max(1e-9);
+    // All classes run barrier→deadline, so the drive window is the configured
+    // duration; rates over it are not diluted by setup/drain time.
+    let drive_secs = args.duration_secs as f64;
+    let aggregate_ops_per_sec = write_counts.ok as f64 / drive_secs.max(1e-9);
 
     Ok(MixedResult {
         scenario: "mixed",
@@ -303,13 +331,17 @@ pub async fn run(args: MixedArgs) -> Result<MixedResult> {
         streams: args.streams,
         writers_per_stream: args.writers_per_stream,
         readers: args.readers,
+        read_rate: args.read_rate,
         subscribers: args.subscribers,
         writer_rate: args.writer_rate,
         duration_secs: args.duration_secs,
         payload_bytes: args.payload_bytes,
         elapsed_secs,
+        drive_secs,
         write_counts,
         events_received: events_received.load(Ordering::Relaxed),
+        control_events_received: control_events.load(Ordering::Relaxed),
+        read_bytes_total: read_bytes.load(Ordering::Relaxed),
         read_counts,
         aggregate_ops_per_sec,
         write_latency_ms,
@@ -416,6 +448,7 @@ async fn run_subscriber_task(
     barrier: Arc<Barrier>,
     deadline_cell: Arc<tokio::sync::OnceCell<Instant>>,
     recv: Arc<AtomicU64>,
+    ctrl: Arc<AtomicU64>,
     hist: Arc<Mutex<Histogram<u64>>>,
     idle: Duration,
 ) -> Result<()> {
@@ -495,9 +528,10 @@ async fn run_subscriber_task(
                     recv.fetch_add(1, Ordering::Relaxed);
                     last_event_at = Instant::now();
                 } else if parse_sse_data(&raw).is_some() {
-                    // We received an SSE event but could not extract a timestamp.
-                    // Still count it so events_received is not zero.
-                    recv.fetch_add(1, Ordering::Relaxed);
+                    // An SSE frame without an embedded timestamp is a control
+                    // event (the server sends one per batch), not a record —
+                    // count it separately so the delivery rate stays honest.
+                    ctrl.fetch_add(1, Ordering::Relaxed);
                     last_event_at = Instant::now();
                 }
             }
@@ -518,37 +552,46 @@ async fn run_reader_task(
     backend: Backend,
     base_idx: usize,
     stream: String,
+    rate: u64,
+    duration_secs: u64,
+    barrier: Arc<Barrier>,
     deadline_cell: Arc<tokio::sync::OnceCell<Instant>>,
-    idle: Duration,
     ok: Arc<AtomicU64>,
     bp: Arc<AtomicU64>,
     err: Arc<AtomicU64>,
+    bytes: Arc<AtomicU64>,
     hist: Arc<Mutex<Histogram<u64>>>,
 ) {
-    // Mirror run_subscriber_task: while the deadline hasn't been set (writers
-    // haven't crossed the barrier yet) keep running but honour an idle
-    // fallback so we never spin forever.  Once the shared deadline is set we
-    // stop at exactly the same wall-clock instant as writers/subscribers.
-    let started_at = Instant::now();
+    // Readers are barrier participants like writers/subscribers, so all three
+    // classes share one wall-clock window (barrier release → deadline) and
+    // per-class rates divide cleanly by the drive duration.
+    barrier.wait().await;
+    let deadline = *deadline_cell
+        .get_or_init(|| async { Instant::now() + Duration::from_secs(duration_secs) })
+        .await;
+
+    // rate > 0 paces replay STARTS (like the writer's append pacing); 0 keeps
+    // the unpaced hot loop (the adversarial read-saturation mode).
+    let interval = if rate > 0 {
+        Some(Duration::from_micros(1_000_000 / rate.max(1)))
+    } else {
+        None
+    };
+    let mut next_at = Instant::now();
     let mut local = new_histogram();
-    loop {
-        let dl = deadline_cell.get().copied();
-        if let Some(end) = dl {
-            if Instant::now() >= end {
-                break;
+    while Instant::now() < deadline {
+        if let Some(iv) = interval {
+            let now = Instant::now();
+            if now < next_at {
+                tokio::time::sleep(next_at - now).await;
             }
-        } else {
-            // Writers haven't started yet; bail out if we've been running
-            // longer than the idle fallback (prevents spinning forever if
-            // something goes wrong before the barrier fires).
-            if started_at.elapsed() > idle {
-                break;
-            }
+            next_at += iv;
         }
         let t = Instant::now();
         match crate::catch_up::catch_up_read_all(&backend, base_idx, &stream).await {
-            Ok(_bytes) => {
+            Ok(b) => {
                 ok.fetch_add(1, Ordering::Relaxed);
+                bytes.fetch_add(b, Ordering::Relaxed);
                 record(&mut local, t);
             }
             Err(e) => {

@@ -4,15 +4,26 @@
   "cluster": {},
   "mixed": {
     "sweep": "readers",
-    "levels": [0, 4, 16, 64, 128],
+    "levels": [
+      0,
+      4,
+      16,
+      64,
+      128
+    ],
     "writers_per_stream": 1,
-    "writer_rate": 240,
+    "writer_rate": 355,
+    "read_rate": 1,
     "subscribers": 0,
     "duration_secs": 20,
     "payload_bytes": 256,
     "setup_concurrency": 16,
     "pods": 1
   },
-  "modes": ["wal"],
-  "stream_counts": [50]
+  "modes": [
+    "wal"
+  ],
+  "stream_counts": [
+    50
+  ]
 }

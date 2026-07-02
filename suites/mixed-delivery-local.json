@@ -4,7 +4,13 @@
   "cluster": {},
   "mixed": {
     "sweep": "writer_rate",
-    "levels": [20, 80, 200, 315, 0],
+    "levels": [
+      30,
+      120,
+      300,
+      475,
+      0
+    ],
     "writers_per_stream": 1,
     "readers": 0,
     "subscribers": 100,
@@ -13,6 +19,22 @@
     "setup_concurrency": 16,
     "pods": 1
   },
-  "modes": ["wal"],
-  "stream_counts": [50]
+  "modes": [
+    "wal"
+  ],
+  "server_configs": {
+    "wal": [
+      {
+        "label": "wal",
+        "args": ""
+      },
+      {
+        "label": "memory",
+        "args": "--durability memory"
+      }
+    ]
+  },
+  "stream_counts": [
+    50
+  ]
 }

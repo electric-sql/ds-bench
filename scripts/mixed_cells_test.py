@@ -15,11 +15,12 @@ def _summary(p50=1.0, p99=5.0, ops=None, count=100):
     return d
 
 
-def _pod(write_ok=1000, read_ok=50, events=200, elapsed=20.0):
-    return {"scenario": "mixed", "elapsed_secs": elapsed,
+def _pod(write_ok=1000, read_ok=50, events=200, elapsed=25.0, drive=20.0):
+    return {"scenario": "mixed", "elapsed_secs": elapsed, "drive_secs": drive,
             "write_counts": {"ok": write_ok, "backpressure": 1, "other_err": 0},
             "read_counts": {"ok": read_ok, "backpressure": 0, "other_err": 2},
-            "events_received": events}
+            "events_received": events, "control_events_received": events,
+            "read_bytes_total": 20 * 1048576}
 
 
 def _merged_text(write_ok=1000, read_ok=50, events=200, ops=50.0):
@@ -40,10 +41,21 @@ def test_parse_skips_chatter():
 def test_metrics_derivation():
     m = mixed_cells.metrics_from_merged(mixed_cells.parse_merged(_merged_text()))
     assert m["write_ops_per_sec"] == 50.0
+    # Rates divide by the drive window (20s), not full elapsed (25s).
     assert m["read_ops_per_sec"] == 50 / 20.0
     assert m["events_per_sec"] == 200 / 20.0
+    assert m["read_mib_per_sec"] == 1.0
+    assert m["control_events_received"] == 200
     assert m["write_bp"] == 1 and m["read_err"] == 2
     assert m["delivery_p99"] == 2.0 and m["read_p50"] == 3.0
+
+
+def test_window_falls_back_to_elapsed():
+    doc = mixed_cells.parse_merged(_merged_text())
+    for p in doc["pods"]:
+        del p["drive_secs"]
+    m = mixed_cells.metrics_from_merged(doc)
+    assert m["read_ops_per_sec"] == 50 / 25.0
 
 
 def test_zero_percentiles_absent():

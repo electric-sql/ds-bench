@@ -26,19 +26,19 @@ measure_mixed() {
   local mode="${SAT_MODE:?measure_mixed: SAT_MODE unset}"
   local rep="${SAT_REP:-1}"
   local cell_dir; cell_dir="$(_sat_cell_dir "$pods" "$rep")"; mkdir -p "$cell_dir"
-  MIXED_BENCH_CMD="mixed --target ${T_TARGET:?} --api-style ${T_API:?} ${T_NS:-} --streams ${sc} --writers-per-stream ${MX_WPS} --writer-rate ${MX_RATE} --readers ${MX_READERS} --subscribers ${MX_SUBS} --duration-secs ${MX_DURATION} --payload-bytes ${MX_PAYLOAD} --setup-concurrency ${MX_SETUP}"
+  MIXED_BENCH_CMD="mixed --target ${T_TARGET:?} --api-style ${T_API:?} ${T_NS:-} --streams ${sc} --writers-per-stream ${MX_WPS} --writer-rate ${MX_RATE} --readers ${MX_READERS} --read-rate ${MX_READRATE} --subscribers ${MX_SUBS} --duration-secs ${MX_DURATION} --payload-bytes ${MX_PAYLOAD} --setup-concurrency ${MX_SETUP}"
   _run_cell_one "${mode}-mixed-n${sc}-l${MIXED_LEVEL}" "$MIXED_BENCH_CMD" "mixed" "$MIXED_MERGE_CMD" "$pods" "$rep" "$cell_dir"
 }
 
 # record_mixed_cell — thin wrapper so tests can stub recording. Positional:
-# cells_json sc level digest merged_path readers subscribers writer_rate.
+# cells_json sc level digest merged_path readers subscribers writer_rate read_rate.
 record_mixed_cell() {
   python3 -c "
 import sys; sys.path.insert(0,'scripts')
 import mixed_cells
 st = mixed_cells.record_merged(sys.argv[1], int(sys.argv[2]), int(sys.argv[3]),
     image_digest=sys.argv[4], merged_path=sys.argv[5], readers=int(sys.argv[6]),
-    subscribers=int(sys.argv[7]), writer_rate=int(sys.argv[8]))
+    subscribers=int(sys.argv[7]), writer_rate=int(sys.argv[8]), read_rate=int(sys.argv[9]))
 print(st)
 " "$@"
 }
@@ -52,6 +52,7 @@ run_mixed_cell() {
   export MX_DURATION; MX_DURATION="$(_sat_get s 's.mixed.get("duration_secs",20)')"
   export MX_PAYLOAD;  MX_PAYLOAD="$(_sat_get s 's.mixed.get("payload_bytes",256)')"
   export MX_SETUP;    MX_SETUP="$(_sat_get s 's.mixed.get("setup_concurrency",16)')"
+  export MX_READRATE; MX_READRATE="$(_sat_get s 's.mixed.get("read_rate",0)')"
   local fixed_rate;    fixed_rate="$(_sat_get s 's.mixed.get("writer_rate",50)')"
   local fixed_readers; fixed_readers="$(_sat_get s 's.mixed.get("readers",0)')"
   local fixed_subs;    fixed_subs="$(_sat_get s 's.mixed.get("subscribers",0)')"
@@ -81,7 +82,7 @@ run_mixed_cell() {
 
     local cd st
     cd="$(_sat_cell_dir "$pods" 1)"
-    st="$(record_mixed_cell "$cells_json" "$sc" "$level" "$digest" "$cd/merged.json" "$MX_READERS" "$MX_SUBS" "$MX_RATE")"
+    st="$(record_mixed_cell "$cells_json" "$sc" "$level" "$digest" "$cd/merged.json" "$MX_READERS" "$MX_SUBS" "$MX_RATE" "$MX_READRATE")"
     echo "[mixed $mode n$sc l$level] recorded status=$st" >&2
   done
 

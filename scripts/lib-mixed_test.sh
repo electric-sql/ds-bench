@@ -25,6 +25,7 @@ _sat_get() {
     *sweep*)              echo "$MIXED_AXIS" ;;
     *levels*)             echo "0 16" ;;
     *writers_per_stream*) echo "1" ;;
+    *read_rate*)          echo "2" ;;
     *writer_rate*)        echo "40" ;;
     *\"readers\"*)        echo "8" ;;
     *subscribers*)        echo "5" ;;
@@ -41,9 +42,9 @@ rm -f /tmp/mixed-cells.json
 run_mixed_cell "wal" "50" "/tmp/mixed-cells.json" "digestX" >/dev/null 2>&1
 
 fail=0
-grep -q -- "--streams 50 --writers-per-stream 1 --writer-rate 40 --readers 0 --subscribers 5 " "$CAPTURE" \
+grep -q -- "--streams 50 --writers-per-stream 1 --writer-rate 40 --readers 0 --read-rate 2 --subscribers 5 " "$CAPTURE" \
   || { echo "FAIL: readers axis, level 0 cmd"; fail=1; }
-grep -q -- "--writer-rate 40 --readers 16 --subscribers 5 " "$CAPTURE" \
+grep -q -- "--writer-rate 40 --readers 16 --read-rate 2 --subscribers 5 " "$CAPTURE" \
   || { echo "FAIL: readers axis, level 16 cmd"; fail=1; }
 
 # Axis 2: sweep writer_rate at fixed subscribers (readers pinned to 0).
@@ -54,6 +55,7 @@ _sat_get() {
     *sweep*)              echo "$MIXED_AXIS" ;;
     *levels*)             echo "10 0" ;;
     *writers_per_stream*) echo "1" ;;
+    *read_rate*)          echo "0" ;;
     *writer_rate*)        echo "40" ;;
     *\"readers\"*)        echo "0" ;;
     *subscribers*)        echo "100" ;;
@@ -67,9 +69,9 @@ _sat_get() {
 rm -f /tmp/mixed-cells.json
 run_mixed_cell "wal" "50" "/tmp/mixed-cells.json" "digestX" >/dev/null 2>&1
 
-grep -q -- "--writer-rate 10 --readers 0 --subscribers 100 " "$CAPTURE" \
+grep -q -- "--writer-rate 10 --readers 0 --read-rate 0 --subscribers 100 " "$CAPTURE" \
   || { echo "FAIL: writer_rate axis, level 10 cmd"; fail=1; }
-grep -q -- "--writer-rate 0 --readers 0 --subscribers 100 " "$CAPTURE" \
+grep -q -- "--writer-rate 0 --readers 0 --read-rate 0 --subscribers 100 " "$CAPTURE" \
   || { echo "FAIL: writer_rate axis, level 0 (max) cmd"; fail=1; }
 grep -q -- "--duration-secs 20 --payload-bytes 256 --setup-concurrency 16" "$CAPTURE" \
   || { echo "FAIL: fixed knob args"; fail=1; }
