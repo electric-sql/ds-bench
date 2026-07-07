@@ -51,16 +51,17 @@ pub struct MultiStreamArgs {
 
     /// Offered concurrency (number of connection-workers). 0 = legacy model: one
     /// in-flight append PER stream through an idempotent producer session
-    /// (ordered, deduped — throughput becomes streams/latency). >0 =
-    /// bounded-concurrency pool model measuring RAW append throughput: exactly
-    /// N=connections worker tasks (each its own connection, one in-flight append)
-    /// issuing PLAIN appends — no producer headers, no seq, no server-side
-    /// session/dedup state — cycled over the stream set (disjoint slices when
-    /// N ≤ streams; ⌈N/streams⌉ workers per stream when N > streams, which is
-    /// safe because plain concurrent appends to one stream just serialize under
-    /// the appender lock). Offered load is decoupled from stream count in BOTH
-    /// directions and one pod can extract the server's max throughput while
-    /// writes stay distributed across every stream.
+    /// (ordered, deduped — throughput becomes streams/latency; pods own disjoint
+    /// pod-prefixed stream sets). >0 = bounded-concurrency pool model measuring
+    /// RAW append throughput over a GLOBAL key domain: exactly N=connections
+    /// worker tasks (each its own connection, one in-flight append) issue PLAIN
+    /// appends — no producer headers, no seq, no server-side session/dedup
+    /// state — to uniformly RANDOM keys in [0, --streams). Pods are fully
+    /// independent: no pre-sharding, no setup phase; streams are created lazily
+    /// on first touch (append → 404 → create-tolerate-exists → retry). Offered
+    /// load is decoupled from stream count in both directions, per-stream
+    /// arrivals are Poisson-like superpositions of independent writers, and a
+    /// degraded pod lowers offered load without skewing key coverage.
     #[arg(long, default_value_t = 0)]
     pub connections: usize,
 
@@ -130,30 +131,47 @@ pub struct MultiStreamResult {
     pub measure_end_unix_ms: u64,
 }
 
-/// Pool worker → stream assignment: the worker's stream range `[lo, hi)`.
-///
-/// * `c ≤ n`: disjoint contiguous slices covering every stream exactly once.
-/// * `c > n`: worker `w` is pinned to the single stream `w % n`, so ⌈c/n⌉
-///   workers share each stream. Pool appends are PLAIN (no producer sessions),
-///   so concurrent workers on one stream are safe — the server serializes them
-///   under the appender lock; there is no seq to race.
-fn pool_assignment(w: usize, c: usize, n: usize) -> (usize, usize) {
-    if c <= n {
-        (w * n / c, (w + 1) * n / c)
-    } else {
-        let s = w % n;
-        (s, s + 1)
-    }
-}
-
-/// Per-pod stream-name prefix: fleet pods MUST own disjoint stream sets, or a
-/// multi-pod cell's real cardinality silently shrinks to streams/pods (every pod
-/// creating and writing the same `s…` names). The indexed Job sets
-/// DS_BENCH_INSTANCE = pod ordinal; single-process runs default to "0".
+/// Per-pod stream-name prefix for the LEGACY model: its per-stream producer
+/// sessions require pods to own disjoint stream sets, or pods collide on
+/// producer identities and a multi-pod cell's real cardinality silently shrinks
+/// to streams/pods. The indexed Job sets DS_BENCH_INSTANCE = pod ordinal;
+/// single-process runs default to "0". The pool model does NOT use this: its
+/// key domain is global by design (any pod writes any key).
 fn instance_prefix() -> String {
     let inst = std::env::var("DS_BENCH_INSTANCE").unwrap_or_default();
     let inst = if inst.is_empty() { "0".to_string() } else { inst };
     format!("i{inst}-")
+}
+
+/// Global (pod-independent) stream name for the pool model's shared key domain.
+fn stream_name_global(idx: usize) -> String {
+    format!("s{idx:08}")
+}
+
+/// Tiny deterministic PRNG (xorshift64*) — no `rand` dependency, seeded per
+/// (pod, worker) so runs are reproducible and workers draw independent key
+/// sequences over the shared domain.
+struct XorShift64(u64);
+
+impl XorShift64 {
+    fn seeded(instance: u64, worker: u64) -> Self {
+        // SplitMix-style avalanche of a non-zero composite seed.
+        let mut z = 0x9E37_79B9_7F4A_7C15u64
+            ^ (instance.wrapping_mul(0xBF58_476D_1CE4_E5B9))
+            ^ (worker.wrapping_mul(0x94D0_49BB_1331_11EB));
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        XorShift64((z ^ (z >> 31)) | 1)
+    }
+
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
 }
 
 /// Planned wall-clock measure window, computed at phase setup: `Instant`-based
@@ -191,23 +209,25 @@ pub async fn run(args: MultiStreamArgs) -> Result<MultiStreamResult> {
         backend.bases.len()
     );
     backend.ensure_namespace().await?;
-    // batched pool appends use a JSON array body, so the stream must be declared
-    // application/json (a POST with a mismatched content-type is a 409 config conflict).
-    let stream_ct = if args.connections > 0 && args.batch > 1 {
-        "application/json"
-    } else {
-        "application/octet-stream"
-    };
-    create_streams(&backend, args.streams, args.setup_concurrency, stream_ct).await?;
+
+    if args.connections > 0 {
+        // Pool model: NO setup phase. Pods are fully independent — every worker
+        // draws random keys over the GLOBAL --streams domain and streams are
+        // created lazily on first touch (append → 404 → create → retry; creation
+        // races are safe: create is create-only + tolerate-exists, and pool
+        // appends carry no producer identity to collide on). The barrier below
+        // is kept for exactly one reason: aligning the fleet's measure windows.
+        crate::barrier::sync_to_fleet_start().await;
+        return run_pool(args, backend).await;
+    }
+
+    create_streams(&backend, args.streams, args.setup_concurrency, "application/octet-stream")
+        .await?;
 
     // Fleet start barrier (no-op unless DS_BENCH_BARRIER_DIR is set): hold here —
     // AFTER setup, BEFORE any load phase — until every pod is ready and the
     // leader's go time arrives, so all measure windows cover the same wall time.
     crate::barrier::sync_to_fleet_start().await;
-
-    if args.connections > 0 {
-        return run_pool(args, backend).await;
-    }
 
     let payload = Arc::new(fill_payload(args.payload_bytes, 0xC0FFEE));
     let ok = Arc::new(AtomicU64::new(0));
@@ -345,21 +365,24 @@ async fn run_pool(args: MultiStreamArgs, backend: Backend) -> Result<MultiStream
     let (measure_start_unix_ms, measure_end_unix_ms) =
         wall_measure_window(args.warmup_secs, args.settle_secs, args.duration_secs);
 
-    tracing::info!("pool model: connections={c} streams={n} batch={batch} (streams/worker≈{})", n / c);
+    let instance: u64 = std::env::var("DS_BENCH_INSTANCE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    tracing::info!(
+        "pool model: connections={c} random over global domain of {n} streams, batch={batch}"
+    );
 
     let mut workers = Vec::with_capacity(c);
     for w in 0..c {
-        let (lo, hi) = pool_assignment(w, c, n);
-        if lo >= hi {
-            continue;
-        }
         let backend = backend.clone();
         let body = body.clone();
+        let rng = XorShift64::seeded(instance, w as u64);
         let (ok, bp, err, errors, hist) =
             (ok.clone(), bp.clone(), err.clone(), errors.clone(), hist.clone());
         workers.push(tokio::spawn(async move {
             pool_worker(
-                backend, lo, hi, body, content_type, recs_per_post, warmup_end,
+                backend, n, rng, body, content_type, recs_per_post, warmup_end,
                 measure_start, deadline, ok, bp, err, errors, hist,
             )
             .await
@@ -411,8 +434,8 @@ async fn run_pool(args: MultiStreamArgs, backend: Backend) -> Result<MultiStream
 #[allow(clippy::too_many_arguments)]
 async fn pool_worker(
     backend: Backend,
-    lo: usize,
-    hi: usize,
+    domain: usize,
+    mut rng: XorShift64,
     body: Arc<Vec<u8>>,
     content_type: &'static str,
     recs_per_post: u64,
@@ -425,9 +448,7 @@ async fn pool_worker(
     errors: Arc<Mutex<BTreeMap<String, u64>>>,
     hist: Arc<Mutex<Histogram<u64>>>,
 ) {
-    let span = hi - lo;
     let mut local = new_histogram();
-    let mut rr = 0usize; // round-robin cursor within [lo, hi)
     while Instant::now() < deadline {
         let now = Instant::now();
         if now >= warmup_end && now < measure_start {
@@ -435,10 +456,11 @@ async fn pool_worker(
             continue;
         }
         let counting = now >= measure_start;
-        let local_idx = rr % span;
-        rr = rr.wrapping_add(1);
-        let global = lo + local_idx;
-        let stream = stream_name(global);
+        // Uniform random key over the GLOBAL domain — every pod/worker can hit
+        // every stream; no client↔stream binding to leave a fingerprint on the
+        // per-stream arrival pattern.
+        let global = (rng.next() % domain as u64) as usize;
+        let stream = stream_name_global(global);
         let started = Instant::now();
         // RAW throughput: plain append, no producer session/seq/dedup — the
         // measurement is the server's append path, not its idempotency layer.
@@ -453,6 +475,45 @@ async fn pool_worker(
                     if counting {
                         ok.fetch_add(recs_per_post, Ordering::Relaxed);
                         record(&mut local, started);
+                    }
+                } else if status.as_u16() == 404 {
+                    // Lazy creation: first touch of this key. Create (create-only,
+                    // tolerate-exists — racing pods are fine) and retry the append
+                    // once. The op's recorded latency includes the create: that is
+                    // the honest client-observed cost, and after warmup nearly the
+                    // whole domain exists so these are rare.
+                    if backend.create_stream(&stream, content_type).await.is_ok() {
+                        let retry = backend
+                            .append_request(global, &stream, &body, None, content_type)
+                            .send()
+                            .await;
+                        match retry {
+                            Ok(r2) if r2.status().is_success() => {
+                                if counting {
+                                    ok.fetch_add(recs_per_post, Ordering::Relaxed);
+                                    record(&mut local, started);
+                                }
+                            }
+                            Ok(r2) => {
+                                if counting {
+                                    err.fetch_add(1, Ordering::Relaxed);
+                                    record_error(
+                                        &errors,
+                                        format!("http_status_{}_after_create", r2.status().as_u16()),
+                                    )
+                                    .await;
+                                }
+                            }
+                            Err(e) => {
+                                if counting {
+                                    err.fetch_add(1, Ordering::Relaxed);
+                                    record_error(&errors, reqwest_error_chain(&e)).await;
+                                }
+                            }
+                        }
+                    } else if counting {
+                        err.fetch_add(1, Ordering::Relaxed);
+                        record_error(&errors, "create_failed".to_string()).await;
                     }
                 } else if status.as_u16() == 503 || status.as_u16() == 429 {
                     if counting {
@@ -633,38 +694,45 @@ fn stream_name(idx: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::pool_assignment;
+    use super::XorShift64;
 
-    /// c ≤ n: disjoint contiguous slices covering every stream exactly once.
+    /// Same (pod, worker) seed → same key sequence: runs are reproducible.
+    /// Different workers → different sequences.
     #[test]
-    fn sliced_assignment_covers_all_streams_disjointly() {
-        for (c, n) in [(1, 5), (3, 10), (10, 10), (7, 100)] {
-            let mut covered = vec![0u32; n];
-            for w in 0..c {
-                let (lo, hi) = pool_assignment(w, c, n);
-                for s in lo..hi {
-                    covered[s] += 1;
-                }
-            }
-            assert!(covered.iter().all(|&x| x == 1), "every stream owned exactly once (c={c} n={n})");
-        }
+    fn rng_is_deterministic_per_pod_worker() {
+        let a: Vec<u64> = {
+            let mut r = XorShift64::seeded(3, 7);
+            (0..64).map(|_| r.next()).collect()
+        };
+        let b: Vec<u64> = {
+            let mut r = XorShift64::seeded(3, 7);
+            (0..64).map(|_| r.next()).collect()
+        };
+        assert_eq!(a, b, "same seed must reproduce the same sequence");
+        let c: Vec<u64> = {
+            let mut r = XorShift64::seeded(3, 8);
+            (0..64).map(|_| r.next()).collect()
+        };
+        assert_ne!(a, c, "different workers must draw different sequences");
     }
 
-    /// c > n: every stream keeps receiving writes (distribution across all keys)
-    /// and each stream gets ⌈c/n⌉ or ⌊c/n⌋ workers — safe without producer
-    /// identities because pool appends are plain (no seq to race).
+    /// Uniform draws over a domain cover every key and stay roughly balanced —
+    /// the property that keeps writes distributed across the whole key space.
     #[test]
-    fn shared_assignment_balances_workers_across_streams() {
-        for (c, n) in [(6, 5), (256, 100), (3000, 100), (2048, 1)] {
-            let mut per_stream = vec![0usize; n];
-            for w in 0..c {
-                let (lo, hi) = pool_assignment(w, c, n);
-                assert_eq!(hi, lo + 1, "shared workers own exactly one stream");
-                per_stream[lo] += 1;
-            }
-            assert!(per_stream.iter().all(|&x| x > 0), "every stream written (c={c} n={n})");
-            let (min, max) = (per_stream.iter().min().unwrap(), per_stream.iter().max().unwrap());
-            assert!(max - min <= 1, "balanced within 1 worker (c={c} n={n})");
+    fn rng_covers_domain_roughly_uniformly() {
+        let n = 1000usize;
+        let draws = 100_000usize;
+        let mut counts = vec![0u32; n];
+        let mut r = XorShift64::seeded(1, 2);
+        for _ in 0..draws {
+            counts[(r.next() % n as u64) as usize] += 1;
         }
+        assert!(counts.iter().all(|&x| x > 0), "every key must be touched");
+        let mean = draws as f64 / n as f64; // 100
+        let (min, max) = (
+            *counts.iter().min().unwrap() as f64,
+            *counts.iter().max().unwrap() as f64,
+        );
+        assert!(min > mean * 0.5 && max < mean * 1.5, "roughly uniform (min={min} max={max})");
     }
 }
