@@ -24,7 +24,7 @@ case "$DS_TARGET" in
     # io-uring, …) can be compared by pointing at distinct image tags.
     IMG_SERVER="${IMG_SERVER:-durable-streams:dev}"
     IMG_NODE="${IMG_NODE:-durable-node:dev}"   # Node.js reference server (kind-loaded)
-    IMG_URSULA="${IMG_URSULA:-ghcr.io/tonbo-io/ursula:v0.1.5}"   # upstream published image
+    IMG_URSULA="${IMG_URSULA:-ghcr.io/tonbo-io/ursula:v0.2.0}"   # upstream published image
     IMG_DSBENCH="ds-bench:dev"
     IMG_METRICS="ds-bench:dev"        # ds-bench:dev carries bash+curl+procps for the sidecar
     PULL_POLICY="IfNotPresent"        # use the kind-loaded image; never reach for a registry
@@ -43,7 +43,7 @@ case "$DS_TARGET" in
     REG="${AR_LOCATION}-docker.pkg.dev/${PROJECT}/${AR_REPO}"
     IMG_SERVER="${IMG_SERVER:-${REG}/durable-streams:dev}"
     IMG_NODE="${IMG_NODE:-${REG}/durable-node:dev}"   # Node.js reference server
-    IMG_URSULA="${IMG_URSULA:-ghcr.io/tonbo-io/ursula:v0.1.5}"   # upstream published image
+    IMG_URSULA="${IMG_URSULA:-ghcr.io/tonbo-io/ursula:v0.2.0}"   # upstream published image
     IMG_DSBENCH="${REG}/ds-bench:dev"
     IMG_METRICS="${REG}/ds-bench:dev"   # ds-bench:dev carries bash+procps for the sidecar
     # Default Always (a runner pushes a fresh :dev each session). Overridable to
