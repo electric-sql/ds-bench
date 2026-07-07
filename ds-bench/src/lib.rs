@@ -1,4 +1,5 @@
 pub mod append;
+pub mod barrier;
 mod backend;
 mod common;
 mod multi_fanout;

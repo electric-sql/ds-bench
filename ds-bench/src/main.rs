@@ -1,4 +1,5 @@
 mod append;
+mod barrier;
 mod backend;
 mod bootstrap;
 mod catch_up;

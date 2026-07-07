@@ -29,6 +29,15 @@ measure_pods() {
   # endpoint (the 100k creation_choke). A lower per-pod value keeps total concurrent
   # creation bounded while pods still drive full load after setup.
   local setup_conc="${SETUP_CONCURRENCY:-32}" payload="${PAYLOAD_BYTES:-256}"
+  # Saturation cells SUM per-pod rates, so the fleet start barrier is mandatory:
+  # every pod holds after stream creation until all are ready, then measures over
+  # the same wall window (prevention; hdr-merge's windows_aligned is the check).
+  export BARRIER_DIR="${BARRIER_DIR:-/barrier}"
+  # The fleet's post-release lifetime is bounded (warmup+settle+measure+upload) —
+  # size the completion wait to it instead of the generic default, which a large
+  # fleet outlives (the old silent failure mode: the coordinator merged a partial,
+  # time-skewed subset while pods were still running).
+  export FLEET_TIMEOUT="${FLEET_TIMEOUT_OVERRIDE:-$(( warmup + settle + dur + 240 ))}"
   # CONNS_PER_POD>0 switches the client to the bounded-concurrency pool model: each
   # pod offers exactly CONNS_PER_POD in-flight appends cycled over its ${perpod}
   # streams (decouples offered load from stream count). 0/unset = legacy 1-per-stream.

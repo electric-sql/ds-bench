@@ -171,6 +171,11 @@ pub async fn run(args: MultiStreamArgs) -> Result<MultiStreamResult> {
     };
     create_streams(&backend, args.streams, args.setup_concurrency, stream_ct).await?;
 
+    // Fleet start barrier (no-op unless DS_BENCH_BARRIER_DIR is set): hold here —
+    // AFTER setup, BEFORE any load phase — until every pod is ready and the
+    // leader's go time arrives, so all measure windows cover the same wall time.
+    crate::barrier::sync_to_fleet_start().await;
+
     if args.connections > 0 {
         return run_pool(args, backend).await;
     }

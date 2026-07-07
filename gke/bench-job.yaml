@@ -10,6 +10,12 @@
 #   ${PARALLELISM}  number of fleet pods (= completions)
 #   ${BENCH_CMD}    ds-bench subcommand + flags (per-workload)
 #   ${OUT_PREFIX}   filename prefix for this workload's json (e.g. ms / fan-out)
+#   ${BARRIER_DIR}  non-empty (e.g. /barrier) enables the fleet START BARRIER: the
+#                   client holds after setup until every pod is ready and the
+#                   harness publishes a shared go time, so all measure windows
+#                   cover the same wall time (see src/barrier.rs). The relay
+#                   below bridges the client's local ready/go files to MinIO.
+#                   Empty = disabled (workloads that don't sum per-pod rates).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -34,8 +40,25 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - >
+              if [ -n "${BARRIER_DIR}" ]; then
+              mkdir -p "${BARRIER_DIR}";
+              ( while [ ! -f "${BARRIER_DIR}/ready" ]; do sleep 0.5; done;
+              for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+              mc alias set local http://minio:9000 minioadmin minioadmin >/dev/null 2>&1 &&
+              mc cp "${BARRIER_DIR}/ready" "local/bench-results/${RUN_ID}/barrier/ready-$JOB_COMPLETION_INDEX" >/dev/null 2>&1 &&
+              break;
+              sleep $(( (JOB_COMPLETION_INDEX % 12) + 1 ));
+              done;
+              while :; do
+              mc cat "local/bench-results/${RUN_ID}/barrier/go" > "${BARRIER_DIR}/go.tmp" 2>/dev/null &&
+              [ -s "${BARRIER_DIR}/go.tmp" ] && break;
+              sleep 1;
+              done;
+              mv "${BARRIER_DIR}/go.tmp" "${BARRIER_DIR}/go" ) &
+              fi;
               DS_BENCH_INSTANCE="$JOB_COMPLETION_INDEX"
               DS_BENCH_SHARDS="${PARALLELISM}"
+              DS_BENCH_BARRIER_DIR="${BARRIER_DIR}"
               ds-bench ${BENCH_CMD}
               > /out/${OUT_PREFIX}-${JOB_COMPLETION_INDEX}.json &&
               up=0;

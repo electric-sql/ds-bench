@@ -193,15 +193,55 @@ _capture_choke_diagnostics() {
   echo "    ───────────────────────────────────────────────────────────────" >&2
 }
 
+# ── Fleet start barrier (leader side) ─────────────────────────────────────────
+# When BARRIER_DIR is non-empty, every fleet pod holds after its setup phase until
+# a shared go time is published (see gke/bench-job.yaml + src/barrier.rs). The
+# host is the leader: wait for PARALLELISM ready markers in MinIO, then publish
+# `go` = now + BARRIER_GO_HEADROOM_SECS (unix ms). On BARRIER_SETUP_TIMEOUT_SECS
+# the fleet is released anyway — the merged windows_aligned verdict judges the
+# cell rather than a hung barrier wedging the walk.
+
+# _barrier_mc <shell-with-mc> — run an mc pipeline inside the minio pod (it has
+# the server-local alias). Overridable in tests.
+_barrier_mc() {
+  K exec deploy/minio -- sh -c \
+    "mc alias set local http://localhost:9000 minioadmin minioadmin >/dev/null 2>&1; $*" 2>/dev/null
+}
+
+# _barrier_release_fleet <want-ready-count> — block until every pod is at the
+# barrier (or timeout), then publish the go time.
+_barrier_release_fleet() {
+  local want="$1" poll="${BARRIER_POLL_SECS:-2}" n=0
+  local deadline=$(( $(date +%s) + ${BARRIER_SETUP_TIMEOUT_SECS:-900} ))
+  echo "    barrier: waiting for ${want} ready markers (timeout ${BARRIER_SETUP_TIMEOUT_SECS:-900}s)..."
+  while :; do
+    n="$(_barrier_mc "mc ls local/bench-results/${RUN_ID}/barrier/" | grep -c 'ready-' || true)"
+    n="${n:-0}"
+    [ "$n" -ge "$want" ] && break
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      echo "    barrier: TIMEOUT with ${n}/${want} ready — releasing anyway (windows_aligned judges the cell)"
+      break
+    fi
+    sleep "$poll"
+  done
+  local go_ms=$(( ( $(date +%s) + ${BARRIER_GO_HEADROOM_SECS:-5} ) * 1000 ))
+  _barrier_mc "echo ${go_ms} | mc pipe local/bench-results/${RUN_ID}/barrier/go"
+  echo "    barrier: released ${n}/${want} pods (go=${go_ms})"
+}
+
 # run_fleet_and_coordinator — expects: RUN_ID PARALLELISM BENCH_CMD OUT_PREFIX MERGE_CMD
 run_fleet_and_coordinator() {
   export RUN_ID PARALLELISM BENCH_CMD OUT_PREFIX MERGE_CMD
+  export BARRIER_DIR="${BARRIER_DIR:-}"
 
   clean_jobs
 
   echo "    launching fleet (${PARALLELISM} pods)..."
-  envsubst "${MANIFEST_VARS} \${RUN_ID} \${PARALLELISM} \${BENCH_CMD} \${OUT_PREFIX}" \
+  envsubst "${MANIFEST_VARS} \${RUN_ID} \${PARALLELISM} \${BENCH_CMD} \${OUT_PREFIX} \${BARRIER_DIR}" \
     < gke/bench-job.yaml | K apply -f -
+  if [ -n "${BARRIER_DIR}" ]; then
+    _barrier_release_fleet "${PARALLELISM}"
+  fi
   # Tolerant: a hung/saturated server makes some pods fail → the Job never reaches
   # `complete`. Wait for complete OR failed, then proceed — the coordinator merges
   # whatever HDRs the surviving pods uploaded, instead of aborting under `set -e`.

@@ -205,6 +205,22 @@ hardware, and a cell-level status section noting any error cells + cause).
 
 ## 7. Write saturation: calibrate the pod, then scale pods
 
+**Fleet start barrier + window alignment.** Saturation cells SUM per-pod rates,
+which only measures the server when every pod's measure window covers the same
+wall time. The walker therefore runs the fleet under a **start barrier**
+(`BARRIER_DIR`, on by default in `lib-saturate.sh`): each pod holds after its
+stream-creation phase (`src/barrier.rs`, ready/go files relayed to MinIO by the
+pod wrapper in `gke/bench-job.yaml`), and the host releases the whole fleet at
+one shared go time once all `PARALLELISM` ready markers are up
+(`_barrier_release_fleet`; `BARRIER_SETUP_TIMEOUT_SECS`, default 900). Pods then
+stamp `measure_{start,end}_unix_ms` into their JSONs and hdr-merge verifies the
+fleet actually measured together (`windows_aligned`: span ≤ 2× window); a
+misaligned rung records as `error/misaligned_windows` instead of an inflated
+number. Without this, K8s scheduling waves + per-pod setup staggered the 8 s
+windows across minutes at ≥160 pods, and the sum multiply-counted capacity (a
+4-vCPU server "measured" at 2.9M appends/s while its disk telemetry showed it
+mostly idle). Barrier = prevention; the aligned check = verification — both stay.
+
 **Terminology.** Keep three things separate: the **workload** (the operation under
 test — here, *append*); the **offered load** (the demand profile —
 `concurrency = pods × connections`, `payload_bytes`, `batch`, rate); and the **fleet**
