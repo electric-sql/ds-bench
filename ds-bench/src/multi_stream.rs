@@ -5,6 +5,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use clap::Args;
@@ -117,6 +118,25 @@ pub struct MultiStreamResult {
     pub aggregate_ops_per_sec: f64,
     pub per_stream_ops_per_sec_mean: f64,
     pub latency_ms: LatencySummary,
+    /// Wall-clock bounds of this pod's measure window (unix ms). The fleet sum of
+    /// `aggregate_ops_per_sec` only means something when every pod's window covers
+    /// the same wall time — hdr-merge uses these stamps to verify the windows
+    /// actually overlapped (staggered pod starts otherwise multiply-count the
+    /// server's capacity: the 500k-stream 2.9M ops/s artifact).
+    pub measure_start_unix_ms: u64,
+    pub measure_end_unix_ms: u64,
+}
+
+/// Planned wall-clock measure window, computed at phase setup: `Instant`-based
+/// phase arithmetic mapped onto the wall clock. Drift between the monotonic and
+/// wall clocks over a bench run is negligible for the overlap check this feeds.
+fn wall_measure_window(warmup_secs: u64, settle_secs: u64, duration_secs: u64) -> (u64, u64) {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let start = now_ms + (warmup_secs + settle_secs) * 1000;
+    (start, start + duration_secs * 1000)
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -168,6 +188,8 @@ pub async fn run(args: MultiStreamArgs) -> Result<MultiStreamResult> {
     let warmup_end = base + Duration::from_secs(args.warmup_secs);
     let measure_start = warmup_end + Duration::from_secs(args.settle_secs);
     let deadline = measure_start + Duration::from_secs(args.duration_secs);
+    let (measure_start_unix_ms, measure_end_unix_ms) =
+        wall_measure_window(args.warmup_secs, args.settle_secs, args.duration_secs);
 
     let mut workers = Vec::with_capacity(args.streams);
     for idx in 0..args.streams {
@@ -243,6 +265,8 @@ pub async fn run(args: MultiStreamArgs) -> Result<MultiStreamResult> {
         aggregate_ops_per_sec: aggregate,
         per_stream_ops_per_sec_mean: per_stream_mean,
         latency_ms: latency,
+        measure_start_unix_ms,
+        measure_end_unix_ms,
     })
 }
 
@@ -282,6 +306,8 @@ async fn run_pool(args: MultiStreamArgs, backend: Backend) -> Result<MultiStream
     let warmup_end = base + Duration::from_secs(args.warmup_secs);
     let measure_start = warmup_end + Duration::from_secs(args.settle_secs);
     let deadline = measure_start + Duration::from_secs(args.duration_secs);
+    let (measure_start_unix_ms, measure_end_unix_ms) =
+        wall_measure_window(args.warmup_secs, args.settle_secs, args.duration_secs);
 
     tracing::info!("pool model: connections={c} streams={n} batch={batch} (streams/worker≈{})", n / c);
 
@@ -342,6 +368,8 @@ async fn run_pool(args: MultiStreamArgs, backend: Backend) -> Result<MultiStream
         aggregate_ops_per_sec: aggregate,
         per_stream_ops_per_sec_mean: per_stream_mean,
         latency_ms: latency,
+        measure_start_unix_ms,
+        measure_end_unix_ms,
     })
 }
 

@@ -37,16 +37,38 @@ def _last_json_object(text):
             return None
     return None
 
-def extract_throughput(path):
-    """merged.json → aggregate_ops_per_sec or _events_per_sec from its last JSON
-    object (multi-line/pretty-printed safe), else 0.0. Missing file → 0.0."""
+def extract_merged(path):
+    """merged.json → its last JSON object (multi-line/pretty-printed safe), else None."""
     try:
         with open(path) as f:
             text = f.read()
     except FileNotFoundError:
-        return 0.0
+        return None
     obj = _last_json_object(text)
+    return obj if isinstance(obj, dict) else None
+
+def windows_aligned(obj):
+    """hdr-merge's verdict on whether the fleet's per-pod measure windows overlapped.
+    Absent field (older client / no stamps) → True (back-compat: never reject old data)."""
+    return bool(obj.get("windows_aligned", True)) if isinstance(obj, dict) else True
+
+def extract_throughput(path):
+    """merged.json → aggregate_ops_per_sec or _events_per_sec from its last JSON
+    object. Missing file / no object → 0.0.
+
+    A merged summary with windows_aligned=false ALSO reads as 0.0: the fleet sum
+    multiply-counted server capacity (pods measured at different wall times — the
+    500k-stream 2.9M-ops/s artifact), so no throughput reading exists for the rung.
+    0.0 routes the walker's step_decision to "error", recording the cell as invalid
+    instead of pinning a fantasy number."""
+    obj = extract_merged(path)
     if not isinstance(obj, dict):
+        return 0.0
+    if not windows_aligned(obj):
+        import sys
+        print(f"saturation: rejecting {path}: windows_aligned=false "
+              f"(span {obj.get('measure_span_secs')}s vs window {obj.get('measure_window_secs')}s)",
+              file=sys.stderr)
         return 0.0
     for k in ("aggregate_ops_per_sec", "aggregate_events_per_sec"):
         if k in obj:
@@ -90,7 +112,12 @@ def main():
     p.add_argument("--cores", type=float, required=True)
     a = p.parse_args()
     thr = extract_throughput(a.merged)
-    print(f"{classify(a.prev_thr, thr, a.cpu, a.cores)} {thr}")
+    # Third field: 1 = fleet measure windows overlapped (or no stamps: old data),
+    # 0 = misaligned (thr is forced to 0 above). Lets the walker record the rung
+    # as misaligned_windows rather than a generic error. Consumers reading only
+    # the first two fields are unaffected.
+    aligned = 1 if windows_aligned(extract_merged(a.merged)) else 0
+    print(f"{classify(a.prev_thr, thr, a.cpu, a.cores)} {thr} {aligned}")
 
 if __name__ == "__main__":
     main()

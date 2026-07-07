@@ -314,10 +314,13 @@ _run_cell_one() {
   if [ -f "${cell_dir}/samples.csv" ]; then
     cpu_pct="$(compute_server_cpu_pct "${cell_dir}/samples.csv")"
   fi
-  local thr
-  thr="$(python3 "${REPO_ROOT}/scripts/saturation.py" --merged "${cell_dir}/merged.json" \
-          --prev-thr 0 --cpu "$cpu_pct" --cores 1 2>/dev/null | awk '{print $2}')"
-  echo "${cpu_pct} ${thr:-0}"
+  # saturation.py prints "<reason> <thr> <aligned>"; aligned=0 means the fleet's
+  # measure windows didn't overlap (thr is already forced to 0 in that case) —
+  # pass it through so the walker can label the rung misaligned_windows.
+  local thr aligned
+  read -r thr aligned < <(python3 "${REPO_ROOT}/scripts/saturation.py" --merged "${cell_dir}/merged.json" \
+          --prev-thr 0 --cpu "$cpu_pct" --cores 1 2>/dev/null | awk '{print $2, $3}')
+  echo "${cpu_pct} ${thr:-0} ${aligned:-1}"
 }
 
 # run_cell CELL_NAME BENCH_CMD OUT_PREFIX MERGE_CMD SERVER_CPU_CORES — run a cell at a
@@ -332,8 +335,8 @@ run_cell() {
   for repeat in $(seq 1 "${REPEATS:-1}"); do
     local cell_dir="${RESULTS_ROOT}/${cell_name}/rep${repeat}"
     mkdir -p "$cell_dir"
-    local cpu_pct thr
-    read -r cpu_pct thr < <(_run_cell_one "$cell_name" "$bench_cmd" "$out_prefix" "$merge_cmd" "$pods" "$repeat" "$cell_dir")
+    local cpu_pct thr _aligned
+    read -r cpu_pct thr _aligned < <(_run_cell_one "$cell_name" "$bench_cmd" "$out_prefix" "$merge_cmd" "$pods" "$repeat" "$cell_dir")
     { echo "cell=${cell_name}"; echo "parallelism=${pods}";
       echo "server_cpu_cores=${cpu_cores}"; echo "server_cpu_pct=${cpu_pct}"; } > "${cell_dir}/verdict.txt"
     echo "  ${cell_name}: pods=${pods} cpu%=${cpu_pct} thr=${thr}"

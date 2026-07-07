@@ -61,15 +61,21 @@ walk_cell() {
   # over-provisions (pods > streams would drive more streams than intended).
   local ladder;  ladder="$(python3 -c "import sys;sys.path.insert(0,'scripts');from suite import Suite;from saturation import cap_ladder;s=Suite.load('$SUITE_FILE');print(' '.join(map(str,cap_ladder(s.ladder_for($sc),$sc))))")"
 
-  local prev_pods=0 prev_thr=0 walk="[]" pods _cpu thr decision
+  local prev_pods=0 prev_thr=0 walk="[]" pods _cpu thr aligned decision
   for pods in $ladder; do
     SAT_REP=1; reset_state "$mode"
-    read -r _cpu thr < <("$fn" "$pods")
+    # Optional third field: 0 = the fleet's measure windows didn't overlap, so the
+    # rung has no valid throughput reading (thr arrives as 0 in that case). Test
+    # mocks / older measure fns emit two fields → aligned defaults to 1.
+    read -r _cpu thr aligned < <("$fn" "$pods")
+    aligned="${aligned:-1}"
     walk="$(python3 -c "import json,sys; w=json.loads(sys.argv[1]); w.append([int(sys.argv[2]), float(sys.argv[3])]); print(json.dumps(w))" "$walk" "$pods" "$thr")"
     decision="$(python3 -c "import sys; sys.path.insert(0,'scripts'); from saturation import step_decision; print(step_decision(float(sys.argv[1]), float(sys.argv[2]), float(sys.argv[3])))" "$prev_thr" "$thr" "$plateau")"
     case "$decision" in
       error)
-        _record "$cells_json" "$sc" "$digest" "$walk" None 0 None False error creation_choke None
+        local err_reason=creation_choke
+        [ "$aligned" = "0" ] && err_reason=misaligned_windows
+        _record "$cells_json" "$sc" "$digest" "$walk" None 0 None False error "$err_reason" None
         return 0 ;;
       plateau)
         # saturated one rung back; confirm the pinned point with `repeats` reps.
