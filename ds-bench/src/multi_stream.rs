@@ -53,10 +53,12 @@ pub struct MultiStreamArgs {
     /// in-flight append PER stream (throughput becomes streams/latency and is
     /// client-per-pod-latency-bound at high stream counts). >0 = bounded-concurrency
     /// pool model: exactly N=connections worker tasks (each its own connection, one
-    /// in-flight append) cycle appends round-robin over a DISJOINT partition of the
-    /// --streams set. This decouples offered load from stream count, so a pod drives
-    /// the server with controlled concurrency and bounded client overhead/memory
-    /// (C histograms + N*8B of per-stream seq, not N histograms).
+    /// in-flight append). When N ≤ streams each worker cycles a DISJOINT slice of
+    /// the stream set (per-stream producer). When N > streams, ⌈N/streams⌉ workers
+    /// share each stream, each with its OWN producer identity — per-stream
+    /// concurrency without racing a producer's seq — so offered load is decoupled
+    /// from stream count in BOTH directions and one pod can extract the server's
+    /// max throughput while writes stay distributed across every stream.
     #[arg(long, default_value_t = 0)]
     pub connections: usize,
 
@@ -125,6 +127,24 @@ pub struct MultiStreamResult {
     /// server's capacity: the 500k-stream 2.9M ops/s artifact).
     pub measure_start_unix_ms: u64,
     pub measure_end_unix_ms: u64,
+}
+
+/// Pool worker → stream assignment. Returns the worker's stream range `[lo, hi)`
+/// plus a per-worker producer tag when streams are SHARED between workers:
+///
+/// * `c ≤ n`: disjoint contiguous slices (tag `None` — the per-stream producer id
+///   is unique because no other worker touches those streams).
+/// * `c > n`: worker `w` is pinned to the single stream `w % n` and tagged with
+///   `w`, so the ⌈c/n⌉ workers sharing a stream write through DISTINCT producer
+///   identities — concurrent appends to one stream without racing any single
+///   producer's monotonic seq.
+fn pool_assignment(w: usize, c: usize, n: usize) -> (usize, usize, Option<usize>) {
+    if c <= n {
+        (w * n / c, (w + 1) * n / c, None)
+    } else {
+        let s = w % n;
+        (s, s + 1, Some(w))
+    }
 }
 
 /// Planned wall-clock measure window, computed at phase setup: `Instant`-based
@@ -282,7 +302,9 @@ pub async fn run(args: MultiStreamArgs) -> Result<MultiStreamResult> {
 /// client's per-pod overhead/memory stays bounded regardless of stream count.
 async fn run_pool(args: MultiStreamArgs, backend: Backend) -> Result<MultiStreamResult> {
     let n = args.streams.max(1);
-    let c = args.connections.min(n).max(1);
+    // NOT capped at n: c > n pins multiple workers (distinct producer identities)
+    // to the same stream — see pool_assignment.
+    let c = args.connections.max(1);
     let batch = args.batch.max(1);
     // Precompute the request body once (constant across appends). batch>1 → a JSON
     // array of `batch` records (server flattens to N records under one lock/fsync).
@@ -318,8 +340,7 @@ async fn run_pool(args: MultiStreamArgs, backend: Backend) -> Result<MultiStream
 
     let mut workers = Vec::with_capacity(c);
     for w in 0..c {
-        let lo = w * n / c;
-        let hi = (w + 1) * n / c;
+        let (lo, hi, producer_tag) = pool_assignment(w, c, n);
         if lo >= hi {
             continue;
         }
@@ -329,8 +350,8 @@ async fn run_pool(args: MultiStreamArgs, backend: Backend) -> Result<MultiStream
             (ok.clone(), bp.clone(), err.clone(), errors.clone(), hist.clone());
         workers.push(tokio::spawn(async move {
             pool_worker(
-                backend, lo, hi, body, content_type, recs_per_post, warmup_end,
-                measure_start, deadline, ok, bp, err, errors, hist,
+                backend, lo, hi, producer_tag, body, content_type, recs_per_post,
+                warmup_end, measure_start, deadline, ok, bp, err, errors, hist,
             )
             .await
         }));
@@ -383,6 +404,7 @@ async fn pool_worker(
     backend: Backend,
     lo: usize,
     hi: usize,
+    producer_tag: Option<usize>,
     body: Arc<Vec<u8>>,
     content_type: &'static str,
     recs_per_post: u64,
@@ -411,7 +433,13 @@ async fn pool_worker(
         rr = rr.wrapping_add(1);
         let global = lo + local_idx;
         let stream = stream_name(global);
-        let producer_id = format!("bench-{global}");
+        // Shared-stream workers (c > n) write through per-worker producer
+        // identities so their seqs never race; sliced workers keep the
+        // per-stream producer (unique — nobody else touches their slice).
+        let producer_id = match producer_tag {
+            Some(w) => format!("bench-{global}-w{w}"),
+            None => format!("bench-{global}"),
+        };
         let seq = seqs[local_idx];
         let started = Instant::now();
         let producer = if use_producer {
@@ -603,4 +631,46 @@ async fn create_streams(
 
 fn stream_name(idx: usize) -> String {
     format!("s{:08}", idx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pool_assignment;
+
+    /// c ≤ n: disjoint contiguous slices covering every stream exactly once,
+    /// no producer tags (per-stream producer ids stay unique).
+    #[test]
+    fn sliced_assignment_covers_all_streams_disjointly() {
+        for (c, n) in [(1, 5), (3, 10), (10, 10), (7, 100)] {
+            let mut covered = vec![0u32; n];
+            for w in 0..c {
+                let (lo, hi, tag) = pool_assignment(w, c, n);
+                assert!(tag.is_none(), "c<=n must not tag producers (c={c} n={n})");
+                for s in lo..hi {
+                    covered[s] += 1;
+                }
+            }
+            assert!(covered.iter().all(|&x| x == 1), "every stream owned exactly once (c={c} n={n})");
+        }
+    }
+
+    /// c > n: every stream keeps receiving writes (distribution across all keys),
+    /// each stream gets ⌈c/n⌉ or ⌊c/n⌋ workers, and every (stream, producer)
+    /// pair is unique so no producer's seq can race.
+    #[test]
+    fn shared_assignment_multiplies_per_stream_producers() {
+        for (c, n) in [(6, 5), (256, 100), (3000, 100), (2048, 1)] {
+            let mut per_stream = vec![0usize; n];
+            let mut pairs = std::collections::HashSet::new();
+            for w in 0..c {
+                let (lo, hi, tag) = pool_assignment(w, c, n);
+                assert_eq!(hi, lo + 1, "shared workers own exactly one stream");
+                assert!(pairs.insert((lo, tag.expect("c>n must tag producers"))), "producer identity must be unique per stream");
+                per_stream[lo] += 1;
+            }
+            assert!(per_stream.iter().all(|&x| x > 0), "every stream written (c={c} n={n})");
+            let (min, max) = (per_stream.iter().min().unwrap(), per_stream.iter().max().unwrap());
+            assert!(max - min <= 1, "balanced within 1 worker (c={c} n={n})");
+        }
+    }
 }
