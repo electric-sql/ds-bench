@@ -208,6 +208,15 @@ _barrier_mc() {
     "mc alias set local http://localhost:9000 minioadmin minioadmin >/dev/null 2>&1; $*" 2>/dev/null
 }
 
+# _barrier_reset — clear the run's barrier prefix BEFORE the fleet launches.
+# RUN_IDs are deterministic per cell, so a re-run (resume of an error cell)
+# otherwise finds the PREVIOUS pass's ready markers and go file: pods grab the
+# stale go (a time in the past) and start immediately, staggering the fleet —
+# exactly the misalignment the barrier exists to prevent.
+_barrier_reset() {
+  _barrier_mc "mc rm --recursive --force local/bench-results/${RUN_ID}/barrier/ 2>/dev/null; true"
+}
+
 # _barrier_release_fleet <want-ready-count> — block until every pod is at the
 # barrier (or timeout), then publish the go time.
 _barrier_release_fleet() {
@@ -235,6 +244,11 @@ run_fleet_and_coordinator() {
   export BARRIER_DIR="${BARRIER_DIR:-}"
 
   clean_jobs
+  # Stale barrier state from a previous pass of this same RUN_ID must be gone
+  # BEFORE any pod can poll it.
+  if [ -n "${BARRIER_DIR}" ]; then
+    _barrier_reset
+  fi
 
   echo "    launching fleet (${PARALLELISM} pods)..."
   envsubst "${MANIFEST_VARS} \${RUN_ID} \${PARALLELISM} \${BENCH_CMD} \${OUT_PREFIX} \${BARRIER_DIR}" \

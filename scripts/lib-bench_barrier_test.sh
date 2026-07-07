@@ -16,9 +16,10 @@ mkdir -p "${tmp}/ready"
 PASS=true
 
 # Mock the MinIO round-trip with a directory: `mc ls` lists ready markers,
-# `mc pipe …/go` captures the published go time.
+# `mc pipe …/go` captures the published go time, `mc rm` clears state.
 _barrier_mc() {
   case "$*" in
+    *"mc rm"*)   rm -rf "${tmp}/ready" "${tmp}/go"; mkdir -p "${tmp}/ready" ;;
     *"mc ls"*)   ls "${tmp}/ready" 2>/dev/null | sed 's/^/marker /' ;;
     *"mc pipe"*) # the leader embeds "echo <ms> | mc pipe …" — extract the ms
                  printf '%s' "$*" | grep -oE 'echo [0-9]+' | grep -oE '[0-9]+' > "${tmp}/go" ;;
@@ -56,6 +57,15 @@ if [ ! -s "${tmp}/go" ]; then
   echo "FAIL [timeout]: go was not published after timeout"; PASS=false
 else
   echo "ok [timeout]: released with 1/5 ready after deadline"
+fi
+
+# ── Case 3: _barrier_reset clears a previous pass's markers + go (RUN_ID reuse) ─
+touch "${tmp}/ready/ready-0" "${tmp}/ready/ready-1"; echo 123 > "${tmp}/go"
+_barrier_reset
+if [ -s "${tmp}/go" ] || [ -n "$(ls "${tmp}/ready" 2>/dev/null)" ]; then
+  echo "FAIL [reset]: stale barrier state survived reset"; PASS=false
+else
+  echo "ok [reset]: stale ready markers + go cleared"
 fi
 
 $PASS && echo "PASS: _barrier_release_fleet" && exit 0
