@@ -37,8 +37,14 @@ else
       *-lssd) LSSD_FLAG=(--ephemeral-storage-local-ssd) ;;
       *)      LSSD_FLAG=(--ephemeral-storage-local-ssd "count=${LOCAL_SSD_COUNT:-1}") ;;
     esac
+    # The server pool holds state, so it is on-demand by DEFAULT (a Spot
+    # preemption mid-run kills the stateful server and invalidates that cell).
+    # SPOT_SERVER=1 opts the server node into Spot too (cheapest; accept that a
+    # preemption forces a re-run of the affected cells — the suite is resumable).
+    SPOT_SERVER_FLAG=()
+    [ "${SPOT_SERVER:-0}" = "1" ] && SPOT_SERVER_FLAG=(--spot)
     gcloud container clusters create "$CLUSTER" --zone "$ZONE" --project "$PROJECT" --num-nodes 1 \
-      --machine-type "$SERVER_MACHINE" "${LSSD_FLAG[@]}" \
+      --machine-type "$SERVER_MACHINE" "${LSSD_FLAG[@]}" "${SPOT_SERVER_FLAG[@]}" \
       --node-labels=role=server --network benchmarking --subnetwork benchmarking \
       --enable-ip-alias --release-channel regular
     # The client fleet is disposable + fault-tolerant (the bench tolerates pod

@@ -48,6 +48,27 @@ pub struct MultiStreamArgs {
     #[arg(long, default_value_t = 1000)]
     pub streams: usize,
 
+    /// Offered concurrency (number of connection-workers). 0 = legacy model: one
+    /// in-flight append PER stream (throughput becomes streams/latency and is
+    /// client-per-pod-latency-bound at high stream counts). >0 = bounded-concurrency
+    /// pool model: exactly N=connections worker tasks (each its own connection, one
+    /// in-flight append) cycle appends round-robin over a DISJOINT partition of the
+    /// --streams set. This decouples offered load from stream count, so a pod drives
+    /// the server with controlled concurrency and bounded client overhead/memory
+    /// (C histograms + N*8B of per-stream seq, not N histograms).
+    #[arg(long, default_value_t = 0)]
+    pub connections: usize,
+
+    /// Records per append request (pool model only). 1 = one record per POST. >1 =
+    /// send a JSON array of N records in a single POST (the durable server flattens
+    /// the array into N records under ONE appender-lock + ONE fsync), amortizing the
+    /// per-request client/server overhead. Producer-seq still advances by 1 per POST
+    /// (the server dedups per request, not per record); throughput counts N records
+    /// per successful POST. Cuts fleet vCPU per record/s — the main load-gen cost
+    /// lever. Switches the body to application/json.
+    #[arg(long, default_value_t = 1)]
+    pub batch: usize,
+
     /// Wall-clock duration to drive load, in seconds.
     #[arg(long, default_value_t = 60)]
     pub duration_secs: u64,
@@ -121,7 +142,18 @@ pub async fn run(args: MultiStreamArgs) -> Result<MultiStreamResult> {
         backend.bases.len()
     );
     backend.ensure_namespace().await?;
-    create_streams(&backend, args.streams, args.setup_concurrency).await?;
+    // batched pool appends use a JSON array body, so the stream must be declared
+    // application/json (a POST with a mismatched content-type is a 409 config conflict).
+    let stream_ct = if args.connections > 0 && args.batch > 1 {
+        "application/json"
+    } else {
+        "application/octet-stream"
+    };
+    create_streams(&backend, args.streams, args.setup_concurrency, stream_ct).await?;
+
+    if args.connections > 0 {
+        return run_pool(args, backend).await;
+    }
 
     let payload = Arc::new(fill_payload(args.payload_bytes, 0xC0FFEE));
     let ok = Arc::new(AtomicU64::new(0));
@@ -212,6 +244,181 @@ pub async fn run(args: MultiStreamArgs) -> Result<MultiStreamResult> {
         per_stream_ops_per_sec_mean: per_stream_mean,
         latency_ms: latency,
     })
+}
+
+/// Bounded-concurrency pool model: exactly `connections` worker tasks, each owning
+/// a disjoint contiguous slice of the `streams` set, cycling appends round-robin
+/// over its slice with one in-flight append at a time. Offered concurrency is
+/// `connections` (NOT `streams`), so the load the server sees is controlled and the
+/// client's per-pod overhead/memory stays bounded regardless of stream count.
+async fn run_pool(args: MultiStreamArgs, backend: Backend) -> Result<MultiStreamResult> {
+    let n = args.streams.max(1);
+    let c = args.connections.min(n).max(1);
+    let batch = args.batch.max(1);
+    // Precompute the request body once (constant across appends). batch>1 → a JSON
+    // array of `batch` records (server flattens to N records under one lock/fsync).
+    let (body, content_type, recs_per_post): (Arc<Vec<u8>>, &'static str, u64) = if batch > 1 {
+        let rec = format!("\"{}\"", "x".repeat(args.payload_bytes));
+        let mut s = String::with_capacity((rec.len() + 1) * batch + 2);
+        s.push('[');
+        for i in 0..batch {
+            if i > 0 {
+                s.push(',');
+            }
+            s.push_str(&rec);
+        }
+        s.push(']');
+        (Arc::new(s.into_bytes()), "application/json", batch as u64)
+    } else {
+        (Arc::new(fill_payload(args.payload_bytes, 0xC0FFEE)), "application/octet-stream", 1)
+    };
+    let ok = Arc::new(AtomicU64::new(0));
+    let bp = Arc::new(AtomicU64::new(0));
+    let err = Arc::new(AtomicU64::new(0));
+    let errors = Arc::new(Mutex::new(BTreeMap::<String, u64>::new()));
+    let hist = Arc::new(Mutex::new(new_histogram()));
+
+    let base = Instant::now();
+    let warmup_end = base + Duration::from_secs(args.warmup_secs);
+    let measure_start = warmup_end + Duration::from_secs(args.settle_secs);
+    let deadline = measure_start + Duration::from_secs(args.duration_secs);
+
+    tracing::info!("pool model: connections={c} streams={n} batch={batch} (streams/worker≈{})", n / c);
+
+    let mut workers = Vec::with_capacity(c);
+    for w in 0..c {
+        let lo = w * n / c;
+        let hi = (w + 1) * n / c;
+        if lo >= hi {
+            continue;
+        }
+        let backend = backend.clone();
+        let body = body.clone();
+        let (ok, bp, err, errors, hist) =
+            (ok.clone(), bp.clone(), err.clone(), errors.clone(), hist.clone());
+        workers.push(tokio::spawn(async move {
+            pool_worker(
+                backend, lo, hi, body, content_type, recs_per_post, warmup_end,
+                measure_start, deadline, ok, bp, err, errors, hist,
+            )
+            .await
+        }));
+    }
+    for wk in workers {
+        let _ = wk.await;
+    }
+
+    let counts = Counts {
+        ok: ok.load(Ordering::Relaxed),
+        backpressure: bp.load(Ordering::Relaxed),
+        other_err: err.load(Ordering::Relaxed),
+    };
+    let errors = errors
+        .lock()
+        .await
+        .iter()
+        .map(|(error, count)| ErrorCount { error: error.clone(), count: *count })
+        .collect();
+    let h = hist.lock().await;
+    let latency = summarize(&h);
+    crate::dist::emit_hdr(&h, &format!("multi-stream-{}", std::process::id()));
+    let elapsed_secs = args.duration_secs as f64;
+    let aggregate = counts.ok as f64 / elapsed_secs.max(1e-9);
+    let per_stream_mean = aggregate / n as f64;
+
+    Ok(MultiStreamResult {
+        scenario: "multi-stream-pool-write",
+        api_style: args.api_style,
+        target: args.target,
+        bucket: args.bucket,
+        basin: args.basin,
+        streams: n,
+        duration_secs: args.duration_secs,
+        payload_bytes: args.payload_bytes,
+        rate_per_stream: 0,
+        elapsed_secs,
+        counts,
+        errors,
+        aggregate_ops_per_sec: aggregate,
+        per_stream_ops_per_sec_mean: per_stream_mean,
+        latency_ms: latency,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn pool_worker(
+    backend: Backend,
+    lo: usize,
+    hi: usize,
+    body: Arc<Vec<u8>>,
+    content_type: &'static str,
+    recs_per_post: u64,
+    warmup_end: Instant,
+    measure_start: Instant,
+    deadline: Instant,
+    ok: Arc<AtomicU64>,
+    bp: Arc<AtomicU64>,
+    err: Arc<AtomicU64>,
+    errors: Arc<Mutex<BTreeMap<String, u64>>>,
+    hist: Arc<Mutex<Histogram<u64>>>,
+) {
+    let span = hi - lo;
+    let mut seqs = vec![0u64; span]; // monotonic producer-seq per owned stream
+    let mut local = new_histogram();
+    let use_producer = matches!(backend.kind, ApiStyle::Ursula | ApiStyle::Durable);
+    let mut rr = 0usize; // round-robin cursor within [lo, hi)
+    while Instant::now() < deadline {
+        let now = Instant::now();
+        if now >= warmup_end && now < measure_start {
+            tokio::time::sleep(measure_start.saturating_duration_since(now)).await;
+            continue;
+        }
+        let counting = now >= measure_start;
+        let local_idx = rr % span;
+        rr = rr.wrapping_add(1);
+        let global = lo + local_idx;
+        let stream = stream_name(global);
+        let producer_id = format!("bench-{global}");
+        let seq = seqs[local_idx];
+        let started = Instant::now();
+        let producer = if use_producer {
+            Some(Producer { id: &producer_id, epoch: 0, seq })
+        } else {
+            None
+        };
+        let resp = backend
+            .append_request(global, &stream, &body, producer, content_type)
+            .send()
+            .await;
+        match resp {
+            Ok(r) => {
+                let status = r.status();
+                if status.is_success() {
+                    if counting {
+                        ok.fetch_add(recs_per_post, Ordering::Relaxed);
+                        record(&mut local, started);
+                    }
+                    seqs[local_idx] += 1;
+                } else if status.as_u16() == 503 || status.as_u16() == 429 {
+                    if counting {
+                        bp.fetch_add(1, Ordering::Relaxed);
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                } else if counting {
+                    err.fetch_add(1, Ordering::Relaxed);
+                    record_error(&errors, format!("http_status_{}", status.as_u16())).await;
+                }
+            }
+            Err(e) => {
+                if counting {
+                    err.fetch_add(1, Ordering::Relaxed);
+                    record_error(&errors, reqwest_error_chain(&e)).await;
+                }
+            }
+        }
+    }
+    let mut h = hist.lock().await;
+    merge(&mut h, &local);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -329,7 +536,12 @@ fn reqwest_error_chain(error: &reqwest::Error) -> String {
     }
 }
 
-async fn create_streams(backend: &Backend, count: usize, concurrency: usize) -> Result<()> {
+async fn create_streams(
+    backend: &Backend,
+    count: usize,
+    concurrency: usize,
+    content_type: &'static str,
+) -> Result<()> {
     let mut pending: FuturesUnordered<_> = FuturesUnordered::new();
     let mut next = 0usize;
     let max = concurrency.max(1);
@@ -338,7 +550,7 @@ async fn create_streams(backend: &Backend, count: usize, concurrency: usize) -> 
         let stream = stream_name(i);
         pending.push(tokio::spawn(async move {
             backend
-                .create_stream(&stream, "application/octet-stream")
+                .create_stream(&stream, content_type)
                 .await
         }));
     };

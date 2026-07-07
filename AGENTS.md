@@ -88,7 +88,10 @@ The production suites (`run-durable`, `run-ursula`, `reads-*`) pin:
   `SERVER_MEM=16Gi`) — so node size doesn't change the server's numbers. (Note:
   `target-env.sh`'s bare default is the cheaper `c4d-standard-8-lssd`; the suite's
   `cluster.server_machine` wins.)
-- **Client fleet:** `n2d-standard-32` **Spot**, `client_nodes` 2–4.
+- **Client fleet:** `n2d-standard-32` **Spot**. `client_nodes` 2–4 covers the legacy
+  catch-up/reads suites; the **pool write-saturation** sweep (§7) needs more (≈4–6 at
+  `batch:1` to reach a multi-core server's ceiling) unless `batch` is raised — sized
+  per §7 step 3, and consider `n2d-highcpu-32` to cut fleet cost.
 - **`FLEET_CPU=0.5`** — a scheduling *reservation* only (no CPU limit; pods burst to
   node cores). Many light pods so the *server* is the bottleneck.
 - **`pods=1`** is required for the live read modes (`long-poll`, `sse`) so the writer
@@ -200,7 +203,101 @@ hardware, and a cell-level status section noting any error cells + cause).
 
 ---
 
-## 7. Known limits & gotchas
+## 7. Write saturation: calibrate the pod, then scale pods
+
+**Terminology.** Keep three things separate: the **workload** (the operation under
+test — here, *append*); the **offered load** (the demand profile —
+`concurrency = pods × connections`, `payload_bytes`, `batch`, rate); and the **fleet**
+(the client pods/nodes that *generate* that load — the dominant cost). State init
+(creating `stream_counts` streams up front) is a separate one-time setup phase, not
+part of the offered load. "Optimize fleet cost" = generate the same offered append
+load with fewer/cheaper client vCPU; it changes neither the workload nor the state.
+
+The write/saturation client produces the offered load with a **bounded-concurrency
+pool** (`multi-stream --connections C`, set per-suite via `saturation.connections`):
+each pod runs exactly **C worker-connections** that cycle appends round-robin over a
+disjoint partition of its `--streams`. Offered load is therefore `pods × C`,
+**decoupled from stream count**.
+
+> The legacy default `connections: 0` = one in-flight append **per stream**. At high
+> streams/pod this makes the *client pod*, not the server, the bottleneck: the pod's
+> throughput becomes `streams ÷ round-trip-latency` and collapses (multi-second tail
+> latency + mass timeouts) while the server sits idle. **Never use `connections: 0`
+> for high-cardinality (≥ tens of k streams) write sweeps** — it produces false, low,
+> streams/pod-dependent ceilings.
+
+**Recipe for a new write suite — calibrate the pod, then launch as many as needed:**
+
+1. **Find the single-pod max.** Run **one** fleet pod against an *over-provisioned*
+   server (give the server far more cores than one pod can saturate) and sweep
+   `--connections` (e.g. 128 → 256 → 512 → 1024 → 2048) at the suite's `fleet_cpu`
+   and `payload_bytes`. The pod's ops/s rises, then **plateaus when the pod itself
+   saturates** — that plateau is the single-pod max. (It is per `fleet_cpu`, per
+   `payload_bytes`, and per `batch`; re-calibrate if any changes.) A pod is healthy
+   only while latency
+   stays low and errors are 0; the plateau is the last point before they degrade.
+2. **Cap the per-pod reference at 80 % of that max.** Choose the `connections` value
+   whose ops/s ≈ `0.8 × single-pod-max` (just below the knee) and put it in
+   `saturation.connections`. This keeps every pod in its linear region — never the
+   bottleneck — so the sweep measures the *server*, not the client.
+3. **Scale pods to saturate the server.** With per-pod load fixed at the 80 %
+   reference, the `pod_ladder` ramps total offered load (`pods × connections`) until
+   server throughput plateaus (`saturation.plateau_pct`). **Launch as many pods as
+   the server needs.** `stream_counts` only sets cardinality (keep
+   `perpod = streams ÷ pods ≥ connections`), not load. Size `client_nodes` so the top
+   rung's `pods × fleet_cpu` fits with headroom.
+
+In short: **each pod is calibrated to 80 % of its own ceiling; a test launches
+however many such pods are required to find the server's ceiling.** Treat any cell
+where per-pod latency/errors degrade as invalid (client-bound) — lower `connections`
+or raise `fleet_cpu` and re-calibrate.
+
+### Fleet cost levers (the fleet, not the server, dominates run cost)
+
+The client fleet is ~4× the server's cost, so optimize there. In descending impact:
+
+1. **Batch records per request** (`saturation.batch` / `multi-stream --batch N`,
+   pool only). The durable server flattens a JSON-array body into N records under
+   **one appender-lock + one fsync**, so one POST carries N appends. Since the pool
+   client is request-rate-limited, records/s per client vCPU scales ~linearly with N
+   — measured **~10× at N=10, ~35× at N=50, ~140× at N=200** (256 B payload). This is
+   the dominant lever: it cuts fleet vCPU per record/s by 1–2 orders of magnitude
+   (and lifts the server ceiling, since the per-append lock/fsync is amortized).
+   `batch>1` switches the body to `application/json`, so streams are auto-created as
+   `application/json` (a mismatched content-type is a 409). Re-calibrate after
+   changing `batch` — the single-pod max changes. Note: batching models a *batching
+   producer*; for a strict one-write-per-request workload keep `batch: 1`.
+2. **Don't overshoot the ladder.** Stop the `pod_ladder` at the throughput plateau;
+   rungs past it (over-saturation) waste fleet nodes. Size `client_nodes` to the
+   plateau rung, not the max rung.
+3. **Cheaper client machine family.** The fleet is CPU-bound with tiny memory (the
+   pool client holds only ~C histograms + N×8 B of seq), so use a cost-optimized,
+   low-RAM family on Spot: `n2d-highcpu-32` (≈20 % cheaper/vCPU than `-standard`),
+   `t2d-standard`, or `t2a` (Arm — ds-bench builds arm64).
+4. **Calibrate the cheapest pod size.** Sweep `fleet_cpu` (1/2/4) in calibration and
+   pick the best **ops/s per vCPU**, not just the highest single-pod throughput.
+
+### Measured reference points (durable `wal`, 2026-06-30 — ballpark starting values)
+
+Server `c4d-standard-32-lssd`, `--wal-shards 32 --worker-threads 32`, 256 B payload,
+pool client `fleet_cpu=2`, **`batch:1`**:
+
+- **Single-pod max** ≈ 24k ops/s, reached by **~256 connections** (the 80 % reference;
+  more connections only add latency). Use `connections: 256` as a starting point.
+- **Server ceiling** ≈ **1.48M ops/s @ 200k streams**, **1.15M @ 500k** (≈22 % cardinality
+  cost), both peaking near **52 pods** then declining — and at only **~80 % server CPU**
+  (the wal commit path / appender-lock serializes before the cores saturate; ~20 % CPU
+  is unspent). So the wal server is **not CPU-bound** at saturation; a tighter
+  `c4d-standard-16-lssd` (NVMe; 16→32 is the only step) is worth trying for $/op.
+- **Cost** (list, europe-west4, Spot): fleet 6×`n2d-standard-32` ≈ $2.2/hr · server ≈
+  $0.5/hr · GKE ≈ $0.1/hr; a full 200k+500k sweep ≈ **$2**, the campaign ≈ $5–6.
+- These are **`batch:1`** numbers; raising `batch` cuts the fleet (and pod count)
+  10–140× and lifts the server ceiling — see `suites/run-durable-pool-opt.json` and
+  re-calibrate. Full write-up: `results/run-durable-pool2/FINDINGS.md`.
+
+---
+
+## 8. Known limits & gotchas
 
 - **Catch-up OOM ceiling.** `reads-catchup` materializes the *full resident stream
   body per reader* (`resp.bytes()` in `ds-bench/src/reads.rs::catch_up_once`), so
@@ -219,7 +316,7 @@ hardware, and a cell-level status section noting any error cells + cause).
 
 ---
 
-## 8. Prerequisites & tests
+## 9. Prerequisites & tests
 
 - `kubectl`, `python3` (3.x, stdlib only), Docker. Local: `kind`. Remote: `gcloud`
   authenticated + an Artifact Registry repo. Override `PROJECT`, `AR_LOCATION`

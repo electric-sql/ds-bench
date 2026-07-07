@@ -29,7 +29,15 @@ measure_pods() {
   # endpoint (the 100k creation_choke). A lower per-pod value keeps total concurrent
   # creation bounded while pods still drive full load after setup.
   local setup_conc="${SETUP_CONCURRENCY:-32}" payload="${PAYLOAD_BYTES:-256}"
-  local bench_cmd="multi-stream --target ${T_TARGET:?} --api-style ${T_API:?} ${T_NS:-} --streams ${perpod} --duration-secs ${dur} --payload-bytes ${payload} --setup-concurrency ${setup_conc} --warmup-secs ${warmup} --settle-secs ${settle}"
+  # CONNS_PER_POD>0 switches the client to the bounded-concurrency pool model: each
+  # pod offers exactly CONNS_PER_POD in-flight appends cycled over its ${perpod}
+  # streams (decouples offered load from stream count). 0/unset = legacy 1-per-stream.
+  local conns_flag=""
+  [ "${CONNS_PER_POD:-0}" -gt 0 ] 2>/dev/null && conns_flag="--connections ${CONNS_PER_POD}"
+  # batch>1 → N records per POST (pool model); the dominant fleet-cost lever.
+  local batch_flag=""
+  [ "${BATCH_PER_POD:-1}" -gt 1 ] 2>/dev/null && batch_flag="--batch ${BATCH_PER_POD}"
+  local bench_cmd="multi-stream --target ${T_TARGET:?} --api-style ${T_API:?} ${T_NS:-} --streams ${perpod} ${conns_flag} ${batch_flag} --duration-secs ${dur} --payload-bytes ${payload} --setup-concurrency ${setup_conc} --warmup-secs ${warmup} --settle-secs ${settle}"
   local merge_cmd="ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix multi-stream-"
   _run_cell_one "${mode}-write-n${sc}-p${pods}" "$bench_cmd" "write" "$merge_cmd" "$pods" "$rep" "$cell_dir"
 }
