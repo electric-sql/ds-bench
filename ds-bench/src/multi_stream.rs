@@ -50,24 +50,25 @@ pub struct MultiStreamArgs {
     pub streams: usize,
 
     /// Offered concurrency (number of connection-workers). 0 = legacy model: one
-    /// in-flight append PER stream (throughput becomes streams/latency and is
-    /// client-per-pod-latency-bound at high stream counts). >0 = bounded-concurrency
-    /// pool model: exactly N=connections worker tasks (each its own connection, one
-    /// in-flight append). When N ≤ streams each worker cycles a DISJOINT slice of
-    /// the stream set (per-stream producer). When N > streams, ⌈N/streams⌉ workers
-    /// share each stream, each with its OWN producer identity — per-stream
-    /// concurrency without racing a producer's seq — so offered load is decoupled
-    /// from stream count in BOTH directions and one pod can extract the server's
-    /// max throughput while writes stay distributed across every stream.
+    /// in-flight append PER stream through an idempotent producer session
+    /// (ordered, deduped — throughput becomes streams/latency). >0 =
+    /// bounded-concurrency pool model measuring RAW append throughput: exactly
+    /// N=connections worker tasks (each its own connection, one in-flight append)
+    /// issuing PLAIN appends — no producer headers, no seq, no server-side
+    /// session/dedup state — cycled over the stream set (disjoint slices when
+    /// N ≤ streams; ⌈N/streams⌉ workers per stream when N > streams, which is
+    /// safe because plain concurrent appends to one stream just serialize under
+    /// the appender lock). Offered load is decoupled from stream count in BOTH
+    /// directions and one pod can extract the server's max throughput while
+    /// writes stay distributed across every stream.
     #[arg(long, default_value_t = 0)]
     pub connections: usize,
 
     /// Records per append request (pool model only). 1 = one record per POST. >1 =
     /// send a JSON array of N records in a single POST (the durable server flattens
     /// the array into N records under ONE appender-lock + ONE fsync), amortizing the
-    /// per-request client/server overhead. Producer-seq still advances by 1 per POST
-    /// (the server dedups per request, not per record); throughput counts N records
-    /// per successful POST. Cuts fleet vCPU per record/s — the main load-gen cost
+    /// per-request client/server overhead; throughput counts N records per
+    /// successful POST. Cuts fleet vCPU per record/s — the main load-gen cost
     /// lever. Switches the body to application/json.
     #[arg(long, default_value_t = 1)]
     pub batch: usize,
@@ -129,22 +130,30 @@ pub struct MultiStreamResult {
     pub measure_end_unix_ms: u64,
 }
 
-/// Pool worker → stream assignment. Returns the worker's stream range `[lo, hi)`
-/// plus a per-worker producer tag when streams are SHARED between workers:
+/// Pool worker → stream assignment: the worker's stream range `[lo, hi)`.
 ///
-/// * `c ≤ n`: disjoint contiguous slices (tag `None` — the per-stream producer id
-///   is unique because no other worker touches those streams).
-/// * `c > n`: worker `w` is pinned to the single stream `w % n` and tagged with
-///   `w`, so the ⌈c/n⌉ workers sharing a stream write through DISTINCT producer
-///   identities — concurrent appends to one stream without racing any single
-///   producer's monotonic seq.
-fn pool_assignment(w: usize, c: usize, n: usize) -> (usize, usize, Option<usize>) {
+/// * `c ≤ n`: disjoint contiguous slices covering every stream exactly once.
+/// * `c > n`: worker `w` is pinned to the single stream `w % n`, so ⌈c/n⌉
+///   workers share each stream. Pool appends are PLAIN (no producer sessions),
+///   so concurrent workers on one stream are safe — the server serializes them
+///   under the appender lock; there is no seq to race.
+fn pool_assignment(w: usize, c: usize, n: usize) -> (usize, usize) {
     if c <= n {
-        (w * n / c, (w + 1) * n / c, None)
+        (w * n / c, (w + 1) * n / c)
     } else {
         let s = w % n;
-        (s, s + 1, Some(w))
+        (s, s + 1)
     }
+}
+
+/// Per-pod stream-name prefix: fleet pods MUST own disjoint stream sets, or a
+/// multi-pod cell's real cardinality silently shrinks to streams/pods (every pod
+/// creating and writing the same `s…` names). The indexed Job sets
+/// DS_BENCH_INSTANCE = pod ordinal; single-process runs default to "0".
+fn instance_prefix() -> String {
+    let inst = std::env::var("DS_BENCH_INSTANCE").unwrap_or_default();
+    let inst = if inst.is_empty() { "0".to_string() } else { inst };
+    format!("i{inst}-")
 }
 
 /// Planned wall-clock measure window, computed at phase setup: `Instant`-based
@@ -340,7 +349,7 @@ async fn run_pool(args: MultiStreamArgs, backend: Backend) -> Result<MultiStream
 
     let mut workers = Vec::with_capacity(c);
     for w in 0..c {
-        let (lo, hi, producer_tag) = pool_assignment(w, c, n);
+        let (lo, hi) = pool_assignment(w, c, n);
         if lo >= hi {
             continue;
         }
@@ -350,8 +359,8 @@ async fn run_pool(args: MultiStreamArgs, backend: Backend) -> Result<MultiStream
             (ok.clone(), bp.clone(), err.clone(), errors.clone(), hist.clone());
         workers.push(tokio::spawn(async move {
             pool_worker(
-                backend, lo, hi, producer_tag, body, content_type, recs_per_post,
-                warmup_end, measure_start, deadline, ok, bp, err, errors, hist,
+                backend, lo, hi, body, content_type, recs_per_post, warmup_end,
+                measure_start, deadline, ok, bp, err, errors, hist,
             )
             .await
         }));
@@ -404,7 +413,6 @@ async fn pool_worker(
     backend: Backend,
     lo: usize,
     hi: usize,
-    producer_tag: Option<usize>,
     body: Arc<Vec<u8>>,
     content_type: &'static str,
     recs_per_post: u64,
@@ -418,9 +426,7 @@ async fn pool_worker(
     hist: Arc<Mutex<Histogram<u64>>>,
 ) {
     let span = hi - lo;
-    let mut seqs = vec![0u64; span]; // monotonic producer-seq per owned stream
     let mut local = new_histogram();
-    let use_producer = matches!(backend.kind, ApiStyle::Ursula | ApiStyle::Durable);
     let mut rr = 0usize; // round-robin cursor within [lo, hi)
     while Instant::now() < deadline {
         let now = Instant::now();
@@ -433,22 +439,11 @@ async fn pool_worker(
         rr = rr.wrapping_add(1);
         let global = lo + local_idx;
         let stream = stream_name(global);
-        // Shared-stream workers (c > n) write through per-worker producer
-        // identities so their seqs never race; sliced workers keep the
-        // per-stream producer (unique — nobody else touches their slice).
-        let producer_id = match producer_tag {
-            Some(w) => format!("bench-{global}-w{w}"),
-            None => format!("bench-{global}"),
-        };
-        let seq = seqs[local_idx];
         let started = Instant::now();
-        let producer = if use_producer {
-            Some(Producer { id: &producer_id, epoch: 0, seq })
-        } else {
-            None
-        };
+        // RAW throughput: plain append, no producer session/seq/dedup — the
+        // measurement is the server's append path, not its idempotency layer.
         let resp = backend
-            .append_request(global, &stream, &body, producer, content_type)
+            .append_request(global, &stream, &body, None, content_type)
             .send()
             .await;
         match resp {
@@ -459,7 +454,6 @@ async fn pool_worker(
                         ok.fetch_add(recs_per_post, Ordering::Relaxed);
                         record(&mut local, started);
                     }
-                    seqs[local_idx] += 1;
                 } else if status.as_u16() == 503 || status.as_u16() == 429 {
                     if counting {
                         bp.fetch_add(1, Ordering::Relaxed);
@@ -630,22 +624,24 @@ async fn create_streams(
 }
 
 fn stream_name(idx: usize) -> String {
-    format!("s{:08}", idx)
+    // Pod-namespaced: pods own disjoint stream sets (see instance_prefix).
+    use std::sync::OnceLock;
+    static PREFIX: OnceLock<String> = OnceLock::new();
+    let prefix = PREFIX.get_or_init(instance_prefix);
+    format!("{prefix}s{idx:08}")
 }
 
 #[cfg(test)]
 mod tests {
     use super::pool_assignment;
 
-    /// c ≤ n: disjoint contiguous slices covering every stream exactly once,
-    /// no producer tags (per-stream producer ids stay unique).
+    /// c ≤ n: disjoint contiguous slices covering every stream exactly once.
     #[test]
     fn sliced_assignment_covers_all_streams_disjointly() {
         for (c, n) in [(1, 5), (3, 10), (10, 10), (7, 100)] {
             let mut covered = vec![0u32; n];
             for w in 0..c {
-                let (lo, hi, tag) = pool_assignment(w, c, n);
-                assert!(tag.is_none(), "c<=n must not tag producers (c={c} n={n})");
+                let (lo, hi) = pool_assignment(w, c, n);
                 for s in lo..hi {
                     covered[s] += 1;
                 }
@@ -654,18 +650,16 @@ mod tests {
         }
     }
 
-    /// c > n: every stream keeps receiving writes (distribution across all keys),
-    /// each stream gets ⌈c/n⌉ or ⌊c/n⌋ workers, and every (stream, producer)
-    /// pair is unique so no producer's seq can race.
+    /// c > n: every stream keeps receiving writes (distribution across all keys)
+    /// and each stream gets ⌈c/n⌉ or ⌊c/n⌋ workers — safe without producer
+    /// identities because pool appends are plain (no seq to race).
     #[test]
-    fn shared_assignment_multiplies_per_stream_producers() {
+    fn shared_assignment_balances_workers_across_streams() {
         for (c, n) in [(6, 5), (256, 100), (3000, 100), (2048, 1)] {
             let mut per_stream = vec![0usize; n];
-            let mut pairs = std::collections::HashSet::new();
             for w in 0..c {
-                let (lo, hi, tag) = pool_assignment(w, c, n);
+                let (lo, hi) = pool_assignment(w, c, n);
                 assert_eq!(hi, lo + 1, "shared workers own exactly one stream");
-                assert!(pairs.insert((lo, tag.expect("c>n must tag producers"))), "producer identity must be unique per stream");
                 per_stream[lo] += 1;
             }
             assert!(per_stream.iter().all(|&x| x > 0), "every stream written (c={c} n={n})");
