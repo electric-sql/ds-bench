@@ -13,10 +13,14 @@ PROJECT="${PROJECT:-vaxine}"
 DONE_MARKER="$PWD/.bench-state/walmem-20260708.done"
 rm -f "$DONE_MARKER"
 
-# Watchdog: force-delete all bench-* clusters at the deadline unless we finish.
-DEADLINE_SECS="${DEADLINE_SECS:-14400}" DONE_MARKER="$DONE_MARKER" \
+# Watchdog: force-delete THIS CAMPAIGN'S clusters at the deadline unless we
+# finish. CLUSTER_FILTER is scoped to ^bench-cpu so a parallel bench run (or its
+# own watchdog) and this one can never shoot each other's clusters down — an
+# unscoped '^bench-' watchdog from a side experiment swept bench-cpu4/cpu8 out
+# from under the 2026-07-08 rerun mid-deploy.
+DEADLINE_SECS="${DEADLINE_SECS:-14400}" DONE_MARKER="$DONE_MARKER" CLUSTER_FILTER='^bench-cpu' \
   nohup bash scripts/teardown-watchdog.sh > /tmp/walmem-watchdog.log 2>&1 &
-echo "watchdog armed (${DEADLINE_SECS:-14400}s)"
+echo "watchdog armed (${DEADLINE_SECS:-14400}s, filter ^bench-cpu)"
 
 run_suite() {
   local suite="$1"

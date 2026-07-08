@@ -22,6 +22,18 @@ if [ "$DS_TARGET" = "local" ]; then
 else
   if gcloud container clusters describe "$CLUSTER" --zone "$ZONE" --project "$PROJECT" >/dev/null 2>&1; then
     echo "GKE cluster '${CLUSTER}' already exists"
+    # An interrupted create can leave the cluster WITHOUT its clients pool (the
+    # cluster create was submitted, the pool create never was). Fleet pods then
+    # sit Pending forever on the role=client selector. Make adoption idempotent:
+    # ensure the pool exists before proceeding.
+    if ! gcloud container node-pools describe clients --cluster "$CLUSTER" --zone "$ZONE" --project "$PROJECT" >/dev/null 2>&1; then
+      echo "=== clients pool missing on existing cluster — creating ==="
+      SPOT_FLAG=()
+      [ "${SPOT_CLIENTS:-1}" = "1" ] && SPOT_FLAG=(--spot)
+      gcloud container node-pools create clients --cluster "$CLUSTER" --zone "$ZONE" --project "$PROJECT" \
+        --machine-type "${CLIENT_MACHINE:-n2d-standard-16}" --num-nodes "${CLIENT_NODES:-2}" \
+        --node-labels=role=client "${SPOT_FLAG[@]}"
+    fi
   else
     echo "=== gcloud create cluster ${CLUSTER} (+ clients pool) ==="
     # c4d-8-lssd and c4d-16-lssd bundle the SAME single Titanium NVMe, so the

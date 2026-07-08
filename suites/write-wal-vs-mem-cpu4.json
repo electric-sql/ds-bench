@@ -1,6 +1,6 @@
 {
   "suite": "write-wal-vs-mem-cpu4",
-  "_doc": "Raw append saturation, wal vs memory, server pinned to 4 vCPUs (SERVER_CPUS via cluster.server_cpus) on c4d-standard-16-lssd — physically-attached Titanium NVMe local SSD, the canonical write-benchmark server shape (see AGENTS.md §3; note its single 375GB partition write-caps at ~350MB/s, measured 2026-07-07 — wal may hit that wall before CPU, memory mode does not touch it). Pool client: pods own DISJOINT slices of the global key domain (even coverage, no cross-pod appender-lock conflicts), PLAIN appends (no producer sessions), slices pre-created before the fleet start barrier so the measure window is appends-only. connections=256 @ fleet_cpu=2 is the documented ~80% single-pod calibration at batch=1/256B (AGENTS.md §7) — pods stay in their linear region so the sweep measures the server, never the client. Ladder climbs until a real plateau; memory (vb/ds-rust-memory-meta-sweep build) is expected to clear wal, so its rungs extend higher.",
+  "_doc": "Raw append saturation, wal vs memory, server pinned to 4 vCPUs (SERVER_CPUS via cluster.server_cpus) on c4d-standard-16-lssd \u2014 physically-attached Titanium NVMe local SSD, the canonical write-benchmark server shape (see AGENTS.md \u00a73; note its single 375GB partition write-caps at ~350MB/s, measured 2026-07-07 \u2014 wal may hit that wall before CPU, memory mode does not touch it). Pool client: pods own DISJOINT slices of the global key domain (even coverage, no cross-pod appender-lock conflicts), PLAIN appends (no producer sessions), slices pre-created before the fleet start barrier so the measure window is appends-only. connections=256 @ fleet_cpu=2 is the documented ~80% single-pod calibration at batch=1/256B (AGENTS.md \u00a77) \u2014 pods stay in their linear region so the sweep measures the server, never the client. Ladder climbs until a real plateau; memory (vb/ds-rust-memory-meta-sweep build) is expected to clear wal, so its rungs extend higher. Ladder starts at 1 pod so the walk samples the PRE-saturation region: per-rung p50/p99 land in the walk and the report quotes latency from the <=80%-of-peak knee rung; the pinned plateau rung's latency is labelled as saturation queueing (Little's law), not service time.",
   "cluster": {
     "server_machine": "c4d-standard-16-lssd",
     "server_cpus": 4,
@@ -20,16 +20,47 @@
     "setup_concurrency": 16,
     "payload_bytes": 256
   },
-  "modes": ["wal"],
+  "modes": [
+    "wal"
+  ],
   "server_configs": {
     "wal": [
-      { "label": "wal", "args": "--wal-shards 4 --worker-threads 4" },
-      { "label": "memory", "args": "--durability memory --worker-threads 4" }
+      {
+        "label": "wal",
+        "args": "--wal-shards 4 --worker-threads 4"
+      },
+      {
+        "label": "memory",
+        "args": "--durability memory --worker-threads 4"
+      }
     ]
   },
-  "stream_counts": [100000, 500000],
+  "stream_counts": [
+    100000,
+    500000
+  ],
   "pod_ladder": {
-    "100000": [8, 16, 24, 32, 48, 64],
-    "500000": [8, 16, 24, 32, 48, 64]
+    "100000": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      24,
+      32,
+      48,
+      64
+    ],
+    "500000": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      24,
+      32,
+      48,
+      64
+    ]
   }
 }

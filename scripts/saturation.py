@@ -104,6 +104,17 @@ def step_decision(prev_thr, thr, plateau_pct):
     gain = (thr - prev_thr) / prev_thr
     return "continue" if gain > plateau_pct / 100.0 else "plateau"
 
+def extract_latency(path):
+    """merged.json → (p50_ms, p99_ms) of the rung's fleet-merged histogram, or
+    (None, None). Per-rung latency lets the walk distinguish the pre-saturation
+    knee (latency ≈ service time) from the plateau rungs (latency = queueing —
+    reporting THOSE as 'the latency' was the 100k-wal 64 ms mistake)."""
+    obj = extract_merged(path)
+    if not isinstance(obj, dict):
+        return (None, None)
+    return obj.get("p50_ms"), obj.get("p99_ms")
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--merged", required=True)
@@ -114,10 +125,12 @@ def main():
     thr = extract_throughput(a.merged)
     # Third field: 1 = fleet measure windows overlapped (or no stamps: old data),
     # 0 = misaligned (thr is forced to 0 above). Lets the walker record the rung
-    # as misaligned_windows rather than a generic error. Consumers reading only
-    # the first two fields are unaffected.
+    # as misaligned_windows rather than a generic error. Fourth/fifth: the rung's
+    # merged p50/p99 ms ("None" when absent). Consumers reading only the first
+    # two fields are unaffected.
     aligned = 1 if windows_aligned(extract_merged(a.merged)) else 0
-    print(f"{classify(a.prev_thr, thr, a.cpu, a.cores)} {thr} {aligned}")
+    p50, p99 = extract_latency(a.merged)
+    print(f"{classify(a.prev_thr, thr, a.cpu, a.cores)} {thr} {aligned} {p50} {p99}")
 
 if __name__ == "__main__":
     main()

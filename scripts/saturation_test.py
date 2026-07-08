@@ -72,10 +72,11 @@ class TestCLI(unittest.TestCase):
     def test_cli_prints_reason_and_throughput(self):
         r = self._run('{"aggregate_ops_per_sec": 1050000.0}\n', 1000000, 50, 4)
         self.assertEqual(r.returncode, 0, r.stderr)
-        reason, thr, aligned = r.stdout.split()
+        reason, thr, aligned, p50, p99 = r.stdout.split()
         self.assertEqual(reason, "plateau")        # +5% gain <10%
         self.assertAlmostEqual(float(thr), 1050000.0)
         self.assertEqual(aligned, "1")             # no stamps → aligned by default
+        self.assertEqual((p50, p99), ("None", "None"))  # no latency in merged → None
 
     def test_cli_cpu_bound(self):
         r = self._run('{"aggregate_ops_per_sec": 5000.0}\n', 0, 370, 4)
@@ -118,12 +119,13 @@ class TestWindowAlignment(unittest.TestCase):
             os.unlink(p)
 
     def test_cli_third_field_signals_alignment(self):
-        # Walker protocol: "<reason> <thr> <aligned>"; aligned=0 lets walk_cell
-        # record reason=misaligned_windows instead of creation_choke.
+        # Walker protocol: "<reason> <thr> <aligned> <p50> <p99>"; aligned=0 lets
+        # walk_cell record reason=misaligned_windows instead of creation_choke;
+        # p50/p99 let the walk carry per-rung latency (knee vs saturation).
         cli = TestCLI()
         r = cli._run(json.dumps({"aggregate_ops_per_sec": 100.0, "windows_aligned": False}), 0, 50, 4)
         parts = r.stdout.split()
-        self.assertEqual(len(parts), 3, r.stdout)
+        self.assertEqual(len(parts), 5, r.stdout)
         self.assertEqual(parts[2], "0")
         r = cli._run(json.dumps({"aggregate_ops_per_sec": 100.0, "windows_aligned": True}), 0, 50, 4)
         self.assertEqual(r.stdout.split()[2], "1")

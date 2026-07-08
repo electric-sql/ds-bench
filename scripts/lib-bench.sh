@@ -258,10 +258,24 @@ run_fleet_and_coordinator() {
   fi
 
   echo "    launching fleet (${PARALLELISM} pods)..."
-  envsubst "${MANIFEST_VARS} \${RUN_ID} \${PARALLELISM} \${BENCH_CMD} \${OUT_PREFIX} \${BARRIER_DIR}" \
-    < gke/bench-job.yaml | K apply -f -
-  if [ -n "${BARRIER_DIR}" ]; then
+  # A fresh GKE control plane can refuse connections for minutes (resize) — a
+  # failed apply here used to mean a fleet that never existed followed by a
+  # full 900s barrier wait for it. Retry the apply through the outage; if it
+  # still fails, skip the barrier wait so the rung fails FAST (no merged data →
+  # thr 0 → the walker records an honest error cell).
+  local _apply_ok=0 _try
+  for _try in 1 2 3 4 5; do
+    if envsubst "${MANIFEST_VARS} \${RUN_ID} \${PARALLELISM} \${BENCH_CMD} \${OUT_PREFIX} \${BARRIER_DIR}" \
+        < gke/bench-job.yaml | K apply -f -; then
+      _apply_ok=1; break
+    fi
+    echo "    fleet apply failed (attempt ${_try}/5) — API server unreachable? retrying in 30s..."
+    sleep 30
+  done
+  if [ -n "${BARRIER_DIR}" ] && [ "${_apply_ok}" = 1 ]; then
     _barrier_release_fleet "${PARALLELISM}"
+  elif [ "${_apply_ok}" != 1 ]; then
+    echo "    fleet apply NEVER succeeded — skipping barrier wait; rung will record as error"
   fi
   # Tolerant: a hung/saturated server makes some pods fail → the Job never reaches
   # `complete`. Wait for complete OR failed, then proceed — the coordinator merges
@@ -375,13 +389,15 @@ _run_cell_one() {
   if [ -f "${cell_dir}/samples.csv" ]; then
     cpu_pct="$(compute_server_cpu_pct "${cell_dir}/samples.csv")"
   fi
-  # saturation.py prints "<reason> <thr> <aligned>"; aligned=0 means the fleet's
-  # measure windows didn't overlap (thr is already forced to 0 in that case) —
-  # pass it through so the walker can label the rung misaligned_windows.
-  local thr aligned
-  read -r thr aligned < <(python3 "${REPO_ROOT}/scripts/saturation.py" --merged "${cell_dir}/merged.json" \
-          --prev-thr 0 --cpu "$cpu_pct" --cores 1 2>/dev/null | awk '{print $2, $3}')
-  echo "${cpu_pct} ${thr:-0} ${aligned:-1}"
+  # saturation.py prints "<reason> <thr> <aligned> <p50> <p99>"; aligned=0 means
+  # the fleet's measure windows didn't overlap (thr is already forced to 0 in
+  # that case) — pass it through so the walker can label the rung
+  # misaligned_windows. p50/p99 are the rung's merged latency (ms, "None" when
+  # absent) so the walk can locate the pre-saturation knee.
+  local thr aligned p50 p99
+  read -r thr aligned p50 p99 < <(python3 "${REPO_ROOT}/scripts/saturation.py" --merged "${cell_dir}/merged.json" \
+          --prev-thr 0 --cpu "$cpu_pct" --cores 1 2>/dev/null | awk '{print $2, $3, $4, $5}')
+  echo "${cpu_pct} ${thr:-0} ${aligned:-1} ${p50:-None} ${p99:-None}"
 }
 
 # run_cell CELL_NAME BENCH_CMD OUT_PREFIX MERGE_CMD SERVER_CPU_CORES — run a cell at a

@@ -77,15 +77,26 @@ walk_cell() {
   # over-provisions (pods > streams would drive more streams than intended).
   local ladder;  ladder="$(python3 -c "import sys;sys.path.insert(0,'scripts');from suite import Suite;from saturation import cap_ladder;s=Suite.load('$SUITE_FILE');print(' '.join(map(str,cap_ladder(s.ladder_for($sc),$sc))))")"
 
-  local prev_pods=0 prev_thr=0 walk="[]" pods _cpu thr aligned decision
+  local prev_pods=0 prev_thr=0 walk="[]" pods _cpu thr aligned p50 p99 decision
   for pods in $ladder; do
     SAT_REP=1; reset_state "$mode"
     # Optional third field: 0 = the fleet's measure windows didn't overlap, so the
     # rung has no valid throughput reading (thr arrives as 0 in that case). Test
-    # mocks / older measure fns emit two fields → aligned defaults to 1.
-    read -r _cpu thr aligned < <("$fn" "$pods")
+    # mocks / older measure fns emit two fields → aligned defaults to 1. Fourth/
+    # fifth: the rung's merged p50/p99 ms — recorded in the walk so the report can
+    # separate pre-saturation (knee) latency from plateau queueing latency.
+    read -r _cpu thr aligned p50 p99 < <("$fn" "$pods")
     aligned="${aligned:-1}"
-    walk="$(python3 -c "import json,sys; w=json.loads(sys.argv[1]); w.append([int(sys.argv[2]), float(sys.argv[3])]); print(json.dumps(w))" "$walk" "$pods" "$thr")"
+    walk="$(python3 -c "
+import json,sys
+w=json.loads(sys.argv[1])
+def f(x):
+    try: return float(x)
+    except (ValueError,TypeError): return None
+e=[int(sys.argv[2]), float(sys.argv[3])]
+p50, p99 = f(sys.argv[4]), f(sys.argv[5])
+if p50 is not None: e += [p50, p99]
+w.append(e); print(json.dumps(w))" "$walk" "$pods" "$thr" "${p50:-None}" "${p99:-None}")"
     decision="$(python3 -c "import sys; sys.path.insert(0,'scripts'); from saturation import step_decision; print(step_decision(float(sys.argv[1]), float(sys.argv[2]), float(sys.argv[3])))" "$prev_thr" "$thr" "$plateau")"
     case "$decision" in
       error)
