@@ -1,0 +1,44 @@
+{
+  "suite": "write-cliff-local-cpu4",
+  "_doc": "Local (kind) probe of the second suspicious remote pattern: wal throughput NOT scaling with the CPU pin (47k@4vCPU vs 43k@8vCPU remotely \u2014 fsync-lane/commit-path bound at ~25-30% CPU). Same client model as write-cliff-local but the server gets 4 vCPUs and 4 wal shards; compare against write-cliff-local's 2-vCPU wal cells at the same stream counts. If wal stays flat 2->4 vCPU locally too, the commit-path investigation can iterate on a laptop.",
+  "cluster": {
+    "server_cpus": 4
+  },
+  "saturation": {
+    "plateau_pct": 10,
+    "fleet_cpu": 0.25,
+    "connections": 64,
+    "repeats": 1,
+    "warmup_secs": 5,
+    "measure_secs": 15,
+    "setup_concurrency": 64,
+    "payload_bytes": 256
+  },
+  "modes": [
+    "wal"
+  ],
+  "server_configs": {
+    "wal": [
+      {
+        "label": "wal-cpu4",
+        "args": "--wal-shards 4 --worker-threads 4"
+      }
+    ]
+  },
+  "stream_counts": [
+    10000,
+    50000
+  ],
+  "pod_ladder": {
+    "10000": [
+      1,
+      2,
+      4
+    ],
+    "50000": [
+      1,
+      2,
+      4
+    ]
+  }
+}

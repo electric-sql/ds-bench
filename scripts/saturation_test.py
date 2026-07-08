@@ -72,13 +72,64 @@ class TestCLI(unittest.TestCase):
     def test_cli_prints_reason_and_throughput(self):
         r = self._run('{"aggregate_ops_per_sec": 1050000.0}\n', 1000000, 50, 4)
         self.assertEqual(r.returncode, 0, r.stderr)
-        reason, thr = r.stdout.split()
+        reason, thr, aligned, p50, p99 = r.stdout.split()
         self.assertEqual(reason, "plateau")        # +5% gain <10%
         self.assertAlmostEqual(float(thr), 1050000.0)
+        self.assertEqual(aligned, "1")             # no stamps → aligned by default
+        self.assertEqual((p50, p99), ("None", "None"))  # no latency in merged → None
 
     def test_cli_cpu_bound(self):
         r = self._run('{"aggregate_ops_per_sec": 5000.0}\n', 0, 370, 4)
         self.assertEqual(r.stdout.split()[0], "cpu")   # 370 >= 0.9*4*100
+
+
+class TestWindowAlignment(unittest.TestCase):
+    """Fleet throughput is a SUM of per-pod rates; when the pods' measure windows
+    did not overlap (windows_aligned=false from hdr-merge) the sum multiply-counts
+    server capacity and the number is garbage — the walker must see thr=0 so the
+    rung is recorded as an error instead of an inflated value."""
+
+    def _write(self, obj):
+        p = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w")
+        p.write(json.dumps(obj)); p.close()
+        return p.name
+
+    def test_misaligned_windows_zero_throughput(self):
+        p = self._write({"aggregate_ops_per_sec": 2978371.0, "windows_aligned": False,
+                         "measure_span_secs": 204.0, "measure_window_secs": 8.0})
+        try:
+            self.assertEqual(sat.extract_throughput(p), 0.0)
+        finally:
+            os.unlink(p)
+
+    def test_aligned_windows_pass_through(self):
+        p = self._write({"aggregate_ops_per_sec": 578000.0, "windows_aligned": True,
+                         "measure_span_secs": 9.0, "measure_window_secs": 8.0})
+        try:
+            self.assertAlmostEqual(sat.extract_throughput(p), 578000.0)
+        finally:
+            os.unlink(p)
+
+    def test_no_alignment_field_back_compat(self):
+        # Old merged.json (no stamps) must keep working unchanged.
+        p = self._write({"aggregate_ops_per_sec": 578000.0})
+        try:
+            self.assertAlmostEqual(sat.extract_throughput(p), 578000.0)
+        finally:
+            os.unlink(p)
+
+    def test_cli_third_field_signals_alignment(self):
+        # Walker protocol: "<reason> <thr> <aligned> <p50> <p99>"; aligned=0 lets
+        # walk_cell record reason=misaligned_windows instead of creation_choke;
+        # p50/p99 let the walk carry per-rung latency (knee vs saturation).
+        cli = TestCLI()
+        r = cli._run(json.dumps({"aggregate_ops_per_sec": 100.0, "windows_aligned": False}), 0, 50, 4)
+        parts = r.stdout.split()
+        self.assertEqual(len(parts), 5, r.stdout)
+        self.assertEqual(parts[2], "0")
+        r = cli._run(json.dumps({"aggregate_ops_per_sec": 100.0, "windows_aligned": True}), 0, 50, 4)
+        self.assertEqual(r.stdout.split()[2], "1")
+
 
 if __name__ == "__main__":
     unittest.main()

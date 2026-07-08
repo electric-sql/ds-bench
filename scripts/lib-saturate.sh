@@ -29,7 +29,31 @@ measure_pods() {
   # endpoint (the 100k creation_choke). A lower per-pod value keeps total concurrent
   # creation bounded while pods still drive full load after setup.
   local setup_conc="${SETUP_CONCURRENCY:-32}" payload="${PAYLOAD_BYTES:-256}"
-  local bench_cmd="multi-stream --target ${T_TARGET:?} --api-style ${T_API:?} ${T_NS:-} --streams ${perpod} --duration-secs ${dur} --payload-bytes ${payload} --setup-concurrency ${setup_conc} --warmup-secs ${warmup} --settle-secs ${settle}"
+  # Saturation cells SUM per-pod rates, so the fleet start barrier is mandatory:
+  # every pod holds after stream creation until all are ready, then measures over
+  # the same wall window (prevention; hdr-merge's windows_aligned is the check).
+  export BARRIER_DIR="${BARRIER_DIR:-/barrier}"
+  # The fleet's post-release lifetime is bounded (warmup+settle+measure+upload) —
+  # size the completion wait to it instead of the generic default, which a large
+  # fleet outlives (the old silent failure mode: the coordinator merged a partial,
+  # time-skewed subset while pods were still running).
+  export FLEET_TIMEOUT="${FLEET_TIMEOUT_OVERRIDE:-$(( warmup + settle + dur + 240 ))}"
+  # CONNS_PER_POD>0 switches the client to the bounded-concurrency pool model: each
+  # pod offers exactly CONNS_PER_POD in-flight appends cycled over its ${perpod}
+  # streams (decouples offered load from stream count). 0/unset = legacy 1-per-stream.
+  local conns_flag=""
+  [ "${CONNS_PER_POD:-0}" -gt 0 ] 2>/dev/null && conns_flag="--connections ${CONNS_PER_POD}"
+  # batch>1 → N records per POST (pool model); the dominant fleet-cost lever.
+  local batch_flag=""
+  [ "${BATCH_PER_POD:-1}" -gt 1 ] 2>/dev/null && batch_flag="--batch ${BATCH_PER_POD}"
+  # Pool model: pods get the full GLOBAL stream count and derive their own
+  # disjoint slice of it from DS_BENCH_INSTANCE/DS_BENCH_SHARDS (even key-space
+  # coverage, no cross-pod stream sharing; each pod pre-creates its slice
+  # before the barrier). Legacy: pods own disjoint pod-prefixed slices of
+  # ceil(sc/pods) streams each.
+  local streams_arg="$perpod"
+  [ "${CONNS_PER_POD:-0}" -gt 0 ] 2>/dev/null && streams_arg="$sc"
+  local bench_cmd="multi-stream --target ${T_TARGET:?} --api-style ${T_API:?} ${T_NS:-} --streams ${streams_arg} ${conns_flag} ${batch_flag} --duration-secs ${dur} --payload-bytes ${payload} --setup-concurrency ${setup_conc} --warmup-secs ${warmup} --settle-secs ${settle}"
   local merge_cmd="ds-bench hdr-merge --hdr-dir /merge --results-dir /merge --label-prefix multi-stream-"
   _run_cell_one "${mode}-write-n${sc}-p${pods}" "$bench_cmd" "write" "$merge_cmd" "$pods" "$rep" "$cell_dir"
 }
@@ -53,15 +77,32 @@ walk_cell() {
   # over-provisions (pods > streams would drive more streams than intended).
   local ladder;  ladder="$(python3 -c "import sys;sys.path.insert(0,'scripts');from suite import Suite;from saturation import cap_ladder;s=Suite.load('$SUITE_FILE');print(' '.join(map(str,cap_ladder(s.ladder_for($sc),$sc))))")"
 
-  local prev_pods=0 prev_thr=0 walk="[]" pods _cpu thr decision
+  local prev_pods=0 prev_thr=0 walk="[]" pods _cpu thr aligned p50 p99 decision
   for pods in $ladder; do
     SAT_REP=1; reset_state "$mode"
-    read -r _cpu thr < <("$fn" "$pods")
-    walk="$(python3 -c "import json,sys; w=json.loads(sys.argv[1]); w.append([int(sys.argv[2]), float(sys.argv[3])]); print(json.dumps(w))" "$walk" "$pods" "$thr")"
+    # Optional third field: 0 = the fleet's measure windows didn't overlap, so the
+    # rung has no valid throughput reading (thr arrives as 0 in that case). Test
+    # mocks / older measure fns emit two fields → aligned defaults to 1. Fourth/
+    # fifth: the rung's merged p50/p99 ms — recorded in the walk so the report can
+    # separate pre-saturation (knee) latency from plateau queueing latency.
+    read -r _cpu thr aligned p50 p99 < <("$fn" "$pods")
+    aligned="${aligned:-1}"
+    walk="$(python3 -c "
+import json,sys
+w=json.loads(sys.argv[1])
+def f(x):
+    try: return float(x)
+    except (ValueError,TypeError): return None
+e=[int(sys.argv[2]), float(sys.argv[3])]
+p50, p99 = f(sys.argv[4]), f(sys.argv[5])
+if p50 is not None: e += [p50, p99]
+w.append(e); print(json.dumps(w))" "$walk" "$pods" "$thr" "${p50:-None}" "${p99:-None}")"
     decision="$(python3 -c "import sys; sys.path.insert(0,'scripts'); from saturation import step_decision; print(step_decision(float(sys.argv[1]), float(sys.argv[2]), float(sys.argv[3])))" "$prev_thr" "$thr" "$plateau")"
     case "$decision" in
       error)
-        _record "$cells_json" "$sc" "$digest" "$walk" None 0 None False error creation_choke None
+        local err_reason=creation_choke
+        [ "$aligned" = "0" ] && err_reason=misaligned_windows
+        _record "$cells_json" "$sc" "$digest" "$walk" None 0 None False error "$err_reason" None
         return 0 ;;
       plateau)
         # saturated one rung back; confirm the pinned point with `repeats` reps.

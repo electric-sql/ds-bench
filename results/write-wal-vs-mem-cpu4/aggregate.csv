@@ -1,0 +1,5 @@
+mode,stream_count,pods,throughput,p50,p99,knee_pods,knee_throughput,knee_p50,knee_p99,pod_mem_mb,pod_mem_p50_mb,saturated,status,reason
+memory,100000,2,315174.44,1.277,17.167,1,204417.28,1.181,2.399,631,569,True,ok,plateau
+wal,100000,2,46838.119999999995,8.503,35.487,1,38245.36,4.463,35.775,613,519,True,ok,plateau
+memory,500000,2,226488.52,1.347,18.431,1,164607.64,1.148,2.311,2876,2076,True,ok,plateau
+wal,500000,1,30983.0,6.391,23.343,1,30983.0,6.655,26.927,2469,2162,True,ok,plateau

@@ -1,0 +1,23 @@
+{
+  "suite": "sustained-local-fix",
+  "workload": "sustained",
+  "cluster": {},
+  "sustained": {
+    "rate_per_stream": 10,
+    "duration_secs": 90,
+    "snapshot_secs": 5,
+    "pods": 1,
+    "fleet_cpu": 0.5,
+    "payload_bytes": 256,
+    "setup_concurrency": 64,
+    "repeats": 1
+  },
+  "modes": ["wal"],
+  "stream_counts": [10, 100, 150],
+  "server_configs": {
+    "wal": [
+      { "label": "wal",    "args": "--durability wal --wal-shards 4" },
+      { "label": "memory", "args": "--durability memory" }
+    ]
+  }
+}

@@ -22,6 +22,18 @@ if [ "$DS_TARGET" = "local" ]; then
 else
   if gcloud container clusters describe "$CLUSTER" --zone "$ZONE" --project "$PROJECT" >/dev/null 2>&1; then
     echo "GKE cluster '${CLUSTER}' already exists"
+    # An interrupted create can leave the cluster WITHOUT its clients pool (the
+    # cluster create was submitted, the pool create never was). Fleet pods then
+    # sit Pending forever on the role=client selector. Make adoption idempotent:
+    # ensure the pool exists before proceeding.
+    if ! gcloud container node-pools describe clients --cluster "$CLUSTER" --zone "$ZONE" --project "$PROJECT" >/dev/null 2>&1; then
+      echo "=== clients pool missing on existing cluster — creating ==="
+      SPOT_FLAG=()
+      [ "${SPOT_CLIENTS:-1}" = "1" ] && SPOT_FLAG=(--spot)
+      gcloud container node-pools create clients --cluster "$CLUSTER" --zone "$ZONE" --project "$PROJECT" \
+        --machine-type "${CLIENT_MACHINE:-n2d-standard-16}" --num-nodes "${CLIENT_NODES:-2}" \
+        --node-labels=role=client "${SPOT_FLAG[@]}"
+    fi
   else
     echo "=== gcloud create cluster ${CLUSTER} (+ clients pool) ==="
     # c4d-8-lssd and c4d-16-lssd bundle the SAME single Titanium NVMe, so the
@@ -37,8 +49,14 @@ else
       *-lssd) LSSD_FLAG=(--ephemeral-storage-local-ssd) ;;
       *)      LSSD_FLAG=(--ephemeral-storage-local-ssd "count=${LOCAL_SSD_COUNT:-1}") ;;
     esac
+    # The server pool holds state, so it is on-demand by DEFAULT (a Spot
+    # preemption mid-run kills the stateful server and invalidates that cell).
+    # SPOT_SERVER=1 opts the server node into Spot too (cheapest; accept that a
+    # preemption forces a re-run of the affected cells — the suite is resumable).
+    SPOT_SERVER_FLAG=()
+    [ "${SPOT_SERVER:-0}" = "1" ] && SPOT_SERVER_FLAG=(--spot)
     gcloud container clusters create "$CLUSTER" --zone "$ZONE" --project "$PROJECT" --num-nodes 1 \
-      --machine-type "$SERVER_MACHINE" "${LSSD_FLAG[@]}" \
+      --machine-type "$SERVER_MACHINE" "${LSSD_FLAG[@]}" "${SPOT_SERVER_FLAG[@]}" \
       --node-labels=role=server --network benchmarking --subnetwork benchmarking \
       --enable-ip-alias --release-channel regular
     # The client fleet is disposable + fault-tolerant (the bench tolerates pod

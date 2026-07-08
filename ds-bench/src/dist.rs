@@ -105,7 +105,26 @@ pub struct MergeSummary {
     /// Summed non-backpressure errors across pods — reads scenario only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub other_err_total: Option<u64>,
+    /// Wall-clock span covered by the fleet's measure windows: max(end) − min(start)
+    /// across pods, seconds. Only present when pods emitted window stamps.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub measure_span_secs: Option<f64>,
+    /// The largest single pod's measure window, seconds (the nominal duration).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub measure_window_secs: Option<f64>,
+    /// Whether the fleet's windows overlapped enough for the summed rates to be
+    /// meaningful: span ≤ WINDOW_ALIGN_FACTOR × window. When false, the summed
+    /// `aggregate_ops_per_sec` multiply-counts server capacity (pods measured at
+    /// different wall times) and MUST NOT be used as a throughput reading.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub windows_aligned: Option<bool>,
 }
+
+/// Maximum fleet window span, as a multiple of the nominal per-pod window, for the
+/// summed per-pod rates to still be considered one concurrent measurement. At 2.0
+/// the worst-case overcount is bounded by ~2×; the pathological cells this catches
+/// were 10–25× (span minutes, window 8 s).
+const WINDOW_ALIGN_FACTOR: f64 = 2.0;
 
 /// Accumulators built from scanning the per-pod JSONs in the results dir.
 #[derive(Default)]
@@ -126,6 +145,13 @@ struct HeadlineAcc {
     /// Summed counts.{backpressure,other_err} from reads pods.
     reads_backpressure: u64,
     reads_other_err: u64,
+    /// Fleet-wide measure-window bounds (unix ms) accumulated from per-pod
+    /// measure_{start,end}_unix_ms stamps, plus the largest per-pod window.
+    /// Summing per-pod rates is only valid when the windows overlap; these feed
+    /// the windows_aligned verdict in the merged summary.
+    win_min_start_ms: Option<u64>,
+    win_max_end_ms: Option<u64>,
+    win_max_window_ms: u64,
 }
 
 fn scan_headlines(results_dir: Option<&Path>) -> HeadlineAcc {
@@ -137,6 +163,16 @@ fn scan_headlines(results_dir: Option<&Path>) -> HeadlineAcc {
         if p.extension().and_then(|e| e.to_str()) != Some("json") { continue; }
         let Ok(txt) = std::fs::read_to_string(&p) else { continue };
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) else { continue };
+        // Window stamps are scenario-agnostic: accumulate them from any pod JSON
+        // that carries them (older clients simply don't emit them).
+        if let (Some(s), Some(e)) = (
+            v.get("measure_start_unix_ms").and_then(|x| x.as_u64()),
+            v.get("measure_end_unix_ms").and_then(|x| x.as_u64()),
+        ) {
+            acc.win_min_start_ms = Some(acc.win_min_start_ms.map_or(s, |m| m.min(s)));
+            acc.win_max_end_ms = Some(acc.win_max_end_ms.map_or(e, |m| m.max(e)));
+            acc.win_max_window_ms = acc.win_max_window_ms.max(e.saturating_sub(s));
+        }
         let scenario = v.get("scenario").and_then(|x| x.as_str()).unwrap_or("");
         if scenario.starts_with("catch-up") || scenario.starts_with("bootstrap") {
             // bootstrap (reconnect/catch-up) reports bytes_received_total like catch-up
@@ -230,6 +266,15 @@ pub fn merge_summary_filtered(
     } else {
         (None, None)
     };
+    let (measure_span_secs, measure_window_secs, windows_aligned) =
+        match (acc.win_min_start_ms, acc.win_max_end_ms) {
+            (Some(s), Some(e)) if acc.win_max_window_ms > 0 => {
+                let span = e.saturating_sub(s) as f64 / 1000.0;
+                let window = acc.win_max_window_ms as f64 / 1000.0;
+                (Some(span), Some(window), Some(span <= WINDOW_ALIGN_FACTOR * window))
+            }
+            _ => (None, None, None),
+        };
     Ok(MergeSummary {
         merged_count: h.len(),
         p50_ms: ms(h.value_at_quantile(0.5)),
@@ -246,6 +291,9 @@ pub fn merge_summary_filtered(
         bytes_per_sec,
         backpressure_total,
         other_err_total,
+        measure_span_secs,
+        measure_window_secs,
+        windows_aligned,
     })
 }
 
@@ -312,5 +360,70 @@ mod tests {
             "expected ops≈500, got {}",
             acc.ops
         );
+    }
+
+    fn write_pod_json(dir: &Path, name: &str, start_ms: u64, end_ms: u64, ops: f64) {
+        let json = format!(
+            r#"{{
+                "scenario": "multi-stream-write",
+                "aggregate_ops_per_sec": {ops},
+                "elapsed_secs": 8.0,
+                "measure_start_unix_ms": {start_ms},
+                "measure_end_unix_ms": {end_ms}
+            }}"#
+        );
+        std::fs::write(dir.join(name), json).unwrap();
+    }
+
+    /// Pods whose measure windows overlap (started within seconds of each other)
+    /// → the merged summary reports the window span and windows_aligned=true.
+    #[test]
+    fn aligned_measure_windows_flagged_ok() {
+        let dir = std::env::temp_dir()
+            .join(format!("ds-bench-dist-test-{}-{}", std::process::id(), line!()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Two 8s windows starting 1s apart → span 9s ≤ 2×8s.
+        write_pod_json(&dir, "pod0.json", 1_000_000, 1_008_000, 100.0);
+        write_pod_json(&dir, "pod1.json", 1_001_000, 1_009_000, 100.0);
+
+        let s = merge_summary_filtered(&dir, Some(&dir), None).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(s.windows_aligned, Some(true), "9s span over 8s windows is aligned");
+        assert!((s.measure_span_secs.unwrap() - 9.0).abs() < 1e-6);
+        assert!((s.measure_window_secs.unwrap() - 8.0).abs() < 1e-6);
+    }
+
+    /// Pods whose measure windows do NOT overlap (staggered starts — the 500k-cell
+    /// pathology: summed per-pod rates multiply-count the server's capacity)
+    /// → windows_aligned=false so consumers can reject the cell.
+    #[test]
+    fn staggered_measure_windows_flagged_misaligned() {
+        let dir = std::env::temp_dir()
+            .join(format!("ds-bench-dist-test-{}-{}", std::process::id(), line!()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Two 8s windows starting 60s apart → span 68s > 2×8s.
+        write_pod_json(&dir, "pod0.json", 1_000_000, 1_008_000, 100.0);
+        write_pod_json(&dir, "pod1.json", 1_060_000, 1_068_000, 100.0);
+
+        let s = merge_summary_filtered(&dir, Some(&dir), None).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(s.windows_aligned, Some(false), "68s span over 8s windows is misaligned");
+        assert!((s.measure_span_secs.unwrap() - 68.0).abs() < 1e-6);
+    }
+
+    /// Per-pod JSONs without window stamps (older client) → no alignment verdict,
+    /// summary fields omitted (back-compat: never mis-flag old data).
+    #[test]
+    fn missing_window_stamps_yield_no_alignment_verdict() {
+        let dir = std::env::temp_dir()
+            .join(format!("ds-bench-dist-test-{}-{}", std::process::id(), line!()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let json = r#"{"scenario": "multi-stream-write", "aggregate_ops_per_sec": 100.0, "elapsed_secs": 8.0}"#;
+        std::fs::write(dir.join("pod0.json"), json).unwrap();
+
+        let s = merge_summary_filtered(&dir, Some(&dir), None).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(s.windows_aligned, None);
+        assert_eq!(s.measure_span_secs, None);
     }
 }

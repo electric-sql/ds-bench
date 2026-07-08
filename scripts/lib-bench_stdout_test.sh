@@ -66,7 +66,10 @@ output="$( _run_cell_one cell bench pfx merge 4 1 "$cell_dir" )"
 echo "--- captured stdout: [${output}] ---" >&2
 
 # ── Parse the result ──────────────────────────────────────────────────────────
-read -r cpu_pct thr <<< "$output"
+# Contract: "cpu_pct thr aligned p50 p99" — aligned is 1 (windows overlapped /
+# no stamps) or 0 (misaligned fleet measure windows; thr is forced to 0
+# upstream); p50/p99 are the rung's merged latency ms or "None".
+read -r cpu_pct thr aligned p50 p99 <<< "$output"
 
 PASS=true
 fail_msg=""
@@ -83,8 +86,22 @@ if ! printf '%s' "$thr" | grep -Eq '^[0-9]+(\.[0-9]+)?$'; then
   fail_msg="${fail_msg:+${fail_msg}; }FAIL: expected numeric thr, got '${thr}' (progress noise leaked onto stdout)"
 fi
 
+# Assert aligned is 0 or 1 (the merged.json here carries no window stamps → 1)
+if [ "$aligned" != "1" ] && [ "$aligned" != "0" ]; then
+  PASS=false
+  fail_msg="${fail_msg:+${fail_msg}; }FAIL: expected aligned flag 0/1, got '${aligned}' (progress noise leaked onto stdout)"
+fi
+
+# Assert p50/p99 are numeric or "None" (this merged.json has no latency → None)
+for v in "$p50" "$p99"; do
+  if [ "$v" != "None" ] && ! printf '%s' "$v" | grep -Eq '^[0-9]+(\.[0-9]+)?$'; then
+    PASS=false
+    fail_msg="${fail_msg:+${fail_msg}; }FAIL: expected p50/p99 numeric or None, got '${v}'"
+  fi
+done
+
 if $PASS; then
-  echo "PASS: _run_cell_one stdout is clean: cpu_pct=${cpu_pct} thr=${thr}"
+  echo "PASS: _run_cell_one stdout is clean: cpu_pct=${cpu_pct} thr=${thr} aligned=${aligned} p50=${p50} p99=${p99}"
   exit 0
 else
   echo "$fail_msg"

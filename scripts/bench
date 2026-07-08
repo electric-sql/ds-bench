@@ -102,7 +102,7 @@ run_mode() {
     cluster="${KIND_CLUSTER:-ds-bench}"
     DS_TARGET=local bash scripts/cluster-up.sh
     export DS_TARGET=local CLUSTER="$cluster" KCTX="kind-${cluster}"
-    export SERVER_CPUS="${SERVER_CPUS:-2}" SERVER_MEM="${SERVER_MEM:-2Gi}"
+    export SERVER_CPUS="${SERVER_CPUS:-$(_suite 's.cluster.get("server_cpus", 2)')}" SERVER_MEM="${SERVER_MEM:-2Gi}"
   else
     # Remote GKE: its OWN cluster per mode (parallel-safe), keyed KUBECONFIG. cluster
     # name + zone default to bench-<mode> / region-{a,b,c}; a suite may override
@@ -123,7 +123,9 @@ run_mode() {
     _record_cluster "$cluster" "$zone"   # so teardown only touches what we created
     export DS_TARGET=remote PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
     export ZONE="$zone" CLUSTER="$cluster" KCTX="gke_${PROJECT}_${zone}_${cluster}"
-    export SERVER_CPUS="${SERVER_CPUS:-4}"
+    # Suite may pin the server's vCPU budget (cluster.server_cpus) so a CPU-sweep
+    # suite (e.g. 4 vs 8 vCPU) is self-contained; env still overrides.
+    export SERVER_CPUS="${SERVER_CPUS:-$(_suite 's.cluster.get("server_cpus", 4)')}"
   fi
   export SERVER_CPU="${SERVER_CPUS%% *}"
   # fleet_cpu/setup/payload come from the saturation block (write) OR the sustained
@@ -134,6 +136,12 @@ run_mode() {
   export SETTLE_SECS="${SETTLE_SECS:-5}"
   export SETUP_CONCURRENCY="$(_suite 's.saturation.get("setup_concurrency", s.sustained.get("setup_concurrency", 32))')"
   export PAYLOAD_BYTES="$(_suite 's.saturation.get("payload_bytes", s.sustained.get("payload_bytes", 256))')"
+  # connections>0 → bounded-concurrency pool client (offered load = pods × connections,
+  # decoupled from stream count). Set per-pod to ~80% of a single pod's measured max
+  # (see CALIBRATION in docs); 0 = legacy 1-in-flight-per-stream client.
+  export CONNS_PER_POD="${CONNS_PER_POD:-$(_suite 's.saturation.get("connections", 0)')}"
+  # batch>1 → N records per POST (pool only); biggest fleet-cost lever (see AGENTS.md §7).
+  export BATCH_PER_POD="${BATCH_PER_POD:-$(_suite 's.saturation.get("batch", 1)')}"
   export SWEEP_RUN_ID="${SUITE_NAME}-${mode}"
   local mode_root="results/${SUITE_NAME}/${mode}"
   export RESULTS_ROOT="$mode_root" SAT_RESULT_ROOT="$mode_root/cells"

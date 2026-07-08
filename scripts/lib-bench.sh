@@ -193,15 +193,90 @@ _capture_choke_diagnostics() {
   echo "    ───────────────────────────────────────────────────────────────" >&2
 }
 
+# ── Fleet start barrier (leader side) ─────────────────────────────────────────
+# When BARRIER_DIR is non-empty, every fleet pod holds after its setup phase until
+# a shared go time is published (see gke/bench-job.yaml + src/barrier.rs). The
+# host is the leader: wait for PARALLELISM ready markers in MinIO, then publish
+# `go` = now + BARRIER_GO_HEADROOM_SECS (unix ms). On BARRIER_SETUP_TIMEOUT_SECS
+# the fleet is released anyway — the merged windows_aligned verdict judges the
+# cell rather than a hung barrier wedging the walk.
+
+# _barrier_mc <shell-with-mc> — run an mc pipeline inside the minio pod (it has
+# the server-local alias). Overridable in tests.
+_barrier_mc() {
+  K exec deploy/minio -- sh -c \
+    "mc alias set local http://localhost:9000 minioadmin minioadmin >/dev/null 2>&1; $*" 2>/dev/null
+}
+
+# _barrier_reset — clear the run's WHOLE MinIO prefix BEFORE the fleet launches.
+# RUN_IDs are deterministic per cell but do NOT include the server-config label,
+# so two hazards share one fix:
+#   * stale barrier state — a re-run (resume of an error cell) otherwise finds
+#     the previous pass's ready markers and go file: pods grab the stale go (a
+#     time in the past) and start immediately, staggering the fleet — exactly
+#     the misalignment the barrier exists to prevent;
+#   * stale RESULTS — a later config label (e.g. memory after wal) reuses the
+#     same prefix; if one of its pods failed to upload, the coordinator would
+#     silently merge the PREVIOUS label's same-named .hdr/.json into this
+#     label's cell. Clearing the prefix turns that into an honest missing-pod
+#     merge instead of cross-label contamination.
+_barrier_reset() {
+  _barrier_mc "mc rm --recursive --force local/bench-results/${RUN_ID}/ 2>/dev/null; true"
+}
+
+# _barrier_release_fleet <want-ready-count> — block until every pod is at the
+# barrier (or timeout), then publish the go time.
+_barrier_release_fleet() {
+  local want="$1" poll="${BARRIER_POLL_SECS:-2}" n=0
+  local deadline=$(( $(date +%s) + ${BARRIER_SETUP_TIMEOUT_SECS:-900} ))
+  echo "    barrier: waiting for ${want} ready markers (timeout ${BARRIER_SETUP_TIMEOUT_SECS:-900}s)..."
+  while :; do
+    n="$(_barrier_mc "mc ls local/bench-results/${RUN_ID}/barrier/" | grep -c 'ready-' || true)"
+    n="${n:-0}"
+    [ "$n" -ge "$want" ] && break
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      echo "    barrier: TIMEOUT with ${n}/${want} ready — releasing anyway (windows_aligned judges the cell)"
+      break
+    fi
+    sleep "$poll"
+  done
+  local go_ms=$(( ( $(date +%s) + ${BARRIER_GO_HEADROOM_SECS:-5} ) * 1000 ))
+  _barrier_mc "echo ${go_ms} | mc pipe local/bench-results/${RUN_ID}/barrier/go"
+  echo "    barrier: released ${n}/${want} pods (go=${go_ms})"
+}
+
 # run_fleet_and_coordinator — expects: RUN_ID PARALLELISM BENCH_CMD OUT_PREFIX MERGE_CMD
 run_fleet_and_coordinator() {
   export RUN_ID PARALLELISM BENCH_CMD OUT_PREFIX MERGE_CMD
+  export BARRIER_DIR="${BARRIER_DIR:-}"
 
   clean_jobs
+  # Stale barrier state from a previous pass of this same RUN_ID must be gone
+  # BEFORE any pod can poll it.
+  if [ -n "${BARRIER_DIR}" ]; then
+    _barrier_reset
+  fi
 
   echo "    launching fleet (${PARALLELISM} pods)..."
-  envsubst "${MANIFEST_VARS} \${RUN_ID} \${PARALLELISM} \${BENCH_CMD} \${OUT_PREFIX}" \
-    < gke/bench-job.yaml | K apply -f -
+  # A fresh GKE control plane can refuse connections for minutes (resize) — a
+  # failed apply here used to mean a fleet that never existed followed by a
+  # full 900s barrier wait for it. Retry the apply through the outage; if it
+  # still fails, skip the barrier wait so the rung fails FAST (no merged data →
+  # thr 0 → the walker records an honest error cell).
+  local _apply_ok=0 _try
+  for _try in 1 2 3 4 5; do
+    if envsubst "${MANIFEST_VARS} \${RUN_ID} \${PARALLELISM} \${BENCH_CMD} \${OUT_PREFIX} \${BARRIER_DIR}" \
+        < gke/bench-job.yaml | K apply -f -; then
+      _apply_ok=1; break
+    fi
+    echo "    fleet apply failed (attempt ${_try}/5) — API server unreachable? retrying in 30s..."
+    sleep 30
+  done
+  if [ -n "${BARRIER_DIR}" ] && [ "${_apply_ok}" = 1 ]; then
+    _barrier_release_fleet "${PARALLELISM}"
+  elif [ "${_apply_ok}" != 1 ]; then
+    echo "    fleet apply NEVER succeeded — skipping barrier wait; rung will record as error"
+  fi
   # Tolerant: a hung/saturated server makes some pods fail → the Job never reaches
   # `complete`. Wait for complete OR failed, then proceed — the coordinator merges
   # whatever HDRs the surviving pods uploaded, instead of aborting under `set -e`.
@@ -314,10 +389,15 @@ _run_cell_one() {
   if [ -f "${cell_dir}/samples.csv" ]; then
     cpu_pct="$(compute_server_cpu_pct "${cell_dir}/samples.csv")"
   fi
-  local thr
-  thr="$(python3 "${REPO_ROOT}/scripts/saturation.py" --merged "${cell_dir}/merged.json" \
-          --prev-thr 0 --cpu "$cpu_pct" --cores 1 2>/dev/null | awk '{print $2}')"
-  echo "${cpu_pct} ${thr:-0}"
+  # saturation.py prints "<reason> <thr> <aligned> <p50> <p99>"; aligned=0 means
+  # the fleet's measure windows didn't overlap (thr is already forced to 0 in
+  # that case) — pass it through so the walker can label the rung
+  # misaligned_windows. p50/p99 are the rung's merged latency (ms, "None" when
+  # absent) so the walk can locate the pre-saturation knee.
+  local thr aligned p50 p99
+  read -r thr aligned p50 p99 < <(python3 "${REPO_ROOT}/scripts/saturation.py" --merged "${cell_dir}/merged.json" \
+          --prev-thr 0 --cpu "$cpu_pct" --cores 1 2>/dev/null | awk '{print $2, $3, $4, $5}')
+  echo "${cpu_pct} ${thr:-0} ${aligned:-1} ${p50:-None} ${p99:-None}"
 }
 
 # run_cell CELL_NAME BENCH_CMD OUT_PREFIX MERGE_CMD SERVER_CPU_CORES — run a cell at a
@@ -332,8 +412,8 @@ run_cell() {
   for repeat in $(seq 1 "${REPEATS:-1}"); do
     local cell_dir="${RESULTS_ROOT}/${cell_name}/rep${repeat}"
     mkdir -p "$cell_dir"
-    local cpu_pct thr
-    read -r cpu_pct thr < <(_run_cell_one "$cell_name" "$bench_cmd" "$out_prefix" "$merge_cmd" "$pods" "$repeat" "$cell_dir")
+    local cpu_pct thr _aligned
+    read -r cpu_pct thr _aligned < <(_run_cell_one "$cell_name" "$bench_cmd" "$out_prefix" "$merge_cmd" "$pods" "$repeat" "$cell_dir")
     { echo "cell=${cell_name}"; echo "parallelism=${pods}";
       echo "server_cpu_cores=${cpu_cores}"; echo "server_cpu_pct=${cpu_pct}"; } > "${cell_dir}/verdict.txt"
     echo "  ${cell_name}: pods=${pods} cpu%=${cpu_pct} thr=${thr}"

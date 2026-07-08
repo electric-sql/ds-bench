@@ -1,3 +1,0 @@
-mode,stream_count,pods,throughput,p50,p99,pod_mem_mb,pod_mem_p50_mb,saturated,status,reason
-cpu16-card-clean,500000,,0.0,,,,,False,error,creation_choke
-cpu16-card-clean,1000000,64,1114644.3166666664,,,857,705,False,ok,ladder_exhausted

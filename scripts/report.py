@@ -6,6 +6,26 @@ from suite import Suite
 import cells as cells_mod
 
 
+def knee_of(walk, frac=0.8):
+    """The pre-saturation 'knee' rung of a walk: the LARGEST rung whose
+    throughput is ≤ `frac` × the walk's max (fallback: the smallest rung).
+    Only rungs that carry latency ([pods, thr, p50, p99]) qualify.
+
+    Rationale: a closed-loop fleet driven past the ceiling measures pure
+    QUEUEING latency (in-flight ÷ ceiling, Little's law) — it says nothing
+    about the server's service time. Latency must be quoted from below the
+    knee; the pinned rung's latency is reported separately AS saturation
+    queueing (verified manually 2026-07-08: wal@100k curl p50 1.0 ms unloaded,
+    5 ms at 74% load, 66 ms at 4096 in-flight — all the same server)."""
+    ranked = [w for w in (walk or []) if len(w) >= 4 and w[2] is not None]
+    if not ranked:
+        return None
+    peak = max(w[1] for w in ranked)
+    under = [w for w in ranked if w[1] <= frac * peak]
+    pick = max(under, key=lambda w: w[1]) if under else min(ranked, key=lambda w: w[0])
+    return {"pods": pick[0], "throughput": pick[1], "p50": pick[2], "p99": pick[3]}
+
+
 def build(suite_path, results_root):
     s = Suite.load(suite_path)
     rows = []
@@ -16,9 +36,12 @@ def build(suite_path, results_root):
         if not os.path.exists(p):
             continue
         for c in cells_mod.all_cells(p):
+            knee = knee_of(c.get("walk")) or {}
             rows.append({"mode": label, "stream_count": c["stream_count"],
                          "pods": c.get("pinned_pods"), "throughput": c.get("throughput"),
                          "p50": c.get("p50"), "p99": c.get("p99"),
+                         "knee_pods": knee.get("pods"), "knee_throughput": knee.get("throughput"),
+                         "knee_p50": knee.get("p50"), "knee_p99": knee.get("p99"),
                          "pod_mem_mb": c.get("pod_mem_mb"), "pod_mem_p50_mb": c.get("pod_mem_p50_mb"),
                          "saturated": c.get("saturated"),
                          "status": c.get("status"), "reason": c.get("reason"),
@@ -125,9 +148,38 @@ def _markdown(s, rows):
                 "like an in-RAM Raft log filling); **p50** = median (what the server steadily holds "
                 "resident). peak ≈ p50 ⇒ steadily resident; peak ≫ p50 ⇒ transient spikes._", ""]
 
-    out += ["## Saturation walks (pods → ops/s)", ""]
+    # Latency belongs BELOW the knee: at plateau rungs a closed-loop fleet only
+    # measures its own queueing (in-flight ÷ ceiling). Quote service latency
+    # from the ≤80%-of-peak rung; the pinned rung's numbers are labelled as
+    # saturation queueing.
+    if any(r.get("knee_p50") is not None for r in rows):
+        out += ["## Latency (ms, p50 / p99)", ""]
+        out += ["| streams | " + " | ".join(f"{m} @≤80% load | {m} @saturation" for m in labels) + " |",
+                "|" + "---|" * (2 * len(labels) + 1)]
+        for sc in s.stream_counts:
+            lrow = []
+            for m in labels:
+                r = by.get((m, sc))
+                if r and r.get("knee_p50") is not None:
+                    lrow.append(f"{r['knee_p50']:.1f} / {r['knee_p99']:.1f} ({r['knee_throughput']/1000:.0f}k @{r['knee_pods']}p)")
+                else:
+                    lrow.append("—")
+                if r and r.get("p50") is not None:
+                    lrow.append(f"{r['p50']:.1f} / {r['p99']:.1f}")
+                else:
+                    lrow.append("—")
+            out.append(f"| {sc} | " + " | ".join(lrow) + " |")
+        out += ["", "_@≤80% load = the largest ladder rung at ≤80% of peak throughput — the server's "
+                "service latency with headroom. @saturation = the pinned plateau rung, where a "
+                "closed-loop fleet measures its own queueing (≈ in-flight ÷ ceiling by Little's law), "
+                "NOT the server's per-request cost. Compare against the unloaded single-request "
+                "baseline (~1 ms for wal) before reading anything into large saturation values._", ""]
+
+    out += ["## Saturation walks (pods → ops/s, p50 ms)", ""]
     for r in rows:
-        walk = " → ".join(f"{p}:{t/1000:.0f}k" for p, t in (r["walk"] or []))
+        walk = " → ".join(
+            f"{w[0]}:{w[1]/1000:.0f}k" + (f"@{w[2]:.1f}ms" if len(w) >= 4 and w[2] is not None else "")
+            for w in (r["walk"] or []))
         out.append(f"- **{r['mode']} {r['stream_count']}**: {walk}  (pinned {r['pods']}, {r['reason']})")
     out += ["", "## Findings", "", "_TODO: written by hand on top of the generated data._", ""]
     out += ["## Caveats", "", "_Single-node best-case; not 3-node Raft. Throughput is a saturation ceiling per the ladder._", ""]
@@ -143,7 +195,7 @@ def main():
     with open(os.path.join(root, "aggregate.json"), "w") as f:
         json.dump(rows, f, indent=2)
     with open(os.path.join(root, "aggregate.csv"), "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["mode", "stream_count", "pods", "throughput", "p50", "p99", "pod_mem_mb", "pod_mem_p50_mb", "saturated", "status", "reason"])
+        w = csv.DictWriter(f, fieldnames=["mode", "stream_count", "pods", "throughput", "p50", "p99", "knee_pods", "knee_throughput", "knee_p50", "knee_p99", "pod_mem_mb", "pod_mem_p50_mb", "saturated", "status", "reason"])
         w.writeheader()
         for r in rows:
             w.writerow({k: r[k] for k in w.fieldnames})

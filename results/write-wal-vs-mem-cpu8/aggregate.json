@@ -1,0 +1,150 @@
+[
+  {
+    "mode": "memory",
+    "stream_count": 100000,
+    "pods": 4,
+    "throughput": 525966.44,
+    "p50": 1.575,
+    "p99": 8.087,
+    "knee_pods": 2,
+    "knee_throughput": 388144.48,
+    "knee_p50": 1.217,
+    "knee_p99": 2.461,
+    "pod_mem_mb": 698,
+    "pod_mem_p50_mb": 608,
+    "saturated": true,
+    "status": "ok",
+    "reason": "plateau",
+    "walk": [
+      [
+        1,
+        185668.2,
+        1.267,
+        2.669
+      ],
+      [
+        2,
+        388144.48,
+        1.217,
+        2.461
+      ],
+      [
+        4,
+        525966.44,
+        1.575,
+        10.943
+      ],
+      [
+        8,
+        543566.3200000001,
+        2.487,
+        15.351
+      ]
+    ]
+  },
+  {
+    "mode": "wal",
+    "stream_count": 100000,
+    "pods": 1,
+    "throughput": 42765.56,
+    "p50": 4.947,
+    "p99": 20.271,
+    "knee_pods": 1,
+    "knee_throughput": 42765.56,
+    "knee_p50": 5.023,
+    "knee_p99": 19.711,
+    "pod_mem_mb": 575,
+    "pod_mem_p50_mb": 490,
+    "saturated": true,
+    "status": "ok",
+    "reason": "plateau",
+    "walk": [
+      [
+        1,
+        42765.56,
+        5.023,
+        19.711
+      ],
+      [
+        2,
+        40151.96000000001,
+        9.495,
+        42.655
+      ]
+    ]
+  },
+  {
+    "mode": "memory",
+    "stream_count": 500000,
+    "pods": 4,
+    "throughput": 322757.2,
+    "p50": 1.683,
+    "p99": 12.343,
+    "knee_pods": 1,
+    "knee_throughput": 152766.84,
+    "knee_p50": 1.255,
+    "knee_p99": 2.585,
+    "pod_mem_mb": 2629,
+    "pod_mem_p50_mb": 1980,
+    "saturated": true,
+    "status": "ok",
+    "reason": "plateau",
+    "walk": [
+      [
+        1,
+        152766.84,
+        1.255,
+        2.585
+      ],
+      [
+        2,
+        259454.36000000002,
+        1.22,
+        2.609
+      ],
+      [
+        4,
+        322757.2,
+        1.671,
+        32.863
+      ],
+      [
+        8,
+        299006.39999999997,
+        2.643,
+        45.759
+      ]
+    ]
+  },
+  {
+    "mode": "wal",
+    "stream_count": 500000,
+    "pods": 1,
+    "throughput": 29265.64,
+    "p50": 7.291,
+    "p99": 29.599,
+    "knee_pods": 1,
+    "knee_throughput": 29265.64,
+    "knee_p50": 6.875,
+    "knee_p99": 32.927,
+    "pod_mem_mb": 2425,
+    "pod_mem_p50_mb": 2291,
+    "saturated": true,
+    "status": "ok",
+    "reason": "plateau",
+    "walk": [
+      [
+        1,
+        29265.64,
+        6.875,
+        32.927
+      ],
+      [
+        2,
+        30179.879999999997,
+        14.519,
+        48.767
+      ]
+    ]
+  }
+]
