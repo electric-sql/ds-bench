@@ -6,6 +6,7 @@
   },
   "saturation": {
     "plateau_pct": 10,
+    "patience": 2,
     "fleet_cpu": 0.25,
     "connections": 64,
     "repeats": 1,

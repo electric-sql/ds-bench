@@ -279,6 +279,17 @@ however many such pods are required to find the server's ceiling.** Treat any ce
 where per-pod latency/errors degrade as invalid (client-bound) — lower `connections`
 or raise `fleet_cpu` and re-calibrate.
 
+**Plateau robustness (`saturation.patience`, `saturation.repeats`).** The walk stops
+when it sees `patience` **consecutive** rung-to-rung gains at or below `plateau_pct`
+(`saturation.patience`, default 1 = the legacy single-shot rule). Set **`patience: 2`**
+on any real write suite: run-to-run throughput noise is easily in the 5–15 % band, and
+a single unlucky-low rung otherwise triggers a *false* plateau and an under-reported
+ceiling (`saturation.plateau_pin`). The pinned rung's headline throughput is then the
+**mean over `repeats` confirm re-runs** (`repeats: 2`+ gives a replicated number, not a
+single 20-25 s shot); with `repeats: 1` it falls back to the walk's pin reading. The
+`write-wal-vs-mem-*` reference suites ship `patience: 2, repeats: 2`. (`plateau_pct: -100`
+still forces the full ladder — no plateau, top rung recorded as a `†` lower bound.)
+
 **Latency is only meaningful BELOW the knee.** A closed-loop fleet driven past the
 server's ceiling measures its own queueing — `p50 ≈ in-flight ÷ ceiling` (Little's
 law) — not the server's service time. Manually verified 2026-07-08 on wal@100k

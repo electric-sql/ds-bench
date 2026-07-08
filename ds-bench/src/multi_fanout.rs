@@ -423,12 +423,12 @@ async fn run_subscriber_task(
                         let us = us_u128.min(u128::from(local.high())) as u64;
                         // Record only in the measure window (now ≥ deadline −
                         // measure_secs); warm-up/settle deliveries are discarded.
-                        if us > 0
-                            && dl.is_some_and(|end| {
-                                Instant::now() + Duration::from_secs(measure_secs) >= end
-                            })
-                        {
-                            let _ = local.record(us);
+                        // Sub-µs deliveries are floored to the histogram minimum, not
+                        // dropped, so the recorded count matches recv.
+                        if dl.is_some_and(|end| {
+                            Instant::now() + Duration::from_secs(measure_secs) >= end
+                        }) {
+                            let _ = local.record(us.max(local.low()));
                         }
                     }
                     recv.fetch_add(1, Ordering::Relaxed);

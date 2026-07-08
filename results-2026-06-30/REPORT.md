@@ -1,5 +1,20 @@
 # Durable-streams benchmarks — full matrix on the reactor build (2026-06-30)
 
+> **⚠️ Superseded — read before quoting these numbers.** This run predates two
+> methodology corrections now documented in [`AGENTS.md` §7](../AGENTS.md):
+> 1. **No fleet start barrier / window-alignment check.** The write-throughput
+>    figures sum per-pod rates whose measure windows were not verified to overlap,
+>    which multiply-counts server capacity at high pod counts (the documented
+>    2.9M-ops/s artifact). Treat the write ceilings here as **upper bounds only**.
+> 2. **Latency quoted at the saturation rung.** The p50/p99 columns are the
+>    *closed-loop queueing* latency at the ceiling (Little's law), not the server's
+>    service latency. The current harness quotes latency from the **knee** (≤80 %
+>    load) and labels the plateau rung's latency as queueing.
+>
+> Numbers were also single-shot (no replication / error bars). For a
+> methodology-current dataset, regenerate with the barrier + knee harness (see
+> `AGENTS.md` §7 and the `write-wal-vs-mem-*` reference points). Kept for provenance.
+
 A from-scratch run of the **whole matrix** — write throughput, server memory, SSE fan-out, and the
 three read modes (catch-up / long-poll / SSE) — on the **PR #4662 HEAD** durable-streams build
 (commit `3754d64cb`, the live-tail SSE epoll-reactor PR, post-fix). Each workload is a declarative

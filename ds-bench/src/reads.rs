@@ -184,6 +184,27 @@ fn phase_offsets(
     (warmup_end, measure_start, deadline)
 }
 
+/// Guard the clock-domain assumption of the live-tail modes. Long-poll and SSE
+/// stamp a send time in one process and subtract it from a receive time; that is
+/// only meaningful when writer and readers share one wall clock — a single fleet
+/// pod. Across pods the difference is cross-node clock skew, not delivery latency,
+/// so refuse to produce a misleading number. Catch-up times each reader's own
+/// replay locally (no cross-process timestamp) and is safe at any fleet size.
+/// `shards` is DS_BENCH_SHARDS (0/unset ⇒ single pod).
+fn assert_single_pod_for_live(mode: ReadMode, shards: usize) -> Result<()> {
+    let is_live = matches!(mode, ReadMode::LongPoll | ReadMode::Sse);
+    if is_live && shards > 1 {
+        anyhow::bail!(
+            "live-tail read mode ({mode:?}) requires a single fleet pod \
+             (DS_BENCH_SHARDS={shards}): its delivery latency compares a writer \
+             send-time to a reader receive-time on ONE process clock. Across pods \
+             that measures cross-node clock skew, not latency. Run live reads with \
+             pods=1, or use catch-up for multi-pod read scaling."
+        );
+    }
+    Ok(())
+}
+
 pub async fn run(args: ReadsArgs) -> Result<ReadsResult> {
     if args.api_style == ApiStyle::S2 {
         anyhow::bail!(
@@ -191,6 +212,11 @@ pub async fn run(args: ReadsArgs) -> Result<ReadsResult> {
              is not comparable to the Durable Streams read path"
         );
     }
+    let shards: usize = std::env::var("DS_BENCH_SHARDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    assert_single_pod_for_live(args.mode, shards)?;
     match args.mode {
         ReadMode::Catchup => run_catchup(args).await,
         ReadMode::LongPoll => run_longpoll(args).await,
@@ -231,8 +257,9 @@ async fn catch_up_once(
             .get("stream-next-offset")
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
-        let body = resp.bytes().await.context("reads body")?;
-        total += body.len() as u64;
+        // Stream the body to count bytes without holding the whole resident stream
+        // per reader (the documented catch-up OOM ceiling).
+        total += crate::common::drain_len(resp).await.context("reads body")?;
         guard += 1;
         match next {
             Some(n) if !up && n != offset && guard < 100_000 => offset = n,
@@ -459,6 +486,29 @@ async fn run_writer(
     }
 }
 
+/// Decode per-record delivery latencies (µs) from a long-poll body whose records
+/// are laid out at `step`-byte stride, each beginning with an 8-byte little-endian
+/// send timestamp (ns, on the reader's monotonic `base` clock — valid only under
+/// the pods=1 single-clock constraint). A record's timestamp is trusted only when
+/// it is a plausible PAST instant (`0 < ts <= now_ns`); otherwise the 8-byte window
+/// is misaligned framing or padding and the record is SKIPPED. The previous
+/// fixed-stride walk floored an implausible (future) `ts` to ~0 µs via
+/// `saturating_sub` and still counted it, biasing long-poll delivery latency toward
+/// zero whenever the body wasn't raw concatenated payloads.
+fn decode_longpoll_latencies(body: &[u8], step: usize, now_ns: u64) -> Vec<u64> {
+    let step = step.max(8);
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 8 <= body.len() {
+        let ts = u64::from_le_bytes(body[i..i + 8].try_into().unwrap());
+        if ts != 0 && ts <= now_ns {
+            out.push((now_ns - ts) / 1000);
+        }
+        i += step;
+    }
+    out
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_reader_longpoll(
     backend: Backend,
@@ -491,14 +541,13 @@ async fn run_reader_longpoll(
                     tokio::time::sleep(Duration::from_millis(5)).await;
                 } else if Instant::now() >= measure_start {
                     let now_ns = base.elapsed().as_nanos() as u64;
-                    let mut i = 0;
-                    while i + 8 <= body.len() {
-                        let ts = u64::from_le_bytes(body[i..i + 8].try_into().unwrap());
-                        let lat_us = (now_ns.saturating_sub(ts) / 1000).clamp(local.low(), local.high());
-                        let _ = local.record(lat_us);
+                    // Only records with a plausible (past, non-padding) timestamp
+                    // count as deliveries — misaligned framing must not register as
+                    // ~0-latency events (see decode_longpoll_latencies).
+                    for lat_us in decode_longpoll_latencies(&body, step, now_ns) {
+                        let _ = local.record(lat_us.clamp(local.low(), local.high()));
                         ok.fetch_add(1, Ordering::Relaxed);
                         bytes_total.fetch_add(step as u64, Ordering::Relaxed);
-                        i += step;
                     }
                 }
                 offset = next;
@@ -782,9 +831,54 @@ async fn finish(
 
 #[cfg(test)]
 mod tests {
+    use super::assert_single_pod_for_live;
+    use super::decode_longpoll_latencies;
     use super::phase_offsets;
     use super::stream_for;
+    use super::ReadMode;
     use std::time::Duration;
+
+    /// Live-tail modes (long-poll / sse) compare a writer send-time against a
+    /// reader receive-time, valid only when both share one process wall clock —
+    /// i.e. a single fleet pod. A multi-pod fleet would measure cross-node clock
+    /// skew, not delivery latency, so those modes must refuse to run at shards>1.
+    /// Catch-up measures each reader's own replay duration locally → pod-count-safe.
+    #[test]
+    fn live_modes_require_single_pod() {
+        assert!(assert_single_pod_for_live(ReadMode::LongPoll, 2).is_err());
+        assert!(assert_single_pod_for_live(ReadMode::Sse, 4).is_err());
+        assert!(assert_single_pod_for_live(ReadMode::LongPoll, 1).is_ok());
+        assert!(assert_single_pod_for_live(ReadMode::Sse, 1).is_ok());
+        // catch-up is not clock-coupled across pods → allowed at any fleet size.
+        assert!(assert_single_pod_for_live(ReadMode::Catchup, 8).is_ok());
+        // defensive: 0 (unset/parse-fail) is treated as a single pod.
+        assert!(assert_single_pod_for_live(ReadMode::Sse, 0).is_ok());
+    }
+
+    /// Well-formed body (records at `step` stride, each an 8-byte LE ns timestamp
+    /// on the reader's clock) → one latency per record, now_ns − ts in µs.
+    #[test]
+    fn decode_longpoll_wellformed_records() {
+        let now_ns = 5_000_000u64; // 5 ms
+        let mut body = Vec::new();
+        body.extend_from_slice(&1_000_000u64.to_le_bytes()); // 1 ms ago → 4000 µs
+        body.extend_from_slice(&2_000_000u64.to_le_bytes()); // 2 ms ago → 3000 µs
+        assert_eq!(decode_longpoll_latencies(&body, 8, now_ns), vec![4000, 3000]);
+    }
+
+    /// A misaligned/garbage 8-byte window yields an implausible timestamp
+    /// (ts > now → a "future" send, or ts == 0 padding). Those records are
+    /// SKIPPED, never floored to ~0 µs — flooring silently biased delivery
+    /// latency toward zero when the body wasn't raw concatenated payloads.
+    #[test]
+    fn decode_longpoll_skips_implausible_timestamps() {
+        let now_ns = 5_000_000u64;
+        let mut body = Vec::new();
+        body.extend_from_slice(&1_000_000u64.to_le_bytes()); // valid → 4000 µs
+        body.extend_from_slice(&u64::MAX.to_le_bytes()); // future → skip (not 0/1)
+        body.extend_from_slice(&0u64.to_le_bytes()); // padding → skip
+        assert_eq!(decode_longpoll_latencies(&body, 8, now_ns), vec![4000]);
+    }
 
     #[test]
     fn phase_offsets_stack_warmup_settle_measure() {

@@ -118,13 +118,35 @@ pub struct MergeSummary {
     /// different wall times) and MUST NOT be used as a throughput reading.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub windows_aligned: Option<bool>,
+    /// The fleet's CONCURRENT measure window (unix ms): [max(start), min(end)] —
+    /// the interval when every pod was loading the server at once. Scope the
+    /// server's CPU%/memory samples to this so "CPU at saturation" reflects the
+    /// loaded window, not the whole cell (idle setup/warmup/upload) it was averaged
+    /// over before. Present only when the pods actually overlapped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub measure_overlap_start_unix_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub measure_overlap_end_unix_ms: Option<u64>,
+    /// Number of per-pod result JSONs that contributed to this merge. A caller
+    /// that knows the expected fleet size (PARALLELISM) compares the two: a
+    /// short count means some pods never reported (Spot preemption / OOM), so
+    /// the summed `aggregate_ops_per_sec` under-counts and the cell is suspect.
+    /// `merged_count` (a histogram SAMPLE count) cannot serve this role.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pods_reported: Option<u64>,
 }
 
 /// Maximum fleet window span, as a multiple of the nominal per-pod window, for the
-/// summed per-pod rates to still be considered one concurrent measurement. At 2.0
-/// the worst-case overcount is bounded by ~2×; the pathological cells this catches
-/// were 10–25× (span minutes, window 8 s).
-const WINDOW_ALIGN_FACTOR: f64 = 2.0;
+/// summed per-pod rates to still be considered one concurrent measurement. The
+/// barrier normally aligns starts to within seconds, so a healthy run sits near
+/// 1.0 (e.g. a 25 s window with pods starting ≤2 s apart → ~1.08). 1.25 keeps
+/// comfortable headroom for that jitter while catching genuine misalignment:
+/// at the boundary two windows overlap ≥75%, bounding the summed-rate overcount to
+/// ~25%. (The old 2.0 admitted up to ~2× — two adjacent, barely-overlapping windows
+/// summed as if concurrent.) NB: dividing summed per-pod TOTALS by the intersection
+/// span would inflate MORE under stagger, not less — the correct lever is this
+/// tolerance, not an overlap-window denominator.
+const WINDOW_ALIGN_FACTOR: f64 = 1.25;
 
 /// Accumulators built from scanning the per-pod JSONs in the results dir.
 #[derive(Default)]
@@ -152,6 +174,13 @@ struct HeadlineAcc {
     win_min_start_ms: Option<u64>,
     win_max_end_ms: Option<u64>,
     win_max_window_ms: u64,
+    /// Overlap-window bounds: max of per-pod starts, min of per-pod ends. Their
+    /// interval is the window when ALL pods were measuring concurrently.
+    win_max_start_ms: Option<u64>,
+    win_min_end_ms: Option<u64>,
+    /// Count of per-pod result JSONs scanned (one file per fleet pod). Feeds
+    /// pods_reported so a caller can detect a partial fleet.
+    pods_reported: u64,
 }
 
 fn scan_headlines(results_dir: Option<&Path>) -> HeadlineAcc {
@@ -163,6 +192,9 @@ fn scan_headlines(results_dir: Option<&Path>) -> HeadlineAcc {
         if p.extension().and_then(|e| e.to_str()) != Some("json") { continue; }
         let Ok(txt) = std::fs::read_to_string(&p) else { continue };
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) else { continue };
+        // One result JSON per fleet pod: count contributors so a short fleet
+        // (preempted / OOMed pod that never uploaded) is detectable downstream.
+        acc.pods_reported += 1;
         // Window stamps are scenario-agnostic: accumulate them from any pod JSON
         // that carries them (older clients simply don't emit them).
         if let (Some(s), Some(e)) = (
@@ -171,6 +203,8 @@ fn scan_headlines(results_dir: Option<&Path>) -> HeadlineAcc {
         ) {
             acc.win_min_start_ms = Some(acc.win_min_start_ms.map_or(s, |m| m.min(s)));
             acc.win_max_end_ms = Some(acc.win_max_end_ms.map_or(e, |m| m.max(e)));
+            acc.win_max_start_ms = Some(acc.win_max_start_ms.map_or(s, |m| m.max(s)));
+            acc.win_min_end_ms = Some(acc.win_min_end_ms.map_or(e, |m| m.min(e)));
             acc.win_max_window_ms = acc.win_max_window_ms.max(e.saturating_sub(s));
         }
         let scenario = v.get("scenario").and_then(|x| x.as_str()).unwrap_or("");
@@ -275,6 +309,13 @@ pub fn merge_summary_filtered(
             }
             _ => (None, None, None),
         };
+    // Concurrent window [max(start), min(end)] — only when the pods actually
+    // overlapped (min_end > max_start); a non-overlapping fleet has none.
+    let (measure_overlap_start_unix_ms, measure_overlap_end_unix_ms) =
+        match (acc.win_max_start_ms, acc.win_min_end_ms) {
+            (Some(ms), Some(me)) if me > ms => (Some(ms), Some(me)),
+            _ => (None, None),
+        };
     Ok(MergeSummary {
         merged_count: h.len(),
         p50_ms: ms(h.value_at_quantile(0.5)),
@@ -294,6 +335,9 @@ pub fn merge_summary_filtered(
         measure_span_secs,
         measure_window_secs,
         windows_aligned,
+        measure_overlap_start_unix_ms,
+        measure_overlap_end_unix_ms,
+        pods_reported: if acc.pods_reported > 0 { Some(acc.pods_reported) } else { None },
     })
 }
 
@@ -393,6 +437,25 @@ mod tests {
         assert!((s.measure_window_secs.unwrap() - 8.0).abs() < 1e-6);
     }
 
+    /// A MARGINAL stagger — well under the old 2× tolerance but still materially
+    /// non-concurrent — must now be flagged misaligned. Two 8 s windows spanning
+    /// 12 s (ratio 1.5) overlap only ~50%, so summing their nominal rates assumes
+    /// concurrency that isn't there (up to a ~1.5× overcount). The tightened factor
+    /// (≤1.25) rejects it; the old 2.0 accepted it.
+    #[test]
+    fn marginally_staggered_windows_now_misaligned() {
+        let dir = std::env::temp_dir()
+            .join(format!("ds-bench-dist-test-{}-{}", std::process::id(), line!()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Two 8s windows starting 4s apart → span 12s = 1.5×8s.
+        write_pod_json(&dir, "pod0.json", 1_000_000, 1_008_000, 100.0);
+        write_pod_json(&dir, "pod1.json", 1_004_000, 1_012_000, 100.0);
+
+        let s = merge_summary_filtered(&dir, Some(&dir), None).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(s.windows_aligned, Some(false), "12s span over 8s windows must be misaligned");
+    }
+
     /// Pods whose measure windows do NOT overlap (staggered starts — the 500k-cell
     /// pathology: summed per-pod rates multiply-count the server's capacity)
     /// → windows_aligned=false so consumers can reject the cell.
@@ -409,6 +472,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(s.windows_aligned, Some(false), "68s span over 8s windows is misaligned");
         assert!((s.measure_span_secs.unwrap() - 68.0).abs() < 1e-6);
+    }
+
+    /// The merge exposes the fleet's CONCURRENT (overlap) measure window
+    /// [max(start), min(end)] so a caller can scope the server's CPU%/mem samples
+    /// to the interval when ALL pods were loading it (not the whole cell diluted
+    /// by staggered setup/upload).
+    #[test]
+    fn exposes_concurrent_overlap_window() {
+        let dir = std::env::temp_dir()
+            .join(format!("ds-bench-dist-test-{}-{}", std::process::id(), line!()));
+        std::fs::create_dir_all(&dir).unwrap();
+        write_pod_json(&dir, "pod0.json", 1_000_000, 1_008_000, 100.0);
+        write_pod_json(&dir, "pod1.json", 1_002_000, 1_010_000, 100.0);
+
+        let s = merge_summary_filtered(&dir, Some(&dir), None).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        // overlap = [max_start=1_002_000, min_end=1_008_000]
+        assert_eq!(s.measure_overlap_start_unix_ms, Some(1_002_000));
+        assert_eq!(s.measure_overlap_end_unix_ms, Some(1_008_000));
+    }
+
+    /// The merge counts how many per-pod result JSONs contributed, so a caller
+    /// that knows the expected fleet size (PARALLELISM) can detect a partial
+    /// fleet (Spot preemption / OOM dropped a pod → summed throughput silently
+    /// under-counts). merged_count is a SAMPLE count and cannot serve this.
+    #[test]
+    fn pods_reported_counts_contributing_pod_jsons() {
+        let dir = std::env::temp_dir()
+            .join(format!("ds-bench-dist-test-{}-{}", std::process::id(), line!()));
+        std::fs::create_dir_all(&dir).unwrap();
+        write_pod_json(&dir, "pod0.json", 1_000_000, 1_008_000, 100.0);
+        write_pod_json(&dir, "pod1.json", 1_001_000, 1_009_000, 100.0);
+        write_pod_json(&dir, "pod2.json", 1_002_000, 1_010_000, 100.0);
+
+        let s = merge_summary_filtered(&dir, Some(&dir), None).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(s.pods_reported, Some(3), "three pod JSONs contributed");
     }
 
     /// Per-pod JSONs without window stamps (older client) → no alignment verdict,

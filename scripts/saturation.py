@@ -52,15 +52,30 @@ def windows_aligned(obj):
     Absent field (older client / no stamps) → True (back-compat: never reject old data)."""
     return bool(obj.get("windows_aligned", True)) if isinstance(obj, dict) else True
 
-def extract_throughput(path):
+def fleet_complete(obj, expect_pods):
+    """True when the merge is NOT a partial fleet: every expected pod reported.
+
+    `expect_pods` is PARALLELISM (the rung's pod count). A merge whose
+    `pods_reported` is below it means some pods never uploaded (Spot preemption /
+    OOM), so the SUMMED throughput under-counts the server. Absent field (older
+    client) or no expectation → True (back-compat: never reject on missing data)."""
+    if not expect_pods or not isinstance(obj, dict):
+        return True
+    reported = obj.get("pods_reported")
+    return reported is None or reported >= expect_pods
+
+
+def extract_throughput(path, expect_pods=None):
     """merged.json → aggregate_ops_per_sec or _events_per_sec from its last JSON
     object. Missing file / no object → 0.0.
 
     A merged summary with windows_aligned=false ALSO reads as 0.0: the fleet sum
     multiply-counted server capacity (pods measured at different wall times — the
     500k-stream 2.9M-ops/s artifact), so no throughput reading exists for the rung.
-    0.0 routes the walker's step_decision to "error", recording the cell as invalid
-    instead of pinning a fantasy number."""
+    Likewise a partial fleet (pods_reported < expect_pods) reads as 0.0: the sum
+    UNDER-counts the server, so the rung has no valid reading. Both route the
+    walker's step_decision to "error", recording the cell as invalid instead of
+    pinning a fantasy (or deflated) number."""
     obj = extract_merged(path)
     if not isinstance(obj, dict):
         return 0.0
@@ -68,6 +83,13 @@ def extract_throughput(path):
         import sys
         print(f"saturation: rejecting {path}: windows_aligned=false "
               f"(span {obj.get('measure_span_secs')}s vs window {obj.get('measure_window_secs')}s)",
+              file=sys.stderr)
+        return 0.0
+    if not fleet_complete(obj, expect_pods):
+        import sys
+        print(f"saturation: rejecting {path}: partial fleet "
+              f"(pods_reported {obj.get('pods_reported')} < expected {expect_pods}) — "
+              f"summed throughput under-counts the server",
               file=sys.stderr)
         return 0.0
     for k in ("aggregate_ops_per_sec", "aggregate_events_per_sec"):
@@ -89,6 +111,35 @@ def cap_ladder(ladder, stream_count):
         if c >= 1 and c not in out:
             out.append(c)
     return out
+
+def plateau_pin(walk, plateau_pct, patience=1):
+    """Noise-robust plateau detection over the walk so far.
+
+    `walk` is the ladder in order: [[pods, thr, ...], ...]. Returns the [pods, thr]
+    to pin when the server has plateaued — `patience` CONSECUTIVE rung-to-rung gains
+    at or below `plateau_pct` percent — else None. The pinned rung is where the
+    climb stopped: the rung immediately before that run of small gains.
+
+    patience=1 reproduces the legacy single-shot rule exactly. patience>=2 needs the
+    small gain to repeat, so a single unlucky-low rung (measurement noise) no longer
+    triggers a false plateau and an under-reported ceiling. A negative `plateau_pct`
+    (the -100 sentinel) makes every gain exceed the threshold → never pins (full
+    ladder). thr<=0 rungs are handled by the caller (recorded as an error), not here.
+    """
+    patience = max(1, patience)
+    if len(walk) < patience + 1:
+        return None
+    thrs = [w[1] for w in walk]
+    thresh = plateau_pct / 100.0
+    for i in range(len(thrs) - patience, len(thrs)):
+        prev, cur = thrs[i - 1], thrs[i]
+        if prev <= 0:
+            return None
+        if (cur - prev) / prev > thresh:
+            return None  # a gain in the window still exceeds the threshold
+    pin = walk[len(walk) - patience - 1]
+    return [pin[0], pin[1]]
+
 
 def step_decision(prev_thr, thr, plateau_pct):
     """Decide the walker's next move from consecutive ladder-rung throughputs.
@@ -121,8 +172,10 @@ def main():
     p.add_argument("--prev-thr", type=float, default=0.0)
     p.add_argument("--cpu", type=float, required=True)
     p.add_argument("--cores", type=float, required=True)
+    p.add_argument("--expect-pods", type=int, default=None,
+                   help="fleet size (PARALLELISM): reject the rung if fewer pods reported")
     a = p.parse_args()
-    thr = extract_throughput(a.merged)
+    thr = extract_throughput(a.merged, expect_pods=a.expect_pods)
     # Third field: 1 = fleet measure windows overlapped (or no stamps: old data),
     # 0 = misaligned (thr is forced to 0 above). Lets the walker record the rung
     # as misaligned_windows rather than a generic error. Fourth/fifth: the rung's
