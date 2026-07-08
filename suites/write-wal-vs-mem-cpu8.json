@@ -1,0 +1,35 @@
+{
+  "suite": "write-wal-vs-mem-cpu8",
+  "_doc": "Raw append saturation, wal vs memory, server pinned to 8 vCPUs (SERVER_CPUS via cluster.server_cpus) on c4d-standard-16-lssd — physically-attached Titanium NVMe local SSD, the canonical write-benchmark server shape (see AGENTS.md §3; its single 375GB partition write-caps at ~350MB/s, measured 2026-07-07 — wal may hit that wall before CPU, memory mode does not touch it). Same client model as write-wal-vs-mem-cpu4: disjoint per-pod slices of the global domain, plain appends, setup-before-barrier, connections=256 @ fleet_cpu=2 (the documented ~80% single-pod calibration at batch=1/256B). Own cluster/zone so it runs in parallel with the cpu4 suite.",
+  "cluster": {
+    "server_machine": "c4d-standard-16-lssd",
+    "server_cpus": 8,
+    "client_machine": "n2d-standard-32",
+    "client_nodes": 7,
+    "cluster_name": "bench-cpu8",
+    "zone": "europe-west4-b",
+    "region": "europe-west4"
+  },
+  "saturation": {
+    "plateau_pct": 8,
+    "fleet_cpu": 2,
+    "connections": 256,
+    "repeats": 1,
+    "warmup_secs": 15,
+    "measure_secs": 25,
+    "setup_concurrency": 16,
+    "payload_bytes": 256
+  },
+  "modes": ["wal"],
+  "server_configs": {
+    "wal": [
+      { "label": "wal", "args": "--wal-shards 8 --worker-threads 8" },
+      { "label": "memory", "args": "--durability memory --worker-threads 8" }
+    ]
+  },
+  "stream_counts": [100000, 500000],
+  "pod_ladder": {
+    "100000": [16, 24, 32, 48, 64, 80, 96],
+    "500000": [16, 24, 32, 48, 64, 80, 96]
+  }
+}

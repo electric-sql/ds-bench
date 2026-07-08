@@ -1,0 +1,47 @@
+{
+  "suite": "run-durable-pool2-combined",
+  "_doc": "Combined Tier-1/Tier-2 stack (perf/combined-t1a-t1c-t2a) on the run-durable-pool2 saturation ladder. Isolated suite name so results don't collide with the baseline run-durable-pool2 resume store. Run with SERVER_CPUS=32 CONNS_PER_POD=256 IMG_SERVER=.../durable-streams:combined.",
+  "cluster": {
+    "server_machine": "c4d-standard-32-lssd",
+    "client_machine": "n2d-standard-32",
+    "client_nodes": 6,
+    "region": "europe-west4"
+  },
+  "saturation": {
+    "plateau_pct": 8,
+    "fleet_cpu": 2,
+    "connections": 256,
+    "repeats": 1,
+    "warmup_secs": 10,
+    "measure_secs": 20,
+    "setup_concurrency": 8,
+    "payload_bytes": 256
+  },
+  "modes": [
+    "wal"
+  ],
+  "server_configs": {
+    "wal": [
+      {
+        "label": "combined-s32t32",
+        "args": "--wal-shards 32 --worker-threads 32"
+      }
+    ]
+  },
+  "stream_counts": [
+    200000,
+    500000
+  ],
+  "pod_ladder": {
+    "200000": [
+      40,
+      52,
+      64
+    ],
+    "500000": [
+      40,
+      52,
+      64
+    ]
+  }
+}

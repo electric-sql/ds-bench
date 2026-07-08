@@ -12,6 +12,7 @@ mod multi_stream;
 mod reads;
 mod sse_util;
 mod sustained;
+mod verify;
 
 use anyhow::Result;
 use clap::Parser;
@@ -76,6 +77,9 @@ enum Cmd {
     Reads(reads::ReadsArgs),
     /// Merge per-pod HDR histograms into exact fleet-wide percentiles.
     HdrMerge(dist::HdrMergeArgs),
+    /// Sum server-side stream offsets over the global key domain — ground truth
+    /// to check the fleet's client-observed append counts against.
+    VerifyOffsets(verify::VerifyOffsetsArgs),
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -104,6 +108,7 @@ async fn main() -> Result<()> {
         Cmd::MultiFanout(a) => serde_json::to_string_pretty(&multi_fanout::run(a).await?)?,
         Cmd::Reads(a) => serde_json::to_string_pretty(&reads::run(a).await?)?,
         Cmd::HdrMerge(a) => dist::run_merge(a)?,
+        Cmd::VerifyOffsets(a) => serde_json::to_string_pretty(&verify::run(a).await?)?,
     };
     println!("{json}");
     Ok(())

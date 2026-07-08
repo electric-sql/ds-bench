@@ -1,0 +1,102 @@
+[
+  {
+    "mode": "memory",
+    "stream_count": 100000,
+    "pods": 32,
+    "throughput": 483586.04000000004,
+    "p50": 2.773,
+    "p99": 74.559,
+    "pod_mem_mb": 1260,
+    "pod_mem_p50_mb": 837,
+    "saturated": true,
+    "status": "ok",
+    "reason": "plateau",
+    "walk": [
+      [
+        16,
+        349236.92000000004
+      ],
+      [
+        24,
+        441679.1599999999
+      ],
+      [
+        32,
+        483586.04000000004
+      ],
+      [
+        48,
+        417541.2799999999
+      ]
+    ]
+  },
+  {
+    "mode": "wal",
+    "stream_count": 100000,
+    "pods": 16,
+    "throughput": 68819.51999999999,
+    "p50": 56.511,
+    "p99": 108.287,
+    "pod_mem_mb": 676,
+    "pod_mem_p50_mb": 596,
+    "saturated": true,
+    "status": "ok",
+    "reason": "plateau",
+    "walk": [
+      [
+        16,
+        68819.51999999999
+      ],
+      [
+        24,
+        67648.31999999999
+      ]
+    ]
+  },
+  {
+    "mode": "memory",
+    "stream_count": 500000,
+    "pods": 16,
+    "throughput": 322320.07999999996,
+    "p50": 2.757,
+    "p99": 57.791,
+    "pod_mem_mb": 2910,
+    "pod_mem_p50_mb": 2020,
+    "saturated": true,
+    "status": "ok",
+    "reason": "plateau",
+    "walk": [
+      [
+        16,
+        322320.07999999996
+      ],
+      [
+        24,
+        277133.68
+      ]
+    ]
+  },
+  {
+    "mode": "wal",
+    "stream_count": 500000,
+    "pods": 16,
+    "throughput": 46554.84,
+    "p50": 84.351,
+    "p99": 211.583,
+    "pod_mem_mb": 2607,
+    "pod_mem_p50_mb": 2419,
+    "saturated": true,
+    "status": "ok",
+    "reason": "plateau",
+    "walk": [
+      [
+        16,
+        46554.84
+      ],
+      [
+        24,
+        48995.08000000001
+      ]
+    ]
+  }
+]

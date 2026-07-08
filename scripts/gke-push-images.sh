@@ -18,7 +18,18 @@ REG="${AR_LOCATION}-docker.pkg.dev/$PROJECT/$AR_REPO"
 cd "$REPO_ROOT"
 DS_RUST_REPO="${DS_RUST_REPO:-../electric-ds-rust}"
 DS_NODE_REPO="${DS_NODE_REPO:-../durable-streams}"
-RUST_CTX="${DS_RUST_REPO}/packages/server-rust"
+# Server crate dir: the electric monorepo names it packages/durable-streams-rust;
+# older checkouts used packages/server-rust. Auto-detect; DS_RUST_CRATE overrides.
+if [ -n "${DS_RUST_CRATE:-}" ]; then
+  case "$DS_RUST_CRATE" in
+    /*) RUST_CTX="$DS_RUST_CRATE" ;;
+    *)  RUST_CTX="${DS_RUST_REPO}/${DS_RUST_CRATE}" ;;
+  esac
+elif [ -d "${DS_RUST_REPO}/packages/durable-streams-rust" ]; then
+  RUST_CTX="${DS_RUST_REPO}/packages/durable-streams-rust"
+else
+  RUST_CTX="${DS_RUST_REPO}/packages/server-rust"
+fi
 
 cleanup() {
   rm -f ds-bench/Dockerfile "$RUST_CTX/Dockerfile" "$RUST_CTX/.dockerignore" \

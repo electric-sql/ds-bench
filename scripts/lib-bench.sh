@@ -208,13 +208,20 @@ _barrier_mc() {
     "mc alias set local http://localhost:9000 minioadmin minioadmin >/dev/null 2>&1; $*" 2>/dev/null
 }
 
-# _barrier_reset — clear the run's barrier prefix BEFORE the fleet launches.
-# RUN_IDs are deterministic per cell, so a re-run (resume of an error cell)
-# otherwise finds the PREVIOUS pass's ready markers and go file: pods grab the
-# stale go (a time in the past) and start immediately, staggering the fleet —
-# exactly the misalignment the barrier exists to prevent.
+# _barrier_reset — clear the run's WHOLE MinIO prefix BEFORE the fleet launches.
+# RUN_IDs are deterministic per cell but do NOT include the server-config label,
+# so two hazards share one fix:
+#   * stale barrier state — a re-run (resume of an error cell) otherwise finds
+#     the previous pass's ready markers and go file: pods grab the stale go (a
+#     time in the past) and start immediately, staggering the fleet — exactly
+#     the misalignment the barrier exists to prevent;
+#   * stale RESULTS — a later config label (e.g. memory after wal) reuses the
+#     same prefix; if one of its pods failed to upload, the coordinator would
+#     silently merge the PREVIOUS label's same-named .hdr/.json into this
+#     label's cell. Clearing the prefix turns that into an honest missing-pod
+#     merge instead of cross-label contamination.
 _barrier_reset() {
-  _barrier_mc "mc rm --recursive --force local/bench-results/${RUN_ID}/barrier/ 2>/dev/null; true"
+  _barrier_mc "mc rm --recursive --force local/bench-results/${RUN_ID}/ 2>/dev/null; true"
 }
 
 # _barrier_release_fleet <want-ready-count> — block until every pod is at the

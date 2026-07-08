@@ -1,0 +1,28 @@
+{
+  "suite": "run-durable-500k-sat2",
+  "cluster": {
+    "server_machine": "c4d-standard-32-lssd",
+    "client_machine": "n2d-standard-32",
+    "client_nodes": 6,
+    "region": "europe-west4"
+  },
+  "saturation": {
+    "plateau_pct": 8,
+    "fleet_cpu": 0.25,
+    "repeats": 1,
+    "warmup_secs": 8,
+    "measure_secs": 12,
+    "setup_concurrency": 8,
+    "payload_bytes": 256
+  },
+  "modes": ["wal"],
+  "server_configs": {
+    "wal": [
+      { "label": "cpu16-s16t16", "args": "--wal-shards 16 --worker-threads 16" }
+    ]
+  },
+  "stream_counts": [500000],
+  "pod_ladder": {
+    "500000": [350, 500, 650]
+  }
+}

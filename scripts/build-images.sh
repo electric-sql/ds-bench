@@ -19,7 +19,19 @@ cd "$REPO_ROOT"
 
 DS_RUST_REPO="${DS_RUST_REPO:-../electric-ds-rust}"
 DS_NODE_REPO="${DS_NODE_REPO:-../durable-streams}"
-RUST_CTX="${DS_RUST_REPO}/packages/server-rust"
+# The server crate dir inside DS_RUST_REPO. The electric monorepo names it
+# packages/durable-streams-rust; older checkouts used packages/server-rust.
+# Auto-detect, overridable via DS_RUST_CRATE (absolute or repo-relative).
+if [ -n "${DS_RUST_CRATE:-}" ]; then
+  case "$DS_RUST_CRATE" in
+    /*) RUST_CTX="$DS_RUST_CRATE" ;;
+    *)  RUST_CTX="${DS_RUST_REPO}/${DS_RUST_CRATE}" ;;
+  esac
+elif [ -d "${DS_RUST_REPO}/packages/durable-streams-rust" ]; then
+  RUST_CTX="${DS_RUST_REPO}/packages/durable-streams-rust"
+else
+  RUST_CTX="${DS_RUST_REPO}/packages/server-rust"
+fi
 
 if [ "$DS_TARGET" = "remote" ]; then
   echo "=== remote: Cloud Build → Artifact Registry ==="

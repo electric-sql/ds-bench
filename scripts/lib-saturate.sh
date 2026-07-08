@@ -46,9 +46,11 @@ measure_pods() {
   # batch>1 → N records per POST (pool model); the dominant fleet-cost lever.
   local batch_flag=""
   [ "${BATCH_PER_POD:-1}" -gt 1 ] 2>/dev/null && batch_flag="--batch ${BATCH_PER_POD}"
-  # Pool model: every pod draws random keys over the GLOBAL domain (no
-  # pre-sharding, lazy creation), so it gets the full stream count. Legacy:
-  # pods own disjoint pod-prefixed slices of ceil(sc/pods) streams each.
+  # Pool model: pods get the full GLOBAL stream count and derive their own
+  # disjoint slice of it from DS_BENCH_INSTANCE/DS_BENCH_SHARDS (even key-space
+  # coverage, no cross-pod stream sharing; each pod pre-creates its slice
+  # before the barrier). Legacy: pods own disjoint pod-prefixed slices of
+  # ceil(sc/pods) streams each.
   local streams_arg="$perpod"
   [ "${CONNS_PER_POD:-0}" -gt 0 ] 2>/dev/null && streams_arg="$sc"
   local bench_cmd="multi-stream --target ${T_TARGET:?} --api-style ${T_API:?} ${T_NS:-} --streams ${streams_arg} ${conns_flag} ${batch_flag} --duration-secs ${dur} --payload-bytes ${payload} --setup-concurrency ${setup_conc} --warmup-secs ${warmup} --settle-secs ${settle}"

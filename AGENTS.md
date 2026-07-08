@@ -231,9 +231,26 @@ load with fewer/cheaper client vCPU; it changes neither the workload nor the sta
 
 The write/saturation client produces the offered load with a **bounded-concurrency
 pool** (`multi-stream --connections C`, set per-suite via `saturation.connections`):
-each pod runs exactly **C worker-connections** that cycle appends round-robin over a
-disjoint partition of its `--streams`. Offered load is therefore `pods × C`,
-**decoupled from stream count**.
+`--streams N` is the **global** key domain; pod i of P (from
+`DS_BENCH_INSTANCE`/`DS_BENCH_SHARDS`) owns the disjoint slice `[i·N/P, (i+1)·N/P)`
+and runs exactly **C worker-connections**, each cycling PLAIN appends (no producer
+sessions/idempotency) round-robin over a disjoint sub-slice of the pod's slice. So
+the key space is covered evenly and **no two pods or workers ever share a stream**
+(no cross-client appender-lock interference). Each pod **pre-creates its slice in a
+setup phase BEFORE the barrier** — the measure window contains appends only. A
+404→create→retry fallback exists but any use is counted in the pod JSON's
+`lazy_creates`; **nonzero `lazy_creates` means creation leaked into the load phases
+and the cell is suspect** (this was the random-domain client's failure mode: no
+setup phase, so high-cardinality cells measured the creation storm, not appends).
+Offered load is `pods × C`, **decoupled from stream count**.
+
+**Accuracy ground truth.** Each pod JSON carries `ok_total_all_phases` (successful
+appends across all phases) and its `pod_slice_lo/hi`; `ds-bench verify-offsets`
+sums server-side `stream-next-offset` over the whole domain. `scripts/
+verify-write-accuracy.sh <run-id> <streams>` compares the two (plus slice tiling,
+`lazy_creates=0`, full coverage) — and `scripts/verify-accuracy-cell.sh` runs one
+local cell end-to-end and checks it while the state is live. Run these after any
+client/harness change that could affect reported numbers.
 
 > The legacy default `connections: 0` = one in-flight append **per stream**. At high
 > streams/pod this makes the *client pod*, not the server, the bottleneck: the pod's

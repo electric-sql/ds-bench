@@ -53,15 +53,17 @@ pub struct MultiStreamArgs {
     /// in-flight append PER stream through an idempotent producer session
     /// (ordered, deduped — throughput becomes streams/latency; pods own disjoint
     /// pod-prefixed stream sets). >0 = bounded-concurrency pool model measuring
-    /// RAW append throughput over a GLOBAL key domain: exactly N=connections
-    /// worker tasks (each its own connection, one in-flight append) issue PLAIN
-    /// appends — no producer headers, no seq, no server-side session/dedup
-    /// state — to uniformly RANDOM keys in [0, --streams). Pods are fully
-    /// independent: no pre-sharding, no setup phase; streams are created lazily
-    /// on first touch (append → 404 → create-tolerate-exists → retry). Offered
-    /// load is decoupled from stream count in both directions, per-stream
-    /// arrivals are Poisson-like superpositions of independent writers, and a
-    /// degraded pod lowers offered load without skewing key coverage.
+    /// RAW append throughput over a GLOBAL key domain [0, --streams): exactly
+    /// N=connections worker tasks (each its own connection, one in-flight
+    /// append) issue PLAIN appends — no producer headers, no seq, no server-side
+    /// session/dedup state. The domain is partitioned DISJOINTLY: pod i of P
+    /// (DS_BENCH_INSTANCE / DS_BENCH_SHARDS) owns [i·N/P, (i+1)·N/P), and each
+    /// worker round-robins a disjoint sub-slice of the pod's slice — every key
+    /// is covered evenly and no two pods (or workers) ever contend on the same
+    /// stream's appender lock. Each pod creates its own slice in a setup phase
+    /// BEFORE the fleet barrier, so the measure window contains appends only
+    /// (a 404→create→retry fallback remains for robustness and is counted in
+    /// `lazy_creates` — nonzero values mean setup didn't do its job).
     #[arg(long, default_value_t = 0)]
     pub connections: usize,
 
@@ -129,6 +131,18 @@ pub struct MultiStreamResult {
     /// server's capacity: the 500k-stream 2.9M ops/s artifact).
     pub measure_start_unix_ms: u64,
     pub measure_end_unix_ms: u64,
+    /// Successful appends across ALL phases (setup-retry, warmup, settle spillover,
+    /// measure) — NOT rate-limited to the measure window. Lets a verifier compare
+    /// the fleet's total client-observed appends against server-side truth
+    /// (sum of per-stream record counts).
+    pub ok_total_all_phases: u64,
+    /// Pool model: streams created via the in-loop 404→create→retry fallback.
+    /// Should be ~0 — the pod's slice is pre-created during setup, so a large
+    /// value means creation leaked into the load phases (measurement suspect).
+    pub lazy_creates: u64,
+    /// Pool model: this pod's disjoint slice of the global key domain.
+    pub pod_slice_lo: usize,
+    pub pod_slice_hi: usize,
 }
 
 /// Per-pod stream-name prefix for the LEGACY model: its per-stream producer
@@ -148,30 +162,25 @@ fn stream_name_global(idx: usize) -> String {
     format!("s{idx:08}")
 }
 
-/// Tiny deterministic PRNG (xorshift64*) — no `rand` dependency, seeded per
-/// (pod, worker) so runs are reproducible and workers draw independent key
-/// sequences over the shared domain.
-struct XorShift64(u64);
+/// Proportional split of `[lo, hi)` into `parts` contiguous ranges; returns part
+/// `i`. Ranges are disjoint, cover the input exactly, and differ in size by at
+/// most 1 — the primitive behind both the pod-level and worker-level key-domain
+/// partitioning (even coverage, no overlap).
+fn split_range(lo: usize, hi: usize, parts: usize, i: usize) -> (usize, usize) {
+    let n = hi - lo;
+    let parts = parts.max(1);
+    (lo + i * n / parts, lo + (i + 1) * n / parts)
+}
 
-impl XorShift64 {
-    fn seeded(instance: u64, worker: u64) -> Self {
-        // SplitMix-style avalanche of a non-zero composite seed.
-        let mut z = 0x9E37_79B9_7F4A_7C15u64
-            ^ (instance.wrapping_mul(0xBF58_476D_1CE4_E5B9))
-            ^ (worker.wrapping_mul(0x94D0_49BB_1331_11EB));
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        XorShift64((z ^ (z >> 31)) | 1)
-    }
-
-    fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    }
+/// This pod's disjoint slice of the global `[0, domain)` key space, from the
+/// indexed-Job env (DS_BENCH_INSTANCE = pod ordinal, DS_BENCH_SHARDS = pod
+/// count). Single-process runs (no env) default to instance 0 of 1 = the whole
+/// domain.
+fn pod_slice(domain: usize) -> (usize, usize) {
+    let inst: usize = std::env::var("DS_BENCH_INSTANCE").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let shards: usize = std::env::var("DS_BENCH_SHARDS").ok().and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
+    let inst = inst.min(shards - 1);
+    split_range(0, domain, shards, inst)
 }
 
 /// Planned wall-clock measure window, computed at phase setup: `Instant`-based
@@ -211,14 +220,22 @@ pub async fn run(args: MultiStreamArgs) -> Result<MultiStreamResult> {
     backend.ensure_namespace().await?;
 
     if args.connections > 0 {
-        // Pool model: NO setup phase. Pods are fully independent — every worker
-        // draws random keys over the GLOBAL --streams domain and streams are
-        // created lazily on first touch (append → 404 → create → retry; creation
-        // races are safe: create is create-only + tolerate-exists, and pool
-        // appends carry no producer identity to collide on). The barrier below
-        // is kept for exactly one reason: aligning the fleet's measure windows.
+        // Pool model: pods own DISJOINT slices of the global [0, --streams)
+        // domain. Setup creates this pod's slice up front (bounded by
+        // --setup-concurrency) so the load phases contain appends only —
+        // creating streams inside warmup/measure both distorts the measured
+        // append path and (at high cardinality) can dominate the whole window.
+        // The fleet barrier comes AFTER setup: pods signal ready only once
+        // their slice exists, and the whole fleet starts measuring together.
+        let (lo, hi) = pod_slice(args.streams.max(1));
+        let content_type = if args.batch.max(1) > 1 { "application/json" } else { "application/octet-stream" };
+        tracing::info!(
+            "pool setup: creating pod slice [{lo}, {hi}) of {} global streams",
+            args.streams
+        );
+        create_stream_range(&backend, lo, hi, args.setup_concurrency, content_type).await?;
         crate::barrier::sync_to_fleet_start().await;
-        return run_pool(args, backend).await;
+        return run_pool(args, backend, lo, hi).await;
     }
 
     create_streams(&backend, args.streams, args.setup_concurrency, "application/octet-stream")
@@ -231,6 +248,7 @@ pub async fn run(args: MultiStreamArgs) -> Result<MultiStreamResult> {
 
     let payload = Arc::new(fill_payload(args.payload_bytes, 0xC0FFEE));
     let ok = Arc::new(AtomicU64::new(0));
+    let ok_all = Arc::new(AtomicU64::new(0));
     let bp = Arc::new(AtomicU64::new(0));
     let err = Arc::new(AtomicU64::new(0));
     let errors = Arc::new(Mutex::new(BTreeMap::<String, u64>::new()));
@@ -251,6 +269,7 @@ pub async fn run(args: MultiStreamArgs) -> Result<MultiStreamResult> {
         let stream = stream_name(idx);
         let payload = payload.clone();
         let ok = ok.clone();
+        let ok_all = ok_all.clone();
         let bp = bp.clone();
         let err = err.clone();
         let errors = errors.clone();
@@ -269,6 +288,7 @@ pub async fn run(args: MultiStreamArgs) -> Result<MultiStreamResult> {
                 measure_start,
                 deadline,
                 ok,
+                ok_all,
                 bp,
                 err,
                 errors,
@@ -321,18 +341,28 @@ pub async fn run(args: MultiStreamArgs) -> Result<MultiStreamResult> {
         latency_ms: latency,
         measure_start_unix_ms,
         measure_end_unix_ms,
+        ok_total_all_phases: ok_all.load(Ordering::Relaxed),
+        lazy_creates: 0,
+        pod_slice_lo: 0,
+        pod_slice_hi: args.streams,
     })
 }
 
-/// Bounded-concurrency pool model: exactly `connections` worker tasks, each owning
-/// a disjoint contiguous slice of the `streams` set, cycling appends round-robin
-/// over its slice with one in-flight append at a time. Offered concurrency is
-/// `connections` (NOT `streams`), so the load the server sees is controlled and the
-/// client's per-pod overhead/memory stays bounded regardless of stream count.
-async fn run_pool(args: MultiStreamArgs, backend: Backend) -> Result<MultiStreamResult> {
+/// Bounded-concurrency pool model: exactly `connections` worker tasks, each
+/// cycling plain appends round-robin over a disjoint sub-slice of this pod's
+/// `[lo, hi)` slice of the global key domain, one in-flight append at a time.
+/// Offered concurrency is `connections` (NOT `streams`), so the load the server
+/// sees is controlled and the client's per-pod overhead/memory stays bounded
+/// regardless of stream count. Round-robin over disjoint slices ⇒ every key is
+/// hit evenly and no two workers/pods share a stream (no appender-lock
+/// interference between load generators).
+async fn run_pool(
+    args: MultiStreamArgs,
+    backend: Backend,
+    lo: usize,
+    hi: usize,
+) -> Result<MultiStreamResult> {
     let n = args.streams.max(1);
-    // NOT capped at n: c > n pins multiple workers (distinct producer identities)
-    // to the same stream — see pool_assignment.
     let c = args.connections.max(1);
     let batch = args.batch.max(1);
     // Precompute the request body once (constant across appends). batch>1 → a JSON
@@ -353,6 +383,8 @@ async fn run_pool(args: MultiStreamArgs, backend: Backend) -> Result<MultiStream
         (Arc::new(fill_payload(args.payload_bytes, 0xC0FFEE)), "application/octet-stream", 1)
     };
     let ok = Arc::new(AtomicU64::new(0));
+    let ok_all = Arc::new(AtomicU64::new(0));
+    let lazy_creates = Arc::new(AtomicU64::new(0));
     let bp = Arc::new(AtomicU64::new(0));
     let err = Arc::new(AtomicU64::new(0));
     let errors = Arc::new(Mutex::new(BTreeMap::<String, u64>::new()));
@@ -365,25 +397,29 @@ async fn run_pool(args: MultiStreamArgs, backend: Backend) -> Result<MultiStream
     let (measure_start_unix_ms, measure_end_unix_ms) =
         wall_measure_window(args.warmup_secs, args.settle_secs, args.duration_secs);
 
-    let instance: u64 = std::env::var("DS_BENCH_INSTANCE")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
     tracing::info!(
-        "pool model: connections={c} random over global domain of {n} streams, batch={batch}"
+        "pool model: connections={c} round-robin over pod slice [{lo}, {hi}) of {n} global streams, batch={batch}"
     );
 
     let mut workers = Vec::with_capacity(c);
     for w in 0..c {
         let backend = backend.clone();
         let body = body.clone();
-        let rng = XorShift64::seeded(instance, w as u64);
-        let (ok, bp, err, errors, hist) =
-            (ok.clone(), bp.clone(), err.clone(), errors.clone(), hist.clone());
+        // Worker w owns a disjoint sub-slice of the pod's slice. When the pod
+        // slice has fewer streams than workers (perpod < connections) the split
+        // yields empty ranges — those workers fall back to cycling the whole pod
+        // slice from a staggered start (intra-pod sharing; keep perpod ≥
+        // connections in suites to avoid it).
+        let (wlo, whi) = split_range(lo, hi, c, w);
+        let (wlo, whi, phase) = if wlo == whi { (lo, hi, w) } else { (wlo, whi, 0) };
+        let (ok, ok_all, lazy_creates, bp, err, errors, hist) = (
+            ok.clone(), ok_all.clone(), lazy_creates.clone(), bp.clone(), err.clone(),
+            errors.clone(), hist.clone(),
+        );
         workers.push(tokio::spawn(async move {
             pool_worker(
-                backend, n, rng, body, content_type, recs_per_post, warmup_end,
-                measure_start, deadline, ok, bp, err, errors, hist,
+                backend, wlo, whi, phase, body, content_type, recs_per_post, warmup_end,
+                measure_start, deadline, ok, ok_all, lazy_creates, bp, err, errors, hist,
             )
             .await
         }));
@@ -428,14 +464,19 @@ async fn run_pool(args: MultiStreamArgs, backend: Backend) -> Result<MultiStream
         latency_ms: latency,
         measure_start_unix_ms,
         measure_end_unix_ms,
+        ok_total_all_phases: ok_all.load(Ordering::Relaxed),
+        lazy_creates: lazy_creates.load(Ordering::Relaxed),
+        pod_slice_lo: lo,
+        pod_slice_hi: hi,
     })
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn pool_worker(
     backend: Backend,
-    domain: usize,
-    mut rng: XorShift64,
+    lo: usize,
+    hi: usize,
+    phase: usize,
     body: Arc<Vec<u8>>,
     content_type: &'static str,
     recs_per_post: u64,
@@ -443,11 +484,15 @@ async fn pool_worker(
     measure_start: Instant,
     deadline: Instant,
     ok: Arc<AtomicU64>,
+    ok_all: Arc<AtomicU64>,
+    lazy_creates: Arc<AtomicU64>,
     bp: Arc<AtomicU64>,
     err: Arc<AtomicU64>,
     errors: Arc<Mutex<BTreeMap<String, u64>>>,
     hist: Arc<Mutex<Histogram<u64>>>,
 ) {
+    let span = hi.saturating_sub(lo).max(1);
+    let mut rr = phase % span; // round-robin cursor within [lo, hi)
     let mut local = new_histogram();
     while Instant::now() < deadline {
         let now = Instant::now();
@@ -456,10 +501,10 @@ async fn pool_worker(
             continue;
         }
         let counting = now >= measure_start;
-        // Uniform random key over the GLOBAL domain — every pod/worker can hit
-        // every stream; no client↔stream binding to leave a fingerprint on the
-        // per-stream arrival pattern.
-        let global = (rng.next() % domain as u64) as usize;
+        // Round-robin over this worker's disjoint slice: even key coverage by
+        // construction, and no other worker/pod ever touches these streams.
+        let global = lo + rr;
+        rr = (rr + 1) % span;
         let stream = stream_name_global(global);
         let started = Instant::now();
         // RAW throughput: plain append, no producer session/seq/dedup — the
@@ -472,16 +517,18 @@ async fn pool_worker(
             Ok(r) => {
                 let status = r.status();
                 if status.is_success() {
+                    ok_all.fetch_add(recs_per_post, Ordering::Relaxed);
                     if counting {
                         ok.fetch_add(recs_per_post, Ordering::Relaxed);
                         record(&mut local, started);
                     }
                 } else if status.as_u16() == 404 {
-                    // Lazy creation: first touch of this key. Create (create-only,
-                    // tolerate-exists — racing pods are fine) and retry the append
-                    // once. The op's recorded latency includes the create: that is
-                    // the honest client-observed cost, and after warmup nearly the
-                    // whole domain exists so these are rare.
+                    // Fallback only: setup pre-created the slice, so a 404 means
+                    // lost server state or a setup gap. Create (tolerate-exists)
+                    // and retry once; the recorded latency includes the create —
+                    // the honest client-observed cost. lazy_creates makes any
+                    // leak of creation into the load phases visible in the JSON.
+                    lazy_creates.fetch_add(1, Ordering::Relaxed);
                     if backend.create_stream(&stream, content_type).await.is_ok() {
                         let retry = backend
                             .append_request(global, &stream, &body, None, content_type)
@@ -489,6 +536,7 @@ async fn pool_worker(
                             .await;
                         match retry {
                             Ok(r2) if r2.status().is_success() => {
+                                ok_all.fetch_add(recs_per_post, Ordering::Relaxed);
                                 if counting {
                                     ok.fetch_add(recs_per_post, Ordering::Relaxed);
                                     record(&mut local, started);
@@ -549,6 +597,7 @@ async fn run_writer(
     measure_start: Instant,
     deadline: Instant,
     ok: Arc<AtomicU64>,
+    ok_all: Arc<AtomicU64>,
     bp: Arc<AtomicU64>,
     err: Arc<AtomicU64>,
     errors: Arc<Mutex<BTreeMap<String, u64>>>,
@@ -606,6 +655,7 @@ async fn run_writer(
             Ok(r) => {
                 let status = r.status();
                 if status.is_success() {
+                    ok_all.fetch_add(1, Ordering::Relaxed);
                     if counting {
                         ok.fetch_add(1, Ordering::Relaxed);
                         record(&mut local, started);
@@ -658,25 +708,49 @@ async fn create_streams(
     concurrency: usize,
     content_type: &'static str,
 ) -> Result<()> {
+    create_streams_named(backend, 0, count, concurrency, content_type, stream_name).await
+}
+
+/// Pool-model setup: create the GLOBAL-named streams of this pod's disjoint
+/// slice `[lo, hi)`, `concurrency` creates in flight. Create tolerates
+/// already-exists, so re-runs (ladder rungs against un-reset state) are cheap.
+async fn create_stream_range(
+    backend: &Backend,
+    lo: usize,
+    hi: usize,
+    concurrency: usize,
+    content_type: &'static str,
+) -> Result<()> {
+    create_streams_named(backend, lo, hi, concurrency, content_type, stream_name_global).await
+}
+
+async fn create_streams_named(
+    backend: &Backend,
+    lo: usize,
+    hi: usize,
+    concurrency: usize,
+    content_type: &'static str,
+    name: fn(usize) -> String,
+) -> Result<()> {
     let mut pending: FuturesUnordered<_> = FuturesUnordered::new();
-    let mut next = 0usize;
+    let mut next = lo;
     let max = concurrency.max(1);
     let push_one = |i: usize, pending: &mut FuturesUnordered<_>| {
         let backend = backend.clone();
-        let stream = stream_name(i);
+        let stream = name(i);
         pending.push(tokio::spawn(async move {
             backend
                 .create_stream(&stream, content_type)
                 .await
         }));
     };
-    while next < count && pending.len() < max {
+    while next < hi && pending.len() < max {
         push_one(next, &mut pending);
         next += 1;
     }
     while let Some(joined) = pending.next().await {
         joined??;
-        if next < count {
+        if next < hi {
             push_one(next, &mut pending);
             next += 1;
         }
@@ -694,45 +768,45 @@ fn stream_name(idx: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::XorShift64;
+    use super::split_range;
 
-    /// Same (pod, worker) seed → same key sequence: runs are reproducible.
-    /// Different workers → different sequences.
+    /// Pod-level partition: the P slices of [0, N) are disjoint, contiguous,
+    /// cover the whole domain exactly, and are balanced to within one key —
+    /// the properties that give even key-space use with zero cross-pod
+    /// conflicts.
     #[test]
-    fn rng_is_deterministic_per_pod_worker() {
-        let a: Vec<u64> = {
-            let mut r = XorShift64::seeded(3, 7);
-            (0..64).map(|_| r.next()).collect()
-        };
-        let b: Vec<u64> = {
-            let mut r = XorShift64::seeded(3, 7);
-            (0..64).map(|_| r.next()).collect()
-        };
-        assert_eq!(a, b, "same seed must reproduce the same sequence");
-        let c: Vec<u64> = {
-            let mut r = XorShift64::seeded(3, 8);
-            (0..64).map(|_| r.next()).collect()
-        };
-        assert_ne!(a, c, "different workers must draw different sequences");
+    fn pod_slices_are_disjoint_covering_and_balanced() {
+        for (n, p) in [(10, 3), (500_000, 7), (100, 100), (5, 8), (1, 1)] {
+            let mut covered = 0usize;
+            let mut prev_hi = 0usize;
+            let (mut min_span, mut max_span) = (usize::MAX, 0usize);
+            for i in 0..p {
+                let (lo, hi) = split_range(0, n, p, i);
+                assert_eq!(lo, prev_hi, "slices must be contiguous (n={n} p={p} i={i})");
+                prev_hi = hi;
+                covered += hi - lo;
+                min_span = min_span.min(hi - lo);
+                max_span = max_span.max(hi - lo);
+            }
+            assert_eq!(prev_hi, n, "last slice must end at the domain (n={n} p={p})");
+            assert_eq!(covered, n, "slices must cover the domain exactly");
+            assert!(max_span - min_span <= 1, "balanced to within 1 (n={n} p={p})");
+        }
     }
 
-    /// Uniform draws over a domain cover every key and stay roughly balanced —
-    /// the property that keeps writes distributed across the whole key space.
+    /// Worker-level partition nests inside the pod slice: sub-slices are
+    /// disjoint and cover exactly the pod's [lo, hi) — no two workers of a pod
+    /// share a stream when the slice has at least one key per worker.
     #[test]
-    fn rng_covers_domain_roughly_uniformly() {
-        let n = 1000usize;
-        let draws = 100_000usize;
-        let mut counts = vec![0u32; n];
-        let mut r = XorShift64::seeded(1, 2);
-        for _ in 0..draws {
-            counts[(r.next() % n as u64) as usize] += 1;
+    fn worker_slices_nest_inside_pod_slice() {
+        let (lo, hi) = split_range(0, 100_000, 7, 3); // an arbitrary pod slice
+        let c = 256;
+        let mut prev = lo;
+        for w in 0..c {
+            let (wlo, whi) = split_range(lo, hi, c, w);
+            assert_eq!(wlo, prev);
+            prev = whi;
         }
-        assert!(counts.iter().all(|&x| x > 0), "every key must be touched");
-        let mean = draws as f64 / n as f64; // 100
-        let (min, max) = (
-            *counts.iter().min().unwrap() as f64,
-            *counts.iter().max().unwrap() as f64,
-        );
-        assert!(min > mean * 0.5 && max < mean * 1.5, "roughly uniform (min={min} max={max})");
+        assert_eq!(prev, hi);
     }
 }

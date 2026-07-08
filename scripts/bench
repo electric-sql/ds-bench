@@ -123,7 +123,9 @@ run_mode() {
     _record_cluster "$cluster" "$zone"   # so teardown only touches what we created
     export DS_TARGET=remote PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
     export ZONE="$zone" CLUSTER="$cluster" KCTX="gke_${PROJECT}_${zone}_${cluster}"
-    export SERVER_CPUS="${SERVER_CPUS:-4}"
+    # Suite may pin the server's vCPU budget (cluster.server_cpus) so a CPU-sweep
+    # suite (e.g. 4 vs 8 vCPU) is self-contained; env still overrides.
+    export SERVER_CPUS="${SERVER_CPUS:-$(_suite 's.cluster.get("server_cpus", 4)')}"
   fi
   export SERVER_CPU="${SERVER_CPUS%% *}"
   # fleet_cpu/setup/payload come from the saturation block (write) OR the sustained

@@ -1,0 +1,43 @@
+{
+  "suite": "run-durable-cpu4-stats-base",
+  "_doc": "MECHANISM PROOF (instrumented baseline). Single saturating rung (64 pods) at 200k and 500k on the fixed 4-vCPU server, --wal-stats 5 so the server emits per-interval WAL_CONT contention counters (inner_wait_load / dirty_wait_load / waiters_woken_avg). Goal: show the baseline's per-shard-lock contention RISES 200k->500k, i.e. cardinality drives contention. Image = durable-streams:baseline-stats (perf/contention-investigation, telemetry, NO fixes; reads available_parallelism under the 4-vCPU cgroup, so no --worker-threads flag). Paired with run-durable-cpu4-stats-combined.",
+  "cluster": {
+    "server_machine": "c4d-standard-16-lssd",
+    "client_machine": "n2d-standard-32",
+    "client_nodes": 5,
+    "region": "europe-west4"
+  },
+  "saturation": {
+    "plateau_pct": -100,
+    "fleet_cpu": 2,
+    "connections": 256,
+    "repeats": 1,
+    "warmup_secs": 12,
+    "measure_secs": 30,
+    "setup_concurrency": 8,
+    "payload_bytes": 256
+  },
+  "modes": [
+    "wal"
+  ],
+  "server_configs": {
+    "wal": [
+      {
+        "label": "cpu4-base-stats",
+        "args": "--wal-shards 4 --wal-stats 5"
+      }
+    ]
+  },
+  "stream_counts": [
+    200000,
+    500000
+  ],
+  "pod_ladder": {
+    "200000": [
+      64
+    ],
+    "500000": [
+      64
+    ]
+  }
+}
