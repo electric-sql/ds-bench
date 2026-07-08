@@ -129,23 +129,17 @@ SKIP_BUILD=1 scripts/run-sse.sh   # SYSTEMS: durable:walnew[-cache], ursula:memo
   (`europe-west1-docker.pkg.dev/$PROJECT/ds-bench/...`), via `scripts/gke-push-images.sh`.
 - Builds `ds-bench:dev`, `durable-streams:dev`, `durable-node:dev` (`BUILD_NODE=0` to skip).
 
-> **⚠️ Gotcha — the durable image source.** `build-images.sh` builds
-> `durable-streams:dev` from `DS_RUST_REPO/packages/server-rust`, default
-> **`../electric-ds-rust`**. If you need a *specific* server build (e.g. a feature
-> branch in the `electric` monorepo's `durable-streams-rust` crate), do **not** let
-> the matrix rebuild it — build it yourself and reuse it:
-> ```bash
-> # build the exact crate dir you want, tagged :dev, via Cloud Build
-> CRATE=/path/to/electric/.../packages/durable-streams-rust
-> cp dockerfiles/durable-streams.Dockerfile "$CRATE/Dockerfile"
-> gcloud builds submit "$CRATE" --project "$PROJECT" \
->   --tag europe-west1-docker.pkg.dev/$PROJECT/ds-bench/durable-streams:dev
-> rm -f "$CRATE/Dockerfile"
-> # then ALWAYS pass SKIP_BUILD=1 so run-matrix doesn't clobber it with the default source
-> SKIP_BUILD=1 scripts/run-matrix.sh run-durable ...
-> ```
-> Verify which image a cluster ran by diffing the Cloud Build source tarball against
-> your commit — the resume digest won't tell you (it's tag-based).
+> **The durable image source.** `build-images.sh` / `gke-push-images.sh` build
+> `durable-streams:dev` from the server crate inside `DS_RUST_REPO` (default
+> **`../electric-ds-rust`**), auto-detecting the crate dir:
+> `packages/durable-streams-rust` (the electric monorepo) is preferred,
+> `packages/server-rust` is the legacy fallback, and `DS_RUST_CRATE` (absolute or
+> repo-relative) overrides both. So building a feature branch is just: check out
+> the branch in `DS_RUST_REPO`, run `DS_TARGET=remote scripts/build-images.sh`
+> (`BUILD_NODE=0` to skip the node image), then run suites with `SKIP_BUILD=1` so
+> `run-matrix.sh` doesn't rebuild from a different source. Verify which image a
+> cluster ran by diffing the Cloud Build source tarball against your commit — the
+> resume digest won't tell you (it's tag-based).
 
 ---
 
@@ -154,10 +148,14 @@ SKIP_BUILD=1 scripts/run-sse.sh   # SYSTEMS: durable:walnew[-cache], ursula:memo
 - Suites **self-teardown only when complete + results collected**; an `errors` or
   `incomplete` status **keeps the cluster up** so you can fix and resume.
 - `BENCH_KEEP_CLUSTER=1` always keeps clusters.
-- **Arm the watchdog** (detached) for any unattended run — it force-deletes all
-  `bench-*` clusters at a deadline unless the done-marker appears first:
+- **Arm the watchdog** (detached) for any unattended run — it force-deletes
+  matching clusters at a deadline unless the done-marker appears first.
+  **ALWAYS scope `CLUSTER_FILTER` to the clusters your run owns**: the default
+  (`^bench-`) matches everything, and an unscoped watchdog from a side
+  experiment once swept a running campaign's clusters mid-deploy when its own
+  done-marker appeared (it "sweeps leftovers" on stand-down).
   ```bash
-  DEADLINE_SECS=25200 DONE_MARKER="$PWD/.bench-state/run-all.done" \
+  DEADLINE_SECS=25200 DONE_MARKER="$PWD/.bench-state/run-all.done" CLUSTER_FILTER='^bench-cpu' \
     nohup bash scripts/teardown-watchdog.sh >/tmp/watchdog.log 2>&1 &   # default 28800s = 8h
   # signal clean completion so it stands down:  touch .bench-state/run-all.done
   ```
@@ -244,14 +242,6 @@ and the cell is suspect** (this was the random-domain client's failure mode: no
 setup phase, so high-cardinality cells measured the creation storm, not appends).
 Offered load is `pods × C`, **decoupled from stream count**.
 
-**Accuracy ground truth.** Each pod JSON carries `ok_total_all_phases` (successful
-appends across all phases) and its `pod_slice_lo/hi`; `ds-bench verify-offsets`
-sums server-side `stream-next-offset` over the whole domain. `scripts/
-verify-write-accuracy.sh <run-id> <streams>` compares the two (plus slice tiling,
-`lazy_creates=0`, full coverage) — and `scripts/verify-accuracy-cell.sh` runs one
-local cell end-to-end and checks it while the state is live. Run these after any
-client/harness change that could affect reported numbers.
-
 > The legacy default `connections: 0` = one in-flight append **per stream**. At high
 > streams/pod this makes the *client pod*, not the server, the bottleneck: the pod's
 > throughput becomes `streams ÷ round-trip-latency` and collapses (multi-second tail
@@ -273,17 +263,43 @@ client/harness change that could affect reported numbers.
    whose ops/s ≈ `0.8 × single-pod-max` (just below the knee) and put it in
    `saturation.connections`. This keeps every pod in its linear region — never the
    bottleneck — so the sweep measures the *server*, not the client.
-3. **Scale pods to saturate the server.** With per-pod load fixed at the 80 %
-   reference, the `pod_ladder` ramps total offered load (`pods × connections`) until
-   server throughput plateaus (`saturation.plateau_pct`). **Launch as many pods as
-   the server needs.** `stream_counts` only sets cardinality (keep
-   `perpod = streams ÷ pods ≥ connections`), not load. Size `client_nodes` so the top
-   rung's `pods × fleet_cpu` fits with headroom.
+3. **Scale pods to saturate the server — starting from 1 pod.** With per-pod load
+   fixed at the 80 % reference, the `pod_ladder` ramps total offered load
+   (`pods × connections`) until server throughput plateaus
+   (`saturation.plateau_pct`). **Start the ladder at 1 pod** — the low rungs are
+   cheap and they are the only place service latency is measurable (see below).
+   **Launch as many pods as the server needs.** `stream_counts` only sets
+   cardinality (keep `perpod = streams ÷ pods ≥ connections`), not load. Size
+   `client_nodes` so the top rung's `pods × fleet_cpu` fits with headroom. A suite
+   may pin the server's vCPU budget via `cluster.server_cpus` (else env
+   `SERVER_CPUS`, default 4 remote / 2 local).
 
 In short: **each pod is calibrated to 80 % of its own ceiling; a test launches
 however many such pods are required to find the server's ceiling.** Treat any cell
 where per-pod latency/errors degrade as invalid (client-bound) — lower `connections`
 or raise `fleet_cpu` and re-calibrate.
+
+**Latency is only meaningful BELOW the knee.** A closed-loop fleet driven past the
+server's ceiling measures its own queueing — `p50 ≈ in-flight ÷ ceiling` (Little's
+law) — not the server's service time. Manually verified 2026-07-08 on wal@100k
+(4 vCPU): plain curl unloaded = **1.0 ms**; 256 in-flight = 5 ms @ 45k ops/s;
+4096 in-flight = **66 ms** @ 61k — same server, the "latency" is the queue. The
+machinery accounts for this: every walk rung records its own merged p50/p99
+(`walk: [pods, thr, p50, p99]`), and `report.py` quotes latency from the **knee**
+rung (largest at ≤80 % of peak, `knee_*` columns in aggregate.csv) while labelling
+the plateau rung's latency as saturation queueing. Never quote a saturation-rung
+p50 as "the latency" — sanity-check any suspicious latency with
+`scripts/manual-wal-latency.sh` (curl + single-pod ramp, independent of the fleet
+path). Corollary: the plateau rule stops near the knee, so "saturation throughput"
+is the knee capacity; pushing thousands more in-flight buys ~25 % more throughput
+at 10× the latency (that asymptote is not the number we report).
+
+**Accuracy ground truth** (run after any client/harness change): each pod JSON
+carries `ok_total_all_phases` + `pod_slice_lo/hi`; `ds-bench verify-offsets` sums
+server-side `stream-next-offset`; `scripts/verify-write-accuracy.sh` compares the
+two (+ slice tiling, `lazy_creates=0`, coverage) and
+`scripts/verify-accuracy-cell.sh` runs one local cell end-to-end — expected
+result: **server records == client records, delta 0**.
 
 ### Fleet cost levers (the fleet, not the server, dominates run cost)
 
@@ -310,23 +326,48 @@ The client fleet is ~4× the server's cost, so optimize there. In descending imp
 4. **Calibrate the cheapest pod size.** Sweep `fleet_cpu` (1/2/4) in calibration and
    pick the best **ops/s per vCPU**, not just the highest single-pod throughput.
 
-### Measured reference points (durable `wal`, 2026-06-30 — ballpark starting values)
+### Measured reference points (durable, 256 B payload, `batch:1`, pool `fleet_cpu=2`)
 
-Server `c4d-standard-32-lssd`, `--wal-shards 32 --worker-threads 32`, 256 B payload,
-pool client `fleet_cpu=2`, **`batch:1`**:
+**2026-07-08 corrected campaign** (barrier-aligned, knee methodology; server
+`c4d-standard-16-lssd`, shards = worker-threads = pin; plateau thr, knee p50 —
+`results/write-wal-vs-mem-cpu4/FINDINGS.md`):
 
-- **Single-pod max** ≈ 24k ops/s, reached by **~256 connections** (the 80 % reference;
-  more connections only add latency). Use `connections: 256` as a starting point.
-- **Server ceiling** ≈ **1.48M ops/s @ 200k streams**, **1.15M @ 500k** (≈22 % cardinality
-  cost), both peaking near **52 pods** then declining — and at only **~80 % server CPU**
-  (the wal commit path / appender-lock serializes before the cores saturate; ~20 % CPU
-  is unspent). So the wal server is **not CPU-bound** at saturation; a tighter
-  `c4d-standard-16-lssd` (NVMe; 16→32 is the only step) is worth trying for $/op.
-- **Cost** (list, europe-west4, Spot): fleet 6×`n2d-standard-32` ≈ $2.2/hr · server ≈
-  $0.5/hr · GKE ≈ $0.1/hr; a full 200k+500k sweep ≈ **$2**, the campaign ≈ $5–6.
-- These are **`batch:1`** numbers; raising `batch` cuts the fleet (and pod count)
-  10–140× and lifts the server ceiling — see `suites/run-durable-pool-opt.json` and
-  re-calibrate. Full write-up: `results/run-durable-pool2/FINDINGS.md`.
+| pin | streams | wal | wal knee p50 | memory | memory knee p50 |
+|---|---|---|---|---|---|
+| 4 vCPU | 100k | 47k | 4.5 ms | 315k | 1.2 ms |
+| 4 vCPU | 500k | 31k | 6.7 ms | 226k | 1.1 ms |
+| 8 vCPU | 100k | 43k | 5.0 ms | 526k | 1.2 ms |
+| 8 vCPU | 500k | 29k | 6.9 ms | 323k | 1.3 ms |
+
+- **wal does not scale with the CPU pin** at shards = cores (fsync-lane bound at
+  ~25–30 % CPU); the shard count is the parallel-fsync knob (`run-durable-tune`:
+  s16t4 ≈ 380k @ 200k streams). **memory scales with cores** at ~1–2 ms p50.
+- **Cardinality cliff:** 100k → 500k streams costs wal ~33 % and memory ~28–39 %
+  in both pins — present in every build (registry/page-cache/fd physics, see
+  `WRITE_BOTTLENECKS_1M.md` in the server crate), NOT coordination.
+- Unloaded single-request wal append (curl): **~1.0 ms**.
+- **Single-pod max** ≈ 45–60k ops/s into wal by ~256 connections; `connections: 256`
+  remains the standard per-pod reference.
+- **Cost** (list, europe-west4, Spot): fleet 5–7×`n2d-standard-32` ≈ $2–3/hr ·
+  server ≈ $0.5/hr · GKE ≈ $0.1/hr; the corrected 2-suite campaign ≈ $6–8.
+
+**Older (pre-barrier) reference points are inflated** — treat the 2026-06-30
+"1.48M @ 200k / 1.15M @ 500k on 32 vCPU" numbers (`run-durable-pool2/FINDINGS.md`)
+as upper bounds only: they predate the start barrier, and misaligned fleet windows
+multiply-count capacity (the documented 2.9M artifact). Raising `batch` still cuts
+fleet cost 10–140× and lifts the server ceiling — re-calibrate after changing it.
+
+### Iterating on server performance LOCALLY (the cardinality cliff / wal CPU-scaling)
+
+Both open server-side problems (throughput falling with stream count; wal flat
+across CPU pins) **reproduce on kind** — iterate on a laptop in ~15-minute
+cycles with `suites/write-cliff-local.json` (+ `-cpu4` for the CPU probe) and
+compare shapes with `scripts/compare-cliff.py`. The full loop, baselines, and
+validity checks are documented WITH THE SERVER CODE:
+`packages/durable-streams-rust/CARDINALITY_CLIFF_REPRO.md` in the electric repo
+(local findings snapshot: `results/write-cliff-local/FINDINGS.md`). Keep the
+suite at [1k, 10k, 50k] streams — the cliff is unambiguous by 50k and larger
+counts only slow the loop.
 
 ---
 

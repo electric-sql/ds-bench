@@ -102,7 +102,7 @@ run_mode() {
     cluster="${KIND_CLUSTER:-ds-bench}"
     DS_TARGET=local bash scripts/cluster-up.sh
     export DS_TARGET=local CLUSTER="$cluster" KCTX="kind-${cluster}"
-    export SERVER_CPUS="${SERVER_CPUS:-2}" SERVER_MEM="${SERVER_MEM:-2Gi}"
+    export SERVER_CPUS="${SERVER_CPUS:-$(_suite 's.cluster.get("server_cpus", 2)')}" SERVER_MEM="${SERVER_MEM:-2Gi}"
   else
     # Remote GKE: its OWN cluster per mode (parallel-safe), keyed KUBECONFIG. cluster
     # name + zone default to bench-<mode> / region-{a,b,c}; a suite may override
