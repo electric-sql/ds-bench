@@ -78,3 +78,53 @@ assert cell["p99"] == 3.3, cell                                       # valid p9
 assert cell["saturated"] is True and cell["reason"] == "plateau", cell
 print("PASS _record tolerates malformed p50, keeps p99")
 PY
+
+# ── patience=2 hysteresis: a single noisy DIP must not trigger a false plateau ──
+SUITE_DIR2="$(mktemp -d)"; export SUITE_FILE="$SUITE_DIR2/suite.json"
+cat > "$SUITE_FILE" <<'JSON'
+{
+  "suite": "patience-test",
+  "cluster": {},
+  "saturation": { "plateau_pct": 10, "patience": 2, "fleet_cpu": 0.5, "repeats": 1, "warmup_secs": 1, "measure_secs": 1 },
+  "modes": ["wal"],
+  "stream_counts": [1000],
+  "pod_ladder": { "1000": [1, 2, 4, 8, 16, 32] }
+}
+JSON
+# 1:100k 2:200k(+100%) 4:205k(+2.5% NOISE DIP) 8:320k(+56%) 16:325k(+1.6%) 32:328k(+0.9%)
+# patience=1 would FALSELY plateau at rung 4 (pin 2). patience=2 rides through the
+# dip and pins the REAL knee at pods=8 once two consecutive small gains appear (16,32).
+declare -A CANNEDP=( [1]=100000 [2]=200000 [4]=205000 [8]=320000 [16]=325000 [32]=328000 )
+measure_pods() { echo "0 ${CANNEDP[$1]:-0}"; }
+tmpp="$(mktemp -d)/cells.json"
+walk_cell wal 1000 "$tmpp" "dp"
+python3 - "$tmpp" <<'PY'
+import sys, json
+cell = json.load(open(sys.argv[1]))["cells"]["1000"]
+assert cell["reason"] == "plateau", cell
+assert cell["pinned_pods"] == 8, cell   # NOT 2 (the noisy dip) — patience rode through it
+print("PASS walk_cell patience=2 ignores single noisy dip")
+PY
+
+# ── _confirm averages throughput over reps (replicated headline, not single shot) ──
+SAT_RESULT_ROOT="$(mktemp -d)"; export SAT_RESULT_ROOT
+SAT_MODE=wal; SAT_SC=1000
+# Mock fn: per-rep merged.json where BOTH latency and throughput differ by rep, so
+# the MEAN throughput (410000) and the EVEN-count MEDIAN latency (avg of the two
+# middles) are both unambiguous. rep1: p50=4 p99=8 thr=400000; rep2: p50=6 p99=12
+# thr=420000. Median of {4,6}=5, {8,12}=10 (NOT the lower-middle 4/8).
+measure_pods() {
+  local cd; cd="$(_sat_cell_dir "$1" "${SAT_REP}")"; mkdir -p "$cd"
+  local p50=4 p99=8 thr=400000
+  [ "${SAT_REP}" = "2" ] && { p50=6; p99=12; thr=420000; }
+  printf '{"p50_ms": %s, "p99_ms": %s, "aggregate_ops_per_sec": %s}\n' "$p50" "$p99" "$thr" > "$cd/merged.json"
+}
+conf="$(_confirm measure_pods wal 16 2)"
+python3 - "$conf" <<'PY'
+import sys
+p50, p99, thr = sys.argv[1].split()
+assert abs(float(thr) - 410000.0) < 1e-6, f"expected mean thr 410000, got {thr}"
+assert float(p50) == 5.0, f"even-count median p50 must average the two middles (5.0), got {p50}"
+assert float(p99) == 10.0, f"even-count median p99 must be 10.0, got {p99}"
+print("PASS _confirm averages throughput + even-count median")
+PY

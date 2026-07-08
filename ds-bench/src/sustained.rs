@@ -32,7 +32,8 @@ use crate::common::build_client;
 use crate::common::fill_payload;
 use crate::common::merge;
 use crate::common::new_histogram;
-use crate::common::record;
+use crate::common::record_micros;
+use crate::common::scheduled_send;
 use crate::common::summarize;
 use crate::multi_stream::ErrorCount;
 
@@ -250,18 +251,26 @@ async fn run_writer(
 ) {
     let epoch: u64 = 0;
     let mut seq: u64 = 0;
-    // Steady-rate interval: the core of the sustained workload.
-    let interval_duration = Duration::from_secs_f64(1.0 / rate_per_stream as f64);
-    let mut ticker = tokio::time::interval(interval_duration);
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut n: u64 = 0;
+    // Open-loop pacing: the n-th record has a fixed DUE instant (base + n/rate). We
+    // sleep until it, then measure latency from that scheduled time — NOT from when
+    // the loop got around to issuing the request. Under `interval` + Delay the loop
+    // silently fell behind when the server slowed and the overdue requests were
+    // never timed (coordinated omission), so a degrading server read as
+    // latency-stable — the exact property this workload claims to test.
+    let base = Instant::now();
     let mut local = new_histogram();
     let use_producer = matches!(backend.kind, ApiStyle::Ursula | ApiStyle::Durable);
     loop {
-        ticker.tick().await;
+        let scheduled = scheduled_send(base, n, rate_per_stream);
+        n += 1;
+        let now = Instant::now();
+        if now < scheduled {
+            tokio::time::sleep(scheduled - now).await;
+        }
         if Instant::now() >= deadline {
             break;
         }
-        let started = Instant::now();
         let producer = if use_producer {
             Some(Producer {
                 id: &producer_id,
@@ -286,7 +295,9 @@ async fn run_writer(
                 let status = r.status();
                 if status.is_success() {
                     ok.fetch_add(1, Ordering::Relaxed);
-                    record(&mut local, started);
+                    // Latency from the SCHEDULED time: overdue records (server
+                    // behind the offered rate) record their full queueing delay.
+                    record_micros(&mut local, scheduled.elapsed());
                     seq += 1;
                 } else if status.as_u16() == 503 || status.as_u16() == 429 {
                     bp.fetch_add(1, Ordering::Relaxed);

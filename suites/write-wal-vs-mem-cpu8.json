@@ -12,9 +12,10 @@
   },
   "saturation": {
     "plateau_pct": 8,
+    "patience": 2,
     "fleet_cpu": 2,
     "connections": 256,
-    "repeats": 1,
+    "repeats": 2,
     "warmup_secs": 15,
     "measure_secs": 25,
     "setup_concurrency": 16,

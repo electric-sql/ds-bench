@@ -65,6 +65,48 @@ class TestReport(unittest.TestCase):
         self.assertIn("| wal | wal-tailcache |", md)  # adjacent columns
 
 
+class TestHeadlineThroughput(unittest.TestCase):
+    """A NOT-saturated cell (ladder_exhausted, e.g. plateau_pct=-100 full sweeps)
+    must quote the walk MAX — the highest rate the server demonstrably reached, an
+    honest † lower bound — not its last/top rung, which is the over-saturation
+    asymptote (closed-loop queueing, "not the number we report")."""
+
+    def test_unsaturated_cell_reports_walk_max_not_top_rung(self):
+        root = tempfile.mkdtemp()
+        d = os.path.join(root, "wal"); os.makedirs(d)
+        # Throughput climbs then DIPS at the over-saturated top rung. Stored
+        # `throughput` is the top rung (480k); the walk max is 500k @ 32 pods.
+        json.dump({"cells": {"100000": {"stream_count": 100000, "throughput": 480000,
+            "p50": 40.0, "p99": 700.0, "pinned_pods": 64, "saturated": False, "status": "ok",
+            "reason": "ladder_exhausted",
+            "walk": [[16, 300000, 2.0, 5.0], [32, 500000, 5.0, 40.0], [64, 480000, 40.0, 700.0]],
+            "image_digest": "x"}}}, open(os.path.join(d, "cells.json"), "w"))
+        suite = os.path.join(tempfile.mkdtemp(), "s.json")
+        json.dump({"suite": "full-ladder", "modes": ["wal"], "stream_counts": [100000],
+                   "cluster": {}, "saturation": {}, "pod_ladder": {"100000": [16, 32, 64]}},
+                  open(suite, "w"))
+        rows, _ = report.build(suite, root)
+        r = rows[0]
+        self.assertEqual(r["throughput"], 500000, "unsaturated headline = walk max, not top rung 480k")
+        self.assertIs(r["saturated"], False)
+
+    def test_saturated_cell_keeps_confirmed_throughput(self):
+        root = tempfile.mkdtemp()
+        d = os.path.join(root, "wal"); os.makedirs(d)
+        # Saturated: keep the confirmed plateau throughput (47000), NOT the walk max.
+        json.dump({"cells": {"100000": {"stream_count": 100000, "throughput": 47000,
+            "p50": 4.5, "p99": 60.0, "pinned_pods": 8, "saturated": True, "status": "ok",
+            "reason": "plateau",
+            "walk": [[4, 45000, 2.0, 5.0], [8, 47000, 4.5, 60.0], [16, 90000, 66.0, 900.0]],
+            "image_digest": "x"}}}, open(os.path.join(d, "cells.json"), "w"))
+        suite = os.path.join(tempfile.mkdtemp(), "s.json")
+        json.dump({"suite": "sat", "modes": ["wal"], "stream_counts": [100000],
+                   "cluster": {}, "saturation": {}, "pod_ladder": {"100000": [4, 8, 16]}},
+                  open(suite, "w"))
+        rows, _ = report.build(suite, root)
+        self.assertEqual(rows[0]["throughput"], 47000, "saturated keeps confirmed plateau, not walk max")
+
+
 class TestSuiteStatus(unittest.TestCase):
     def _suite(self, server_configs=None):
         d = {"suite": "st", "modes": ["wal"], "stream_counts": [1, 10],

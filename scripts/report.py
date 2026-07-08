@@ -26,6 +26,20 @@ def knee_of(walk, frac=0.8):
     return {"pods": pick[0], "throughput": pick[1], "p50": pick[2], "p99": pick[3]}
 
 
+def headline_throughput(cell):
+    """The throughput to quote for a cell. A SATURATED cell uses its confirmed
+    (replicated) plateau throughput. A NOT-saturated cell (ladder_exhausted, e.g.
+    plateau_pct=-100 full sweeps) must NOT quote its stored top-rung value — that is
+    the over-saturation asymptote (closed-loop queueing, "not the number we report",
+    AGENTS.md §7). Quote the walk MAX instead: the highest rate the server
+    DEMONSTRABLY reached, an honest † lower bound on the ceiling."""
+    if cell.get("saturated"):
+        return cell.get("throughput")
+    thrs = [w[1] for w in (cell.get("walk") or [])
+            if len(w) >= 2 and isinstance(w[1], (int, float))]
+    return max(thrs) if thrs else cell.get("throughput")
+
+
 def build(suite_path, results_root):
     s = Suite.load(suite_path)
     rows = []
@@ -38,7 +52,7 @@ def build(suite_path, results_root):
         for c in cells_mod.all_cells(p):
             knee = knee_of(c.get("walk")) or {}
             rows.append({"mode": label, "stream_count": c["stream_count"],
-                         "pods": c.get("pinned_pods"), "throughput": c.get("throughput"),
+                         "pods": c.get("pinned_pods"), "throughput": headline_throughput(c),
                          "p50": c.get("p50"), "p99": c.get("p99"),
                          "knee_pods": knee.get("pods"), "knee_throughput": knee.get("throughput"),
                          "knee_p50": knee.get("p50"), "knee_p99": knee.get("p99"),

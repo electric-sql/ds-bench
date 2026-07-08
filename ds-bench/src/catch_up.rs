@@ -16,7 +16,7 @@ use crate::common::LatencySummary;
 use crate::common::build_client;
 use crate::common::fill_payload;
 use crate::common::new_histogram;
-use crate::common::record;
+use crate::common::record_micros;
 use crate::common::summarize;
 
 #[derive(Args, Debug, Clone)]
@@ -113,8 +113,9 @@ pub(crate) async fn catch_up_read_all(b: &Backend, base_idx: usize, stream: &str
             .get("stream-next-offset")
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
-        let body = resp.bytes().await.context("catch-up body")?;
-        total += body.len() as u64;
+        // Stream the body to count bytes without holding the whole (up to
+        // full-stream) response resident — the per-reader OOM at high fan-out.
+        total += crate::common::drain_len(resp).await.context("catch-up body")?;
         guard += 1;
         match next {
             Some(n) if !up && n != offset && guard < 100_000 => offset = n,
@@ -215,10 +216,15 @@ pub async fn run(args: CatchUpArgs) -> Result<CatchUpResult> {
             let result = catch_up_read_all(&backend, idx, &stream).await;
             match result {
                 Ok(bytes) => {
+                    // Measure elapsed BEFORE contending for the shared histogram
+                    // lock: in the stampede all clients finish near-simultaneously
+                    // and queue on this Mutex, and folding that lock-wait into the
+                    // sample inflated the per-client catch-up tail (not server time).
+                    let dur = t.elapsed();
                     ok.fetch_add(1, Ordering::Relaxed);
                     bytes_total.fetch_add(bytes, Ordering::Relaxed);
                     let mut h = hist.lock().await;
-                    record(&mut h, t);
+                    record_micros(&mut h, dur);
                 }
                 Err(e) => {
                     let msg = e.to_string();

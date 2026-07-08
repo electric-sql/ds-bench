@@ -22,7 +22,8 @@ use crate::common::LatencySummary;
 use crate::common::build_client;
 use crate::common::merge;
 use crate::common::new_histogram;
-use crate::common::record;
+use crate::common::record_micros;
+use crate::common::scheduled_send;
 use crate::common::summarize;
 use crate::sse_util::build_payload;
 use crate::sse_util::extract_send_ns_maybe_b64;
@@ -404,25 +405,28 @@ async fn run_writer_task(
 
     let epoch: u64 = 0;
     let mut seq: u64 = 0;
-    let interval = if rate > 0 {
-        Some(Duration::from_micros(1_000_000 / rate.max(1)))
-    } else {
-        None
-    };
-    let mut next_at = Instant::now();
+    let mut n: u64 = 0;
+    let base = Instant::now();
     let mut local = new_histogram();
     let use_producer = matches!(backend.kind, ApiStyle::Ursula | ApiStyle::Durable);
 
     while Instant::now() < deadline {
-        if let Some(iv) = interval {
+        // Open-loop pacing: the n-th append is DUE at base + n/rate. Sleep to it and
+        // time latency from that scheduled instant, so a server behind the offered
+        // rate records real queueing delay instead of the loop silently slowing
+        // (coordinated omission). rate==0 → unpaced (time from actual issue).
+        let scheduled = if rate > 0 {
+            let s = scheduled_send(base, n, rate);
             let now = Instant::now();
-            if now < next_at {
-                tokio::time::sleep(next_at - now).await;
+            if now < s {
+                tokio::time::sleep(s - now).await;
             }
-            next_at += iv;
-        }
+            s
+        } else {
+            Instant::now()
+        };
+        n += 1;
         let payload = build_payload(seq, payload_bytes);
-        let started = Instant::now();
         let producer = if use_producer {
             Some(Producer {
                 id: &producer_id,
@@ -447,7 +451,7 @@ async fn run_writer_task(
                 let status = r.status();
                 if status.is_success() {
                     ok.fetch_add(1, Ordering::Relaxed);
-                    record(&mut local, started);
+                    record_micros(&mut local, scheduled.elapsed());
                     seq += 1;
                 } else if status.as_u16() == 503 || status.as_u16() == 429 {
                     bp.fetch_add(1, Ordering::Relaxed);
@@ -549,9 +553,10 @@ async fn run_subscriber_task(
                     let lat_ns = now_ns.saturating_sub(sent_ns);
                     let us_u128 = lat_ns / 1000;
                     let us = us_u128.min(u128::from(local.high())) as u64;
-                    if us > 0 {
-                        let _ = local.record(us);
-                    }
+                    // Floor sub-µs deliveries to the histogram minimum rather than
+                    // dropping them, so the histogram count matches recv (harmonized
+                    // with the reads path; the fanout latency stays honest).
+                    let _ = local.record(us.max(local.low()));
                     recv.fetch_add(1, Ordering::Relaxed);
                     last_event_at = Instant::now();
                 } else if parse_sse_data(&raw).is_some() {
@@ -612,19 +617,27 @@ async fn run_reader_task(
     let mut next_at = Instant::now();
     let mut local = new_histogram();
     while Instant::now() < deadline {
-        if let Some(iv) = interval {
-            let now = Instant::now();
-            if now < next_at {
-                tokio::time::sleep(next_at - now).await;
+        // Open-loop pacing: time the replay from when it was DUE to start (next_at),
+        // not from when the loop issued it — a reader that falls behind the offered
+        // replay rate then records real backlog latency instead of the loop quietly
+        // slowing (coordinated omission). Unpaced (interval None) → time from issue.
+        let scheduled = match interval {
+            Some(iv) => {
+                let now = Instant::now();
+                if now < next_at {
+                    tokio::time::sleep(next_at - now).await;
+                }
+                let s = next_at;
+                next_at += iv;
+                s
             }
-            next_at += iv;
-        }
-        let t = Instant::now();
+            None => Instant::now(),
+        };
         match crate::catch_up::catch_up_read_all(&backend, base_idx, &stream).await {
             Ok(b) => {
                 ok.fetch_add(1, Ordering::Relaxed);
                 bytes.fetch_add(b, Ordering::Relaxed);
-                record(&mut local, t);
+                record_micros(&mut local, scheduled.elapsed());
             }
             Err(e) => {
                 let msg = e.to_string();

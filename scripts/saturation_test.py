@@ -131,5 +131,102 @@ class TestWindowAlignment(unittest.TestCase):
         self.assertEqual(r.stdout.split()[2], "1")
 
 
+class TestPlateauPin(unittest.TestCase):
+    """Noise-robust plateau detection. patience=1 reproduces the legacy single-shot
+    rule (plateau on the first sub-threshold gain, pin the rung before). patience>=2
+    requires that many CONSECUTIVE sub-threshold gains, so one unlucky-low rung no
+    longer triggers a false plateau (the reported ceiling stops early)."""
+
+    def w(self, pairs):
+        return [[p, t] for p, t in pairs]
+
+    def test_patience1_matches_legacy_pin(self):
+        # 12:400k 16:500k(+25%) 20:560k(+12%) 24:575k(+2.7%<=10%) -> plateau, pin 20.
+        walk = self.w([(12, 400000), (16, 500000), (20, 560000), (24, 575000)])
+        self.assertEqual(sat.plateau_pin(walk, 10, patience=1), [20, 560000])
+
+    def test_patience1_still_climbing_returns_none(self):
+        walk = self.w([(12, 400000), (16, 500000), (20, 560000)])  # last gain +12% > 10%
+        self.assertIsNone(sat.plateau_pin(walk, 10, patience=1))
+
+    def test_patience2_ignores_single_noisy_dip(self):
+        # 1:100k 2:200k(+100%) 4:205k(+2.5%<=10%) 8:320k(+56%) — a single low rung.
+        # patience=1 would FALSELY plateau at the +2.5% rung; patience=2 must not,
+        # because the next gain recovered (+56%).
+        walk = self.w([(1, 100000), (2, 200000), (4, 205000), (8, 320000)])
+        self.assertIsNone(sat.plateau_pin(walk, 10, patience=2))
+
+    def test_patience2_plateaus_on_two_consecutive(self):
+        # ...300k 315k(+5%) 320k(+1.6%): two consecutive <=10% -> plateau, pin the
+        # rung where climbing stopped (the one before the 2-gain window).
+        walk = self.w([(4, 300000), (8, 315000), (16, 320000)])
+        self.assertEqual(sat.plateau_pin(walk, 10, patience=2), [4, 300000])
+
+    def test_too_few_rungs_returns_none(self):
+        self.assertIsNone(sat.plateau_pin(self.w([(1, 100000)]), 10, patience=1))
+        self.assertIsNone(sat.plateau_pin(self.w([(1, 100000), (2, 200000)]), 10, patience=2))
+
+    def test_negative_plateau_pct_never_pins(self):
+        # The -100 sentinel forces the full ladder (gain > -1 always true).
+        walk = self.w([(1, 100000), (2, 100001), (4, 100002)])
+        self.assertIsNone(sat.plateau_pin(walk, -100, patience=1))
+
+
+class TestFleetCompleteness(unittest.TestCase):
+    """A short fleet (some pods preempted/OOMed and never uploaded) makes the
+    SUMMED throughput under-count the server. When the caller passes the expected
+    pod count, extract_throughput must reject a merge whose pods_reported is
+    below it — same thr=0 → error routing as the windows_aligned guard."""
+
+    def _write(self, obj):
+        p = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w")
+        p.write(json.dumps(obj)); p.close()
+        return p.name
+
+    def test_short_fleet_zero_throughput(self):
+        p = self._write({"aggregate_ops_per_sec": 500000.0, "pods_reported": 6})
+        try:
+            self.assertEqual(sat.extract_throughput(p, expect_pods=8), 0.0)
+        finally:
+            os.unlink(p)
+
+    def test_complete_fleet_passes_through(self):
+        p = self._write({"aggregate_ops_per_sec": 500000.0, "pods_reported": 8})
+        try:
+            self.assertAlmostEqual(sat.extract_throughput(p, expect_pods=8), 500000.0)
+        finally:
+            os.unlink(p)
+
+    def test_no_pods_reported_field_back_compat(self):
+        # Old merged.json (no pods_reported) must keep working even with expect set.
+        p = self._write({"aggregate_ops_per_sec": 500000.0})
+        try:
+            self.assertAlmostEqual(sat.extract_throughput(p, expect_pods=8), 500000.0)
+        finally:
+            os.unlink(p)
+
+    def test_no_expect_pods_ignores_count(self):
+        # Without an expected count, pods_reported is informational only.
+        p = self._write({"aggregate_ops_per_sec": 500000.0, "pods_reported": 6})
+        try:
+            self.assertAlmostEqual(sat.extract_throughput(p), 500000.0)
+        finally:
+            os.unlink(p)
+
+    def test_cli_expect_pods_flag_zeroes_short_fleet(self):
+        cli = TestCLI()
+        p = tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w")
+        p.write(json.dumps({"aggregate_ops_per_sec": 500000.0, "pods_reported": 6})); p.close()
+        try:
+            r = subprocess.run(
+                [sys.executable, os.path.join(HERE, "saturation.py"),
+                 "--merged", p.name, "--prev-thr", "0", "--cpu", "50", "--cores", "4",
+                 "--expect-pods", "8"],
+                capture_output=True, text=True)
+            self.assertEqual(float(r.stdout.split()[1]), 0.0, r.stdout)
+        finally:
+            os.unlink(p.name)
+
+
 if __name__ == "__main__":
     unittest.main()

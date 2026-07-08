@@ -237,9 +237,10 @@ async fn run_subscriber(
                     let lat_ns = now_ns.saturating_sub(sent_ns);
                     let us_u128 = lat_ns / 1000;
                     let us = us_u128.min(u128::from(local.high())) as u64;
-                    if us > 0 {
-                        let _ = local.record(us);
-                    }
+                    // Floor sub-µs deliveries to the histogram minimum rather than
+                    // dropping them, so the histogram count matches recv (harmonized
+                    // with the reads path).
+                    let _ = local.record(us.max(local.low()));
                     recv.fetch_add(1, Ordering::Relaxed);
                     last_event_at = Instant::now();
                 }

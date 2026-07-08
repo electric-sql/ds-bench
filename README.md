@@ -4,7 +4,7 @@ A reproducible, single-node benchmark harness for durable-stream servers: declar
 
 **Currently supported implementations:** **durable-streams** (Rust), the **Node.js reference server** (`@durable-streams/server`), **ursula**, and **S2 (s2lite)**.
 
-Results from a full-matrix run across them: **[`results-2026-06-30/REPORT.md`](results-2026-06-30/REPORT.md)** (an earlier baseline is archived under [`results-2026-06-25/`](results-2026-06-25/)).
+Results from a full-matrix run across them: **[`results-2026-06-30/REPORT.md`](results-2026-06-30/REPORT.md)** (an earlier baseline is archived under [`results-2026-06-25/`](results-2026-06-25/)). ⚠️ **These dated snapshots predate the fleet start barrier and the knee-vs-saturation latency methodology** ([`AGENTS.md` §7](AGENTS.md)); their write ceilings are upper bounds and their latency is saturation-rung queueing. See the `write-wal-vs-mem-*` reference points in `AGENTS.md` §7 for methodology-current numbers.
 
 ## How it works
 
@@ -66,7 +66,7 @@ Adding another implementation comes down to a deployment manifest, a `ds-bench` 
 
 - **Run** the write-throughput suites individually (`scripts/bench suites/run-<system>.json run`) or all at once with `scripts/run-matrix.sh` (≤3 GKE clusters in parallel); the read-scalability modes run with `scripts/bench suites/reads-<mode>.json run`.
 - **Raw data:** each run writes its per-cell data under `results/<suite>/` — the `cells.json` result-and-resume store, the merged HDR histograms, and the sidecar `samples.csv`.
-- **Published dataset:** the report and curated per-cell data for a run are snapshotted into a dated directory. The latest is **[`results-2026-06-30/`](results-2026-06-30/)** (full matrix on the durable-streams reactor build, with read-scalability); the **[`results-2026-06-25/`](results-2026-06-25/)** baseline is archived alongside it. Each snapshot carries a `REPORT.md` and a `PROVENANCE.md` (commit hashes, image digests, cell-level status).
+- **Published dataset:** the report and curated per-cell data for a run are snapshotted into a dated directory. The latest is **[`results-2026-06-30/`](results-2026-06-30/)** (full matrix on the durable-streams reactor build, with read-scalability); the **[`results-2026-06-25/`](results-2026-06-25/)** baseline is archived alongside it. Each snapshot carries a `REPORT.md` and a `PROVENANCE.md` (commit hashes, image digests, cell-level status). **⚠️ Both dated snapshots predate the current methodology** (fleet start barrier + window-alignment check, and knee-vs-saturation latency — [`AGENTS.md` §7](AGENTS.md)): their write throughput is an upper bound (unbarriered per-pod-rate sums can multiply-count capacity) and their quoted latency is saturation-rung queueing, not service latency. A methodology-current full-matrix snapshot has not yet been re-published; until then treat these as provenance, and see `AGENTS.md` §7 for corrected reference points.
 - **Regenerate reports** (purely from local files, no cluster): `scripts/bench suites/<suite>.json report` for most workloads, `python3 scripts/catchup_report.py suites/catchup-*.json` for catch-up, and `scripts/run-sse.sh` for SSE.
 
 ## Tests

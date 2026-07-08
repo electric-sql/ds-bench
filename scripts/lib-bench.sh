@@ -327,15 +327,24 @@ fetch_coordinator_merged() {
   echo "    WARN: coordinator logs unavailable after retries → wrote error marker"
 }
 
-# compute_server_cpu_pct SAMPLES_CSV — cpu_pct = (Δticks/CLK_TCK)/Δs ×100. CLK_TCK=100.
+# compute_server_cpu_pct SAMPLES_CSV [START_MS END_MS] — cpu_pct =
+# (Δticks/CLK_TCK)/Δs ×100. CLK_TCK=100. ts_ms (col 1) is unix wall-clock ms.
+# With START_MS/END_MS (>0), only samples inside [START_MS, END_MS] count, so the
+# figure reflects the LOADED measure window (pass the fleet's concurrent measure
+# interval) instead of the whole cell diluted by idle setup/warmup/settle/upload —
+# which understated "server CPU% at saturation". Omit the bounds for whole-cell.
 compute_server_cpu_pct() {
-  local csv="$1"
-  awk -F',' '
+  local csv="$1" start_ms="${2:-0}" end_ms="${3:-0}"
+  awk -F',' -v start="$start_ms" -v end="$end_ms" '
     NR==1 { next }
-    NR==2 { t0=$1; c0=$3; next }
-    { t1=$1; c1=$3 }
+    {
+      ts=$1; ticks=$3
+      if (start>0 && (ts<start || ts>end)) next    # scope to the measure window
+      if (t0=="") { t0=ts; c0=ticks }              # first sample in scope
+      t1=ts; c1=ticks                              # last sample in scope
+    }
     END {
-      if (t1=="" || t0==t1) { print "0"; exit }
+      if (t0=="" || t0==t1) { print "0"; exit }
       elapsed_s = (t1 - t0) / 1000.0
       delta_ticks = c1 - c0
       clk_tck = 100
@@ -387,16 +396,31 @@ _run_cell_one() {
   } >&2
   local cpu_pct="0"
   if [ -f "${cell_dir}/samples.csv" ]; then
-    cpu_pct="$(compute_server_cpu_pct "${cell_dir}/samples.csv")"
+    # Scope CPU% to the fleet's CONCURRENT measure window when the merge exposes it
+    # (measure_overlap_{start,end}_unix_ms); else fall back to whole-cell. Keeps
+    # "server CPU% at saturation" from being diluted by idle setup/warmup/upload
+    # samples in the sidecar CSV.
+    local cpu_lo cpu_hi
+    cpu_lo="$(grep -oE '"measure_overlap_start_unix_ms"[: ]*[0-9]+' "${cell_dir}/merged.json" 2>/dev/null | grep -oE '[0-9]+$' | head -1)"
+    cpu_hi="$(grep -oE '"measure_overlap_end_unix_ms"[: ]*[0-9]+' "${cell_dir}/merged.json" 2>/dev/null | grep -oE '[0-9]+$' | head -1)"
+    if [ -n "$cpu_lo" ] && [ -n "$cpu_hi" ]; then
+      cpu_pct="$(compute_server_cpu_pct "${cell_dir}/samples.csv" "$cpu_lo" "$cpu_hi")"
+    else
+      cpu_pct="$(compute_server_cpu_pct "${cell_dir}/samples.csv")"
+    fi
   fi
   # saturation.py prints "<reason> <thr> <aligned> <p50> <p99>"; aligned=0 means
   # the fleet's measure windows didn't overlap (thr is already forced to 0 in
   # that case) — pass it through so the walker can label the rung
   # misaligned_windows. p50/p99 are the rung's merged latency (ms, "None" when
   # absent) so the walk can locate the pre-saturation knee.
+  # --expect-pods = PARALLELISM: a merge from fewer pods (Spot preemption / OOM
+  # dropped a pod that never uploaded) UNDER-counts the summed throughput, so
+  # saturation.py forces thr=0 and the rung records as an error rather than a
+  # deflated (falsely-plateaued) number. stderr carries the concrete reason.
   local thr aligned p50 p99
   read -r thr aligned p50 p99 < <(python3 "${REPO_ROOT}/scripts/saturation.py" --merged "${cell_dir}/merged.json" \
-          --prev-thr 0 --cpu "$cpu_pct" --cores 1 2>/dev/null | awk '{print $2, $3, $4, $5}')
+          --prev-thr 0 --cpu "$cpu_pct" --cores 1 --expect-pods "${PARALLELISM:-1}" 2>/dev/null | awk '{print $2, $3, $4, $5}')
   echo "${cpu_pct} ${thr:-0} ${aligned:-1} ${p50:-None} ${p99:-None}"
 }
 

@@ -22,6 +22,7 @@ use crate::common::Counts;
 use crate::common::LatencySummary;
 use crate::common::build_client;
 use crate::common::fill_payload;
+use crate::common::fill_payload_text;
 use crate::common::merge;
 use crate::common::new_histogram;
 use crate::common::record;
@@ -246,7 +247,13 @@ pub async fn run(args: MultiStreamArgs) -> Result<MultiStreamResult> {
     // leader's go time arrives, so all measure windows cover the same wall time.
     crate::barrier::sync_to_fleet_start().await;
 
-    let payload = Arc::new(fill_payload(args.payload_bytes, 0xC0FFEE));
+    // S2 embeds the body in a JSON string (from_utf8_lossy) — printable text keeps
+    // the record length == payload_bytes; durable/ursula take raw octet bytes.
+    let payload = Arc::new(if backend.kind == ApiStyle::S2 {
+        fill_payload_text(args.payload_bytes, 0xC0FFEE)
+    } else {
+        fill_payload(args.payload_bytes, 0xC0FFEE)
+    });
     let ok = Arc::new(AtomicU64::new(0));
     let ok_all = Arc::new(AtomicU64::new(0));
     let bp = Arc::new(AtomicU64::new(0));
@@ -368,19 +375,35 @@ async fn run_pool(
     // Precompute the request body once (constant across appends). batch>1 → a JSON
     // array of `batch` records (server flattens to N records under one lock/fsync).
     let (body, content_type, recs_per_post): (Arc<Vec<u8>>, &'static str, u64) = if batch > 1 {
-        let rec = format!("\"{}\"", "x".repeat(args.payload_bytes));
-        let mut s = String::with_capacity((rec.len() + 1) * batch + 2);
+        // High-entropy printable content (not "x".repeat(n)): an all-'x' record is
+        // artificially compressible, so any server that compresses the WAL/body
+        // would post a misleadingly high batch ceiling. Each of the N records is
+        // seeded distinctly so the body is incompressible ACROSS records too (a
+        // repeated identical record would still LZ-collapse). Each is payload_bytes.
+        let per_rec = args.payload_bytes + 3; // quotes + comma
+        let mut s = String::with_capacity(per_rec * batch + 2);
         s.push('[');
         for i in 0..batch {
             if i > 0 {
                 s.push(',');
             }
-            s.push_str(&rec);
+            let rec_bytes = fill_payload_text(args.payload_bytes, 0xC0FFEE ^ i as u64);
+            s.push('"');
+            s.push_str(&String::from_utf8_lossy(&rec_bytes));
+            s.push('"');
         }
         s.push(']');
         (Arc::new(s.into_bytes()), "application/json", batch as u64)
     } else {
-        (Arc::new(fill_payload(args.payload_bytes, 0xC0FFEE)), "application/octet-stream", 1)
+        // S2 wraps the body in a JSON string via from_utf8_lossy — random bytes
+        // would be re-encoded to a DIFFERENT length. Give S2 printable text of
+        // exactly payload_bytes; durable/ursula take raw octet-stream bytes.
+        let raw = if backend.kind == ApiStyle::S2 {
+            fill_payload_text(args.payload_bytes, 0xC0FFEE)
+        } else {
+            fill_payload(args.payload_bytes, 0xC0FFEE)
+        };
+        (Arc::new(raw), "application/octet-stream", 1)
     };
     let ok = Arc::new(AtomicU64::new(0));
     let ok_all = Arc::new(AtomicU64::new(0));
