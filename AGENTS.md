@@ -411,6 +411,13 @@ NVMe box**, so you size the fleet to the bottleneck instead of guessing.
     GUARANTEED=1 = requests==limits everywhere + integer server CPU) measured
     356k @10k / 328k @100k vs 286k/272k on shared cores, same layout/image/args.
     Now that wal isn't fsync-bound, bind the server's cores for wal benches.
+  - **≥500k streams: add STREAM lanes (wal-streamlanes-1m, PR #4705).** On one
+    data lane the checkpoint's dirty-file writeback saturates the device
+    (syncfs 60-74s at 1M; 68k ops/s). 3 data lanes + 3 WAL lanes
+    (SERVER_MANIFEST=gke/durable-streams-splitlane3x3-guaranteed.yaml,
+    --stream-lanes 3 --wal-shards 3) → 374k/285k/212k @100k/500k/1M.
+    Split the 6 devices by cardinality: writes-per-file amplification means the
+    DATA side needs the lanes at high stream counts, not the WAL side.
   - **Checkpoint size trigger ≈ free checkpointing (wal-sizetrigger, PR #4704).**
     `--wal-checkpoint-wal-bytes 1073741824` (+60s fallback interval) hits the
     checkpoint-off ceiling (303k vs 306k @100k) while bounding replay to ≤1 GiB

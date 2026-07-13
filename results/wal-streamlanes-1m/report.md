@@ -38,7 +38,7 @@ _@≤80% load = the largest ladder rung at ≤80% of peak throughput — the ser
 
 ## Findings
 
-_TODO: written by hand on top of the generated data._
+3 stream lanes + 3 WAL lanes (--stream-lanes 3, PR #4705) breaks the 1M writeback wall: 374.1k @100k (parity with the 5-WAL-lane stacked config), 284.6k @500k (+13% vs 1 data lane), 211.7k @1M (3.1x vs 68k). Checkpoint syncfs fell 60-74s -> 5.7-11.2s with MORE touched files per shard. Residual 100k->1M slope (-43%) = per-file writeback amplification vs total data-lane capacity; add lanes or see #4695. fd note: ~1.006M fds at 1M streams (96% of ceiling) -> #4706.
 
 ## Caveats
 
