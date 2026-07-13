@@ -1,0 +1,76 @@
+[
+  {
+    "mode": "baseline",
+    "stream_count": 50000,
+    "pods": 4,
+    "throughput": 42749.3,
+    "p50": 7.447,
+    "p99": 177.535,
+    "knee_pods": 2,
+    "knee_throughput": 27296.3,
+    "knee_p50": 5.539,
+    "knee_p99": 126.719,
+    "pod_mem_mb": 249,
+    "pod_mem_p50_mb": 237,
+    "saturated": true,
+    "status": "ok",
+    "reason": "plateau",
+    "walk": [
+      [
+        2,
+        27296.3,
+        5.539,
+        126.719
+      ],
+      [
+        4,
+        49559.2,
+        6.655,
+        157.439
+      ],
+      [
+        6,
+        48453.6,
+        9.727,
+        186.879
+      ]
+    ]
+  },
+  {
+    "mode": "batched-mw",
+    "stream_count": 50000,
+    "pods": 4,
+    "throughput": 49211.6,
+    "p50": 6.783,
+    "p99": 145.279,
+    "knee_pods": 2,
+    "knee_throughput": 39354.7,
+    "knee_p50": 4.555,
+    "knee_p99": 76.351,
+    "pod_mem_mb": 250,
+    "pod_mem_p50_mb": 239,
+    "saturated": true,
+    "status": "ok",
+    "reason": "plateau",
+    "walk": [
+      [
+        2,
+        39354.7,
+        4.555,
+        76.351
+      ],
+      [
+        4,
+        49414.50000000001,
+        7.011,
+        133.887
+      ],
+      [
+        6,
+        53682.600000000006,
+        9.303,
+        151.039
+      ]
+    ]
+  }
+]

@@ -1,0 +1,61 @@
+{
+  "suite": "wal-decomp-lane0",
+  "_doc": "Cardinality-cliff DECOMPOSITION on true NVMe, killing a newly-found confound: stream data files live at <data-dir>/streams/ = the BASE /data volume, which on the raw-block multilane cluster is a plain emptyDir on the PD BOOT DISK — so every prior multilane run had the WAL commit path on NVMe but the checkpoint's O(N)-file writeback on a network PD. Here every arm appends '--data-dir /data/wal/0' (last --data-dir wins in main.rs arg parsing) so streams/ AND wal/ all sit on NVMe lane 0 (one fs; shard count is concurrency only, not lanes). Arms decompose the wal-vs-memory gap: memory (no wal, no fsync ever) | nofsync (full wal machinery, --unsafe-disable-fsync: no fsync at all) | ckpt-off (wal + commit fdatasync, checkpoint deferred 1h = off within a bench window) | ref-3s (normal syncfs @3s = PR #4697 config, re-measured on real NVMe). Verdicts: nofsync ~= memory => wal machinery is free, gap is all fsync. ckpt-off ~= nofsync => commit fdatasync is cheap (group-committed), gap is all checkpoint. ref-3s @100k >> the ~10-18k measured with streams-on-PD => the 'residual cliff' in PR #4697 was substantially the boot-disk artifact. Image :ckptoff is built from the perf/wal-lazy-checkpoint worktree (has --wal-checkpoint-interval-ms, --unsafe-disable-fsync, syncfs). Run with IMG_SERVER=europe-west1-docker.pkg.dev/vaxine/ds-bench/durable-streams:ckptoff MULTILANE=1 SERVER_LOCAL_SSD_BLOCK=1 SPOT_SERVER=1.",
+  "cluster": {
+    "server_machine": "c4d-standard-64-lssd",
+    "server_cpus": 8,
+    "client_machine": "n2d-standard-32",
+    "client_nodes": 3,
+    "cluster_name": "bench-multilane",
+    "zone": "europe-west4-b",
+    "region": "europe-west4"
+  },
+  "saturation": {
+    "plateau_pct": 8,
+    "patience": 2,
+    "fleet_cpu": 2,
+    "connections": 256,
+    "repeats": 1,
+    "warmup_secs": 12,
+    "measure_secs": 20,
+    "setup_concurrency": 16,
+    "payload_bytes": 256
+  },
+  "modes": [
+    "wal"
+  ],
+  "server_configs": {
+    "wal": [
+      {
+        "label": "memory",
+        "args": "--durability memory --worker-threads 8 --server-stats 3 --data-dir /data/wal/0"
+      },
+      {
+        "label": "nofsync",
+        "args": "--wal-shards 6 --unsafe-disable-fsync on --worker-threads 8 --wal-stats 3 --server-stats 3 --data-dir /data/wal/0"
+      },
+      {
+        "label": "ckpt-off",
+        "args": "--wal-shards 6 --wal-checkpoint-syncfs on --wal-checkpoint-interval-ms 3600000 --worker-threads 8 --wal-stats 3 --server-stats 3 --data-dir /data/wal/0"
+      },
+      {
+        "label": "ref-3s",
+        "args": "--wal-shards 6 --wal-checkpoint-syncfs on --worker-threads 8 --wal-stats 3 --server-stats 3 --data-dir /data/wal/0"
+      }
+    ]
+  },
+  "stream_counts": [
+    10000,
+    100000
+  ],
+  "pod_ladder": {
+    "10000": [
+      4,
+      8
+    ],
+    "100000": [
+      2,
+      4
+    ]
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "cells": {
+    "10000": {
+      "stream_count": 10000,
+      "image_digest": "b5aaa0ca74a8",
+      "walk": [
+        [
+          2,
+          288573.2,
+          1.468,
+          8.279
+        ],
+        [
+          4,
+          292450.15,
+          3.109,
+          11.903
+        ],
+        [
+          8,
+          0.0,
+          0.0,
+          0.0
+        ]
+      ],
+      "pinned_pods": null,
+      "throughput": 0.0,
+      "p50": null,
+      "p99": null,
+      "pod_mem_mb": null,
+      "saturated": false,
+      "status": "error",
+      "reason": "creation_choke"
+    },
+    "100000": {
+      "stream_count": 100000,
+      "image_digest": "b5aaa0ca74a8",
+      "walk": [
+        [
+          2,
+          14105.35,
+          1.621,
+          1198.079
+        ],
+        [
+          4,
+          11892.1,
+          3.803,
+          1565.695
+        ],
+        [
+          8,
+          8989.0,
+          187.007,
+          1298.431
+        ]
+      ],
+      "pinned_pods": 2,
+      "throughput": 11012.0,
+      "p50": 1.752,
+      "p99": 1217.535,
+      "pod_mem_mb": 0.0,
+      "saturated": true,
+      "status": "ok",
+      "reason": "plateau"
+    }
+  }
+}

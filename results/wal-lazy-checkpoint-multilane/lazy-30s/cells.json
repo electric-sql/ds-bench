@@ -1,0 +1,68 @@
+{
+  "cells": {
+    "10000": {
+      "stream_count": 10000,
+      "image_digest": "822a4f41ce43",
+      "walk": [
+        [
+          2,
+          274731.75,
+          1.477,
+          11.967
+        ],
+        [
+          4,
+          289023.25,
+          3.127,
+          13.775
+        ],
+        [
+          8,
+          262443.75,
+          6.463,
+          44.543
+        ]
+      ],
+      "pinned_pods": 2,
+      "throughput": 291903.0,
+      "p50": 1.47,
+      "p99": 6.807,
+      "pod_mem_mb": 282.0,
+      "saturated": true,
+      "status": "ok",
+      "reason": "plateau"
+    },
+    "100000": {
+      "stream_count": 100000,
+      "image_digest": "822a4f41ce43",
+      "walk": [
+        [
+          2,
+          13614.25,
+          1.437,
+          2015.231
+        ],
+        [
+          4,
+          6778.85,
+          6.639,
+          3770.367
+        ],
+        [
+          8,
+          9256.1,
+          113.791,
+          1354.751
+        ]
+      ],
+      "pinned_pods": 8,
+      "throughput": 9256.1,
+      "p50": null,
+      "p99": null,
+      "pod_mem_mb": 0.0,
+      "saturated": false,
+      "status": "ok",
+      "reason": "ladder_exhausted"
+    }
+  }
+}

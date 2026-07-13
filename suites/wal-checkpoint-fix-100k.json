@@ -1,0 +1,48 @@
+{
+  "suite": "wal-checkpoint-fix-100k",
+  "_doc": "MINIMAL decisive rerun of the checkpoint-fix A/B (the full wal-checkpoint-fix-ab was aborted before the fix arms reached 100k). Only the missing measurement: syncfs and both at 100k streams, ladder [2,4]. Known reference points from the aborted run: baseline@100k = 10.4k ops/s at p2 degrading to 7.3k at p8 (the cliff); baseline/stagger@10k ~107-111k (fixes don't regress below the cliff). Verdict rule: if syncfs/both peak >> 10.4k the fix works. Requires MULTILANE=1 SERVER_LOCAL_SSD_BLOCK=1 SPOT_SERVER=1. Image: europe-west1-docker.pkg.dev/vaxine/ds-bench/durable-streams:dev (digest 2ebed436* = perf/wal-syncfs @ 394375168, both flags compiled in, default off).",
+  "cluster": {
+    "server_machine": "c4d-standard-64-lssd",
+    "server_cpus": 8,
+    "client_machine": "n2d-standard-32",
+    "client_nodes": 3,
+    "cluster_name": "bench-multilane",
+    "zone": "europe-west4-b",
+    "region": "europe-west4"
+  },
+  "saturation": {
+    "plateau_pct": 8,
+    "patience": 2,
+    "fleet_cpu": 2,
+    "connections": 256,
+    "repeats": 1,
+    "warmup_secs": 12,
+    "measure_secs": 20,
+    "setup_concurrency": 16,
+    "payload_bytes": 256
+  },
+  "modes": [
+    "wal"
+  ],
+  "server_configs": {
+    "wal": [
+      {
+        "label": "syncfs",
+        "args": "--wal-shards 6 --wal-checkpoint-syncfs on --worker-threads 8 --wal-stats 3 --server-stats 3"
+      },
+      {
+        "label": "both",
+        "args": "--wal-shards 6 --wal-checkpoint-stagger on --wal-checkpoint-syncfs on --worker-threads 8 --wal-stats 3 --server-stats 3"
+      }
+    ]
+  },
+  "stream_counts": [
+    100000
+  ],
+  "pod_ladder": {
+    "100000": [
+      2,
+      4
+    ]
+  }
+}

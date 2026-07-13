@@ -1,0 +1,39 @@
+[
+  {
+    "mode": "wal-baseline",
+    "stream_count": 50000,
+    "pods": 6,
+    "throughput": 50662.1,
+    "p50": null,
+    "p99": null,
+    "knee_pods": 2,
+    "knee_throughput": 32697.800000000003,
+    "knee_p50": 4.495,
+    "knee_p99": 128.959,
+    "pod_mem_mb": 252,
+    "pod_mem_p50_mb": 242,
+    "saturated": false,
+    "status": "ok",
+    "reason": "ladder_exhausted",
+    "walk": [
+      [
+        2,
+        32697.800000000003,
+        4.495,
+        128.959
+      ],
+      [
+        4,
+        45841.4,
+        6.711,
+        187.263
+      ],
+      [
+        6,
+        50662.1,
+        9.407,
+        201.855
+      ]
+    ]
+  }
+]

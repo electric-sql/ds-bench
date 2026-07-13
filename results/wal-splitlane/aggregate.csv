@@ -1,0 +1,7 @@
+mode,stream_count,pods,throughput,p50,p99,knee_pods,knee_throughput,knee_p50,knee_p99,pod_mem_mb,pod_mem_p50_mb,saturated,status,reason
+ckpt-off,10000,8,309316.80000000005,,,4,309316.80000000005,3.129,7.943,291,204,False,ok,ladder_exhausted
+nofsync,10000,8,269793.2,,,4,260584.6,3.135,8.831,233,190,False,ok,ladder_exhausted
+ref-3s,10000,8,293223.55,,,4,293223.55,3.135,16.447,229,176,False,ok,ladder_exhausted
+ckpt-off,100000,2,305989.0,1.478,6.599,2,296232.25,1.518,6.399,689,598,True,ok,plateau
+nofsync,100000,2,263776.0,1.43,7.523,2,259764.05,1.447,7.371,629,584,True,ok,plateau
+ref-3s,100000,2,271574.0,1.512,6.531,2,269027.80000000005,1.513,6.671,657,580,True,ok,plateau

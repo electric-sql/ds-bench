@@ -1,0 +1,57 @@
+{
+  "suite": "wal-syncfs-nvme",
+  "_doc": "Remote NVMe A/B for cardinality-cliff #1: checkpoint durability via one syncfs() barrier (--wal-checkpoint-syncfs on) vs the per-stream fdatasync loop (baseline), on Titanium NVMe (c4d-standard-16-lssd, 8 vCPU). This is the environment where the optimization's premise holds: per-file fdatasync is an expensive ~1ms hardware barrier, so the checkpoint's O(N_touched) storm (measured ~1.4s/shard at 200k) steals device budget from commits. syncfs collapses that to ONE barrier. Tests at 200k AND 500k streams (the storm is worst at 500k). Same shards(4)/cpu(8)/conns(256) as the wal-shard-sweep baseline so numbers are comparable. If syncfs raises throughput here, merge the flag.",
+  "cluster": {
+    "server_machine": "c4d-standard-16-lssd",
+    "server_cpus": 8,
+    "client_machine": "n2d-standard-32",
+    "client_nodes": 3,
+    "cluster_name": "bench-syncfs",
+    "zone": "europe-west4-b",
+    "region": "europe-west4"
+  },
+  "saturation": {
+    "plateau_pct": 8,
+    "patience": 2,
+    "fleet_cpu": 2,
+    "connections": 256,
+    "repeats": 1,
+    "warmup_secs": 12,
+    "measure_secs": 20,
+    "setup_concurrency": 16,
+    "payload_bytes": 256
+  },
+  "modes": [
+    "wal"
+  ],
+  "server_configs": {
+    "wal": [
+      {
+        "label": "baseline",
+        "args": "--wal-shards 4 --worker-threads 8 --wal-stats 3 --server-stats 3"
+      },
+      {
+        "label": "syncfs",
+        "args": "--wal-shards 4 --worker-threads 8 --wal-checkpoint-syncfs on --wal-stats 3 --server-stats 3"
+      }
+    ]
+  },
+  "stream_counts": [
+    200000,
+    500000
+  ],
+  "pod_ladder": {
+    "200000": [
+      2,
+      4,
+      8,
+      12
+    ],
+    "500000": [
+      2,
+      4,
+      8,
+      12
+    ]
+  }
+}

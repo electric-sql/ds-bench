@@ -1,0 +1,9 @@
+mode,stream_count,pods,throughput,p50,p99,knee_pods,knee_throughput,knee_p50,knee_p99,pod_mem_mb,pod_mem_p50_mb,saturated,status,reason
+lazy-syncfs-30s,20000,4,100066.25,,,2,68584.25,3.223,9.447,129,118,False,ok,ladder_exhausted
+lazy-syncfs-60s,20000,4,98228.375,,,2,80041.5,3.133,5.231,128,118,False,ok,ladder_exhausted
+ref-baseline-3s,20000,4,77092.75,,,2,54549.0,4.503,9.463,128,106,False,ok,ladder_exhausted
+ref-syncfs-3s,20000,4,88036.75,,,2,60107.625,3.461,12.295,134,123,False,ok,ladder_exhausted
+lazy-syncfs-30s,50000,4,72479.5,5.411,55.775,2,58209.0,4.155,9.391,278,239,True,ok,plateau
+lazy-syncfs-60s,50000,6,89838.75,,,2,59949.5,3.945,11.079,281,242,False,ok,ladder_exhausted
+ref-baseline-3s,50000,4,61508.1,6.503,30.639,2,21584.5,8.655,62.879,262,239,True,ok,plateau
+ref-syncfs-3s,50000,4,50372.9,5.883,136.319,2,49339.875,3.859,19.711,247,238,True,ok,plateau

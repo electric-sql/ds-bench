@@ -1,0 +1,6 @@
+mode,stream_count,pods,throughput,p50,p99,knee_pods,knee_throughput,knee_p50,knee_p99,pod_mem_mb,pod_mem_p50_mb,saturated,status,reason
+wal-s1,200000,8,66183.7,27.807,96.191,1,54072.85,4.179,21.679,1088,1055,True,ok,plateau
+wal-s16,200000,8,71106.2,28.575,59.103,2,48790.9,10.223,21.247,1073,1048,True,ok,plateau
+wal-s24,200000,8,64311.2,30.319,66.239,4,51795.95,18.815,46.047,1100,1063,True,ok,plateau
+wal-s4,200000,8,66530.6,27.647,84.735,4,60279.2,14.743,50.495,1092,1076,True,ok,plateau
+wal-s8,200000,4,67487.9,14.599,40.223,2,55098.649999999994,8.367,31.855,1041,1020,True,ok,plateau

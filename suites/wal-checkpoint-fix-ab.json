@@ -1,0 +1,63 @@
+{
+  "suite": "wal-checkpoint-fix-ab",
+  "_doc": "A/B of the cardinality-cliff checkpoint fixes on the 6-lane NVMe cluster (bench-multilane, one physical NVMe per shard, MULTILANE=1). All configs use --wal-shards 6 (6 lanes). Compares: baseline (synchronized checkpoint wave = current), stagger (--wal-checkpoint-stagger on: round-robin per-shard checkpoints so only one device storms at a time), syncfs (--wal-checkpoint-syncfs on: one syncfs barrier per shard-device instead of O(N) per-stream fdatasync), and both. The baseline arm is also the s6@100k point the shard sweep was heading toward. Hypothesis: baseline stays ~10-11k at 100k (all lanes stall together); stagger and/or syncfs recover throughput by de-conflicting or shrinking the checkpoint storm. Requires MULTILANE=1 SERVER_LOCAL_SSD_BLOCK=1 SPOT_SERVER=1.",
+  "cluster": {
+    "server_machine": "c4d-standard-64-lssd",
+    "server_cpus": 8,
+    "client_machine": "n2d-standard-32",
+    "client_nodes": 3,
+    "cluster_name": "bench-multilane",
+    "zone": "europe-west4-b",
+    "region": "europe-west4"
+  },
+  "saturation": {
+    "plateau_pct": 8,
+    "patience": 2,
+    "fleet_cpu": 2,
+    "connections": 256,
+    "repeats": 1,
+    "warmup_secs": 12,
+    "measure_secs": 20,
+    "setup_concurrency": 16,
+    "payload_bytes": 256
+  },
+  "modes": [
+    "wal"
+  ],
+  "server_configs": {
+    "wal": [
+      {
+        "label": "baseline",
+        "args": "--wal-shards 6 --worker-threads 8 --wal-stats 3 --server-stats 3"
+      },
+      {
+        "label": "stagger",
+        "args": "--wal-shards 6 --wal-checkpoint-stagger on --worker-threads 8 --wal-stats 3 --server-stats 3"
+      },
+      {
+        "label": "syncfs",
+        "args": "--wal-shards 6 --wal-checkpoint-syncfs on --worker-threads 8 --wal-stats 3 --server-stats 3"
+      },
+      {
+        "label": "both",
+        "args": "--wal-shards 6 --wal-checkpoint-stagger on --wal-checkpoint-syncfs on --worker-threads 8 --wal-stats 3 --server-stats 3"
+      }
+    ]
+  },
+  "stream_counts": [
+    10000,
+    100000
+  ],
+  "pod_ladder": {
+    "10000": [
+      2,
+      4,
+      8
+    ],
+    "100000": [
+      2,
+      4,
+      8
+    ]
+  }
+}

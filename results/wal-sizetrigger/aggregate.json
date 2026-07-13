@@ -1,0 +1,138 @@
+[
+  {
+    "mode": "ref-3s",
+    "stream_count": 10000,
+    "pods": 8,
+    "throughput": 298060.2,
+    "p50": null,
+    "p99": null,
+    "knee_pods": 4,
+    "knee_throughput": 298060.2,
+    "knee_p50": 3.149,
+    "knee_p99": 8.311,
+    "pod_mem_mb": 236,
+    "pod_mem_p50_mb": 183,
+    "saturated": false,
+    "status": "ok",
+    "reason": "ladder_exhausted",
+    "walk": [
+      [
+        4,
+        298060.2,
+        3.149,
+        8.311
+      ],
+      [
+        8,
+        293881.35000000003,
+        6.519,
+        21.375
+      ]
+    ]
+  },
+  {
+    "mode": "size-1g",
+    "stream_count": 10000,
+    "pods": 8,
+    "throughput": 314005.9,
+    "p50": null,
+    "p99": null,
+    "knee_pods": 4,
+    "knee_throughput": 314005.9,
+    "knee_p50": 3.083,
+    "knee_p99": 7.475,
+    "pod_mem_mb": 294,
+    "pod_mem_p50_mb": 186,
+    "saturated": false,
+    "status": "ok",
+    "reason": "ladder_exhausted",
+    "walk": [
+      [
+        4,
+        314005.9,
+        3.083,
+        7.475
+      ],
+      [
+        8,
+        309625.25,
+        6.359,
+        11.623
+      ]
+    ]
+  },
+  {
+    "mode": "ref-3s",
+    "stream_count": 100000,
+    "pods": 2,
+    "throughput": 275252.0,
+    "p50": 1.479,
+    "p99": 6.383,
+    "knee_pods": 2,
+    "knee_throughput": 268921.9,
+    "knee_p50": 1.5,
+    "knee_p99": 6.163,
+    "pod_mem_mb": 663,
+    "pod_mem_p50_mb": 591,
+    "saturated": true,
+    "status": "ok",
+    "reason": "plateau",
+    "walk": [
+      [
+        2,
+        268921.9,
+        1.5,
+        6.163
+      ],
+      [
+        4,
+        272068.4,
+        3.137,
+        7.847
+      ],
+      [
+        8,
+        269593.05,
+        6.511,
+        12.583
+      ]
+    ]
+  },
+  {
+    "mode": "size-1g",
+    "stream_count": 100000,
+    "pods": 2,
+    "throughput": 303152.0,
+    "p50": 1.491,
+    "p99": 6.095,
+    "knee_pods": 2,
+    "knee_throughput": 296213.65,
+    "knee_p50": 1.479,
+    "knee_p99": 5.843,
+    "pod_mem_mb": 693,
+    "pod_mem_p50_mb": 600,
+    "saturated": true,
+    "status": "ok",
+    "reason": "plateau",
+    "walk": [
+      [
+        2,
+        296213.65,
+        1.479,
+        5.843
+      ],
+      [
+        4,
+        292395.45,
+        3.127,
+        7.535
+      ],
+      [
+        8,
+        289558.95,
+        6.395,
+        11.727
+      ]
+    ]
+  }
+]

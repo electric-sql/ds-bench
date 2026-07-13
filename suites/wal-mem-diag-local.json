@@ -1,0 +1,47 @@
+{
+  "suite": "wal-mem-diag-local",
+  "_doc": "Diagnostic: does the cardinality cliff exist in MEMORY durability mode too? Memory mode (--durability memory) skips the WAL + all per-append fsync, but STILL writes each append into the per-stream data file (page cache) for reads. So if memory mode ALSO cliffs at high cardinality, the cause is the per-stream data files / N-inode writeback, not the WAL/fsync path — which points at the log-structured store. If memory mode is FLAT while wal cliffs, the cause is WAL durability. Local kind, relative signal. wal arm uses syncfs (best current wal). Capture SRV_STATS (svc_us/applock_us/durwait_us) from the server pod during the 50k cells for the time breakdown.",
+  "cluster": {
+    "server_cpus": 4
+  },
+  "saturation": {
+    "plateau_pct": 10,
+    "fleet_cpu": 0.15,
+    "connections": 128,
+    "repeats": 1,
+    "warmup_secs": 4,
+    "measure_secs": 8,
+    "setup_concurrency": 8,
+    "payload_bytes": 256
+  },
+  "modes": [
+    "wal"
+  ],
+  "server_configs": {
+    "wal": [
+      {
+        "label": "wal-syncfs",
+        "args": "--wal-shards 4 --worker-threads 4 --wal-checkpoint-syncfs on --wal-stats 2 --server-stats 2"
+      },
+      {
+        "label": "memory",
+        "args": "--durability memory --worker-threads 4 --server-stats 2"
+      }
+    ]
+  },
+  "stream_counts": [
+    20000,
+    50000
+  ],
+  "pod_ladder": {
+    "20000": [
+      2,
+      4
+    ],
+    "50000": [
+      2,
+      4,
+      6
+    ]
+  }
+}

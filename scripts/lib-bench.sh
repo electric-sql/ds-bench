@@ -83,8 +83,24 @@ deploy_server() {
 
   echo "    deploying durable-streams server: cpu=${cpu} extra='${extra_args}' (${DS_TARGET})..."
 
+  # MULTILANE=1 deploys the multi-lane variant (one NVMe device per WAL shard dir;
+  # see gke/durable-streams-multilane.yaml + MULTILANE_SETUP.md). It REQUIRES a
+  # server pool created with SERVER_LOCAL_SSD_BLOCK=1 (raw-block local NVMe).
+  # Default = the single-filesystem manifest (existing behavior preserved). The
+  # variant is arg-compatible, so the same tier/injection sed paths below apply.
+  local server_manifest="gke/durable-streams.yaml"
+  [ "${MULTILANE:-0}" = "1" ] && server_manifest="gke/durable-streams-multilane.yaml"
+  # SPLITLANE=1: device 0 = stream-data lane, devices 1..5 = WAL shard lanes
+  # (see gke/durable-streams-splitlane.yaml). Server args must use
+  # --data-dir /data/wal/0 and --wal-shards <= 5. Takes precedence over MULTILANE.
+  [ "${SPLITLANE:-0}" = "1" ] && server_manifest="gke/durable-streams-splitlane.yaml"
+  # GUARANTEED=1 (with SPLITLANE=1): Guaranteed-QoS variant — requests==limits on
+  # every container, integer server CPU. On a STATIC_CPU=1 node pool the server
+  # gets exclusive pinned cores (CPU-binding experiment).
+  [ "${GUARANTEED:-0}" = "1" ] && server_manifest="gke/durable-streams-splitlane-guaranteed.yaml"
+
   if [ -z "$extra_args" ]; then
-    envsubst "${MANIFEST_VARS} \${SERVER_CPU}" < gke/durable-streams.yaml | K apply -f -
+    envsubst "${MANIFEST_VARS} \${SERVER_CPU}" < "$server_manifest" | K apply -f -
 
   elif echo "$extra_args" | grep -q -- "--tier local"; then
     local tmp_tier
@@ -95,7 +111,7 @@ deploy_server() {
     printf '            - "/data/cold"\n'           >> "$tmp_tier"
     printf '            - "--tier-segment-bytes"\n' >> "$tmp_tier"
     printf '            - "1048576"\n'              >> "$tmp_tier"
-    envsubst "${MANIFEST_VARS} \${SERVER_CPU}" < gke/durable-streams.yaml \
+    envsubst "${MANIFEST_VARS} \${SERVER_CPU}" < "$server_manifest" \
       | sed \
           -e '/- "--tier"$/,/- "--tier-allow-http"$/d' \
           -e "/- \"\/data\"/r ${tmp_tier}" \
@@ -108,7 +124,7 @@ deploy_server() {
     for flag in $extra_args; do
       printf '            - "%s"\n' "$flag" >> "$tmp_inject"
     done
-    envsubst "${MANIFEST_VARS} \${SERVER_CPU}" < gke/durable-streams.yaml \
+    envsubst "${MANIFEST_VARS} \${SERVER_CPU}" < "$server_manifest" \
       | sed "/--tier-allow-http/r ${tmp_inject}" \
       | K apply -f -
     rm -f "$tmp_inject"

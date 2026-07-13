@@ -1,0 +1,63 @@
+{
+  "suite": "wal-lazy-checkpoint-multilane",
+  "_doc": "Remote NVMe tuning of the lazy-checkpoint interval (cardinality cliff). Runs on the 6-lane c4d-standard-64-lssd multilane cluster (one physical NVMe per WAL shard, MULTILANE=1 SERVER_LOCAL_SSD_BLOCK=1 SPOT_SERVER=1). All arms use --wal-shards 6 + --wal-checkpoint-syncfs on; the ONLY variable is --wal-checkpoint-interval-ms. ref-syncfs-3s is the reference (PR #4697 cadence on the SAME binary); 30s/60s/120s sweep the amortization knob. Local kind showed monotonic gains 3s->30s->60s at 50k with 60s still climbing, so this pushes to 120s to find the knee. Success = higher throughput at 100k as the interval grows; the winning value + the WAL_CKPT fsync cadence/cost (--wal-stats 3) sets the production default. Watch retained-WAL growth (larger interval = larger WAL + longer crash-replay) as the ceiling.",
+  "cluster": {
+    "server_machine": "c4d-standard-64-lssd",
+    "server_cpus": 8,
+    "client_machine": "n2d-standard-32",
+    "client_nodes": 3,
+    "cluster_name": "bench-multilane",
+    "zone": "europe-west4-b",
+    "region": "europe-west4"
+  },
+  "saturation": {
+    "plateau_pct": 8,
+    "patience": 2,
+    "fleet_cpu": 2,
+    "connections": 256,
+    "repeats": 1,
+    "warmup_secs": 12,
+    "measure_secs": 20,
+    "setup_concurrency": 16,
+    "payload_bytes": 256
+  },
+  "modes": [
+    "wal"
+  ],
+  "server_configs": {
+    "wal": [
+      {
+        "label": "ref-syncfs-3s",
+        "args": "--wal-shards 6 --wal-checkpoint-syncfs on --worker-threads 8 --wal-stats 3 --server-stats 3"
+      },
+      {
+        "label": "lazy-30s",
+        "args": "--wal-shards 6 --wal-checkpoint-syncfs on --wal-checkpoint-interval-ms 30000 --worker-threads 8 --wal-stats 3 --server-stats 3"
+      },
+      {
+        "label": "lazy-60s",
+        "args": "--wal-shards 6 --wal-checkpoint-syncfs on --wal-checkpoint-interval-ms 60000 --worker-threads 8 --wal-stats 3 --server-stats 3"
+      },
+      {
+        "label": "lazy-120s",
+        "args": "--wal-shards 6 --wal-checkpoint-syncfs on --wal-checkpoint-interval-ms 120000 --worker-threads 8 --wal-stats 3 --server-stats 3"
+      }
+    ]
+  },
+  "stream_counts": [
+    10000,
+    100000
+  ],
+  "pod_ladder": {
+    "10000": [
+      2,
+      4,
+      8
+    ],
+    "100000": [
+      2,
+      4,
+      8
+    ]
+  }
+}

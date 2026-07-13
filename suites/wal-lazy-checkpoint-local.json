@@ -1,0 +1,55 @@
+{
+  "suite": "wal-lazy-checkpoint-local",
+  "_doc": "Local-kind value-finder for the lazy-checkpoint approach (cardinality cliff). The checkpoint's per-stream fsync/syncfs is not a correctness barrier (ack = WAL fdatasync; recovery replays the retained WAL) — it only bounds WAL size for recycling. So the checkpoint interval is a pure amortization knob: a LARGE interval fires the O(shards) syncfs barrier far less often and coalesces many appends to the same stream into one metadata/journal update, trading a larger retained WAL + longer crash-replay for cheaper steady-state writes. This sweeps the interval (--wal-checkpoint-interval-ms) with syncfs on, against two reference arms (baseline = per-stream fdatasync @3s; syncfs @3s = PR #4697). Local kind is a relative value-finder only (Docker VM fsync != NVMe); if larger intervals lift throughput here, re-tune the actual values on the remote NVMe cluster. Watch WAL_CKPT fsync_us + cadence via --wal-stats 2.",
+  "cluster": {
+    "server_cpus": 4
+  },
+  "saturation": {
+    "plateau_pct": 10,
+    "fleet_cpu": 0.15,
+    "connections": 128,
+    "repeats": 1,
+    "warmup_secs": 4,
+    "measure_secs": 8,
+    "setup_concurrency": 8,
+    "payload_bytes": 256
+  },
+  "modes": [
+    "wal"
+  ],
+  "server_configs": {
+    "wal": [
+      {
+        "label": "ref-baseline-3s",
+        "args": "--wal-shards 4 --worker-threads 4 --wal-stats 2"
+      },
+      {
+        "label": "ref-syncfs-3s",
+        "args": "--wal-shards 4 --worker-threads 4 --wal-checkpoint-syncfs on --wal-stats 2"
+      },
+      {
+        "label": "lazy-syncfs-30s",
+        "args": "--wal-shards 4 --worker-threads 4 --wal-checkpoint-syncfs on --wal-checkpoint-interval-ms 30000 --wal-stats 2"
+      },
+      {
+        "label": "lazy-syncfs-60s",
+        "args": "--wal-shards 4 --worker-threads 4 --wal-checkpoint-syncfs on --wal-checkpoint-interval-ms 60000 --wal-stats 2"
+      }
+    ]
+  },
+  "stream_counts": [
+    20000,
+    50000
+  ],
+  "pod_ladder": {
+    "20000": [
+      2,
+      4
+    ],
+    "50000": [
+      2,
+      4,
+      6
+    ]
+  }
+}

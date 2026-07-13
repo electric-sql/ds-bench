@@ -1,0 +1,47 @@
+{
+  "suite": "wal-syncfs-local",
+  "_doc": "Local-kind A/B for cardinality-cliff #1: checkpoint durability via one syncfs() barrier (--wal-checkpoint-syncfs on) vs the per-stream fdatasync loop (baseline). Same cluster, two labeled wal configs, high-enough cardinality (20k/50k) that the checkpoint's O(N_touched) fdatasync phase is a real cost. Compare throughput + WAL_CKPT fsync_us (--wal-stats 2) between labels. This is the local gate: if syncfs is faster (or clearly lower checkpoint fsync cost) here, promote to a remote NVMe run.",
+  "cluster": {
+    "server_cpus": 4
+  },
+  "saturation": {
+    "plateau_pct": 10,
+    "fleet_cpu": 0.15,
+    "connections": 128,
+    "repeats": 1,
+    "warmup_secs": 4,
+    "measure_secs": 8,
+    "setup_concurrency": 8,
+    "payload_bytes": 256
+  },
+  "modes": [
+    "wal"
+  ],
+  "server_configs": {
+    "wal": [
+      {
+        "label": "baseline",
+        "args": "--wal-shards 4 --worker-threads 4 --wal-stats 2"
+      },
+      {
+        "label": "syncfs",
+        "args": "--wal-shards 4 --worker-threads 4 --wal-checkpoint-syncfs on --wal-stats 2"
+      }
+    ]
+  },
+  "stream_counts": [
+    20000,
+    50000
+  ],
+  "pod_ladder": {
+    "20000": [
+      2,
+      4
+    ],
+    "50000": [
+      2,
+      4,
+      6
+    ]
+  }
+}
