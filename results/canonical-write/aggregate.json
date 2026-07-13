@@ -1,0 +1,126 @@
+[
+  {
+    "mode": "memory",
+    "stream_count": 10000,
+    "pods": 8,
+    "throughput": 680429.25,
+    "p50": null,
+    "p99": null,
+    "knee_pods": 4,
+    "knee_throughput": 655795.45,
+    "knee_p50": 1.418,
+    "knee_p99": 3.621,
+    "pod_mem_mb": 298,
+    "pod_mem_p50_mb": 206,
+    "saturated": false,
+    "status": "ok",
+    "reason": "ladder_exhausted",
+    "walk": [
+      [
+        4,
+        655795.45,
+        1.418,
+        3.621
+      ],
+      [
+        8,
+        680429.25,
+        2.753,
+        6.475
+      ]
+    ]
+  },
+  {
+    "mode": "wal-ideal",
+    "stream_count": 10000,
+    "pods": 8,
+    "throughput": 416986.55000000005,
+    "p50": null,
+    "p99": null,
+    "knee_pods": 4,
+    "knee_throughput": 416986.55000000005,
+    "knee_p50": 2.369,
+    "knee_p99": 4.235,
+    "pod_mem_mb": 323,
+    "pod_mem_p50_mb": 221,
+    "saturated": false,
+    "status": "ok",
+    "reason": "ladder_exhausted",
+    "walk": [
+      [
+        4,
+        416986.55000000005,
+        2.369,
+        4.235
+      ],
+      [
+        8,
+        399101.1500000001,
+        4.999,
+        8.231
+      ]
+    ]
+  },
+  {
+    "mode": "memory",
+    "stream_count": 100000,
+    "pods": 8,
+    "throughput": 631519.5,
+    "p50": null,
+    "p99": null,
+    "knee_pods": 4,
+    "knee_throughput": 631519.5,
+    "knee_p50": 1.433,
+    "knee_p99": 3.643,
+    "pod_mem_mb": 714,
+    "pod_mem_p50_mb": 630,
+    "saturated": false,
+    "status": "ok",
+    "reason": "ladder_exhausted",
+    "walk": [
+      [
+        4,
+        631519.5,
+        1.433,
+        3.643
+      ],
+      [
+        8,
+        621656.3,
+        2.865,
+        7.031
+      ]
+    ]
+  },
+  {
+    "mode": "wal-ideal",
+    "stream_count": 100000,
+    "pods": 8,
+    "throughput": 382296.4,
+    "p50": null,
+    "p99": null,
+    "knee_pods": 4,
+    "knee_throughput": 382296.4,
+    "knee_p50": 2.501,
+    "knee_p99": 4.563,
+    "pod_mem_mb": 777,
+    "pod_mem_p50_mb": 658,
+    "saturated": false,
+    "status": "ok",
+    "reason": "ladder_exhausted",
+    "walk": [
+      [
+        4,
+        382296.4,
+        2.501,
+        4.563
+      ],
+      [
+        8,
+        364593.49999999994,
+        5.307,
+        8.647
+      ]
+    ]
+  }
+]
