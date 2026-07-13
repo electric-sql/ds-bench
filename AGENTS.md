@@ -11,6 +11,61 @@ covers *how to run it*, the typical deployment we use, and the gotchas that bite
 
 ---
 
+## 0. Canonical suites — the maintained benchmark set
+
+These are THE benchmarks we maintain and rerun; prefer them over the historical
+suites (which remain for provenance). Each is one `scripts/bench suites/<x>.json
+run` away, self-tears-down on clean completion, and states its reference numbers
++ regression gate in its `_doc`.
+
+| suite | workload | systems / configs | env (beyond `DS_TARGET=remote`) |
+|---|---|---|---|
+| `canonical-write` | write saturation (10k/100k streams) | durable-streams `wal-ideal` (the WAL_TUNING.md ideal config) + `memory` | `STATIC_CPU=1 SPLITLANE=1 GUARANTEED=1 SERVER_LOCAL_SSD_BLOCK=1 SERVER_MANIFEST=gke/durable-streams-splitlane3x3-guaranteed.yaml SPOT_SERVER=1` |
+| `canonical-write-ursula` | write saturation (100/1k/10k) | ursula v0.2.0 (`ghcr.io/tonbo-io/ursula:v0.2.0`) memory + disk | `SPOT_SERVER=1` |
+| `canonical-sustained` | long-window latency + memory stability | durable-streams wal + memory | — |
+| `canonical-reads-catchup` | historical replay reads | durable-streams wal | — |
+| `canonical-reads-live` | live-tail long-poll delivery | durable-streams wal | — |
+| `canonical-reads-sse` | SSE fan-out delivery | durable-streams wal | — |
+
+Reference numbers (c4d-standard-64-lssd, 2026-07-13): `wal-ideal` ≈ 385k @10k /
+374k @100k; `memory` ≈ 540k @10k / 512k @100k. **Regression gate: wal-ideal@100k
+< 250k, memory@100k < 400k, or a >30% drop from 10k→100k = the cliff is back —
+stop, diagnose (WAL_CKPT/SRV_STATS), fix before publishing numbers.**
+
+### The ideal configuration — invariants (DO NOT break these again)
+
+The 37× write-throughput recovery (10.4k → 383k @100k streams; see
+`durable-streams-rust/WAL_TUNING.md` for the full ladder) depends on ALL of:
+
+1. **Stream data files on local NVMe, never the boot PD.** On raw-block node
+   pools (`SERVER_LOCAL_SSD_BLOCK=1`) the base emptyDir/hostPath sits on the PD
+   boot disk — server args MUST route `--data-dir` onto a lane
+   (`--data-dir /data/wal/0`, the splitlane manifests mount device 0 there).
+   Getting this wrong mismeasures wal by 5–26× and looks exactly like a
+   "cardinality cliff".
+2. **WAL lanes and data lanes on separate devices.** Commit fdatasync vs
+   checkpoint writeback on one device queue costs 5×. The 3×3 split
+   (`--wal-shards 3 --stream-lanes 3` + `durable-streams-splitlane3x3-guaranteed.yaml`)
+   is the general-purpose layout; ≥500k streams is exactly where 1 data lane
+   collapses (syncfs 60–74 s) — do not "simplify" back to it.
+3. **Guaranteed QoS + static CPU manager** (`GUARANTEED=1` + `STATIC_CPU=1`):
+   exclusive pinned cores are +21–24% now that wal isn't fsync-bound.
+4. **Size-triggered checkpoints** (`--wal-checkpoint-wal-bytes 1073741824
+   --wal-checkpoint-interval-ms 60000`): reclaims the checkpoint's 7–11%; the
+   1 GiB budget bounds crash-replay.
+5. **memory arms MUST pass `--tier off`.** The manifests bake in `--tier s3`
+   (MinIO) and the server now REFUSES `--durability memory` + tier (non-durable
+   acks must not feed a "durable" cold tier). A memory config without
+   `--tier off` crash-loops.
+6. **Removed server flags — never pass them** (the server exits 2 on unknown
+   args): `--wal-checkpoint-syncfs` (syncfs is unconditional on Linux),
+   `--wal-fsync-parallel`, `--wal-meta-gate`, `--mem-meta-gate`,
+   `--meta-sweep-disable`, `--meta-sweep-stats`, `--tier local`,
+   `--tier-local-dir`.
+7. **`--stream-lanes` / `--wal-shards` are persisted on-disk layout choices** —
+   the server refuses a mismatch on an existing data dir. Fresh bench cells wipe
+   the dirs, so suites just need each config to be internally consistent.
+
 ## 1. What it does
 
 `ds-bench` is a single-node, server-agnostic benchmark harness for durable-stream
