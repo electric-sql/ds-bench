@@ -1,3 +1,0 @@
-mode,stream_count,pods,throughput,p50,p99,knee_pods,knee_throughput,knee_p50,knee_p99,pod_mem_mb,pod_mem_p50_mb,saturated,status,reason
-wal-cpu4,10000,4,44286.933333333334,,,2,30546.466666666667,3.771,12.983,78,70,False,ok,ladder_exhausted
-wal-cpu4,50000,4,32143.533333333333,,,2,18012.266666666666,5.627,29.903,255,247,False,ok,ladder_exhausted

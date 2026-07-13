@@ -1,5 +1,0 @@
-mode,stream_count,pods,throughput,p50,p99,knee_pods,knee_throughput,knee_p50,knee_p99,pod_mem_mb,pod_mem_p50_mb,saturated,status,reason
-ref-3s,10000,8,298060.2,,,4,298060.2,3.149,8.311,236,183,False,ok,ladder_exhausted
-size-1g,10000,8,314005.9,,,4,314005.9,3.083,7.475,294,186,False,ok,ladder_exhausted
-ref-3s,100000,2,275252.0,1.479,6.383,2,268921.9,1.5,6.163,663,591,True,ok,plateau
-size-1g,100000,2,303152.0,1.491,6.095,2,296213.65,1.479,5.843,693,600,True,ok,plateau

@@ -22,10 +22,18 @@ run` away, self-tears-down on clean completion, and states its reference numbers
 |---|---|---|---|
 | `canonical-write` | write saturation (10k/100k streams) | durable-streams `wal-ideal` (the WAL_TUNING.md ideal config) + `memory` | `STATIC_CPU=1 SPLITLANE=1 GUARANTEED=1 SERVER_LOCAL_SSD_BLOCK=1 SERVER_MANIFEST=gke/durable-streams-splitlane3x3-guaranteed.yaml SPOT_SERVER=1` |
 | `canonical-write-ursula` | write saturation (100/1k/10k) | ursula v0.2.0 (`ghcr.io/tonbo-io/ursula:v0.2.0`) memory + disk | `SPOT_SERVER=1` |
-| `canonical-sustained` | long-window latency + memory stability | durable-streams wal + memory | — |
-| `canonical-reads-catchup` | historical replay reads | durable-streams wal | — |
-| `canonical-reads-live` | live-tail long-poll delivery | durable-streams wal | — |
-| `canonical-reads-sse` | SSE fan-out delivery | durable-streams wal | — |
+| `canonical-reads-catchup` | historical replay reads | durable-streams wal + ursula | — |
+| `canonical-reads-sse` | SSE tail delivery vs connections | durable-streams wal + ursula | — |
+| `canonical-mixed-cal` | mixed-shape single-pod ceiling (anchor) | durable-streams wal | — |
+| `canonical-mixed-writes` | paced readers vs pinned writes (interference) | durable-streams wal | — |
+| `canonical-mixed-delivery` | SSE delivery under a write ladder | durable-streams wal + memory | — |
+
+SSE single-stream fan-out (subscriber ladder) is script-driven: `scripts/run-sse.sh`.
+Report structure + pre-publication caveats: `REPORT_TEMPLATE.md`. Historical
+suites and results were deleted (2026-07-14) — they live in git history; the
+2026-07-02 campaign's write numbers were later found inflated (see the
+template's physics-sanity caveat) and are superseded by the canonical references
+above.
 
 Reference numbers (c4d-standard-64-lssd, 2026-07-13): `wal-ideal` ≈ 385k @10k /
 374k @100k; `memory` ≈ 540k @10k / 512k @100k. **Regression gate: wal-ideal@100k
@@ -76,10 +84,9 @@ percentiles, and writes per-cell results.
 
 | Workload | Measures | Driver |
 |---|---|---|
-| **Write** (saturation) | append/s at saturation + tail latency + pod memory | `suites/run-{durable,ursula,s2,node}.json` |
-| **Sustained** | latency + server-memory stability over a long window | `suites/sustained.json` |
-| **Catch-up** | per-client replay latency + body size | `suites/catchup-{durable,ursula,s2}.json` |
-| **Reads** (`catchup` / `long-poll` / `sse`) | live-tail delivery latency vs connections | `suites/reads-{catchup,longpoll,sse-remote}.json` |
+| **Write** (saturation) | append/s at saturation + tail latency + pod memory | `suites/canonical-write.json`, `suites/canonical-write-ursula.json` |
+| **Reads** (catch-up / SSE tail) | replay + live delivery vs connections | `suites/canonical-reads-{catchup,sse}.json` |
+| **Mixed interference** | reads vs pinned writes; delivery under write load | `suites/canonical-mixed-{cal,writes,delivery}.json` |
 | **SSE fan-out** | per-event delivery latency + memory vs subscriber count | `scripts/run-sse.sh` |
 
 Systems under test: **durable-streams** (Rust; `wal` / `wal-tailcache` / `memory`

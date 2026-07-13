@@ -1,3 +1,0 @@
-mode,stream_count,pods,throughput,p50,p99,knee_pods,knee_throughput,knee_p50,knee_p99,pod_mem_mb,pod_mem_p50_mb,saturated,status,reason
-baseline,50000,4,42749.3,7.447,177.535,2,27296.3,5.539,126.719,249,237,True,ok,plateau
-batched-mw,50000,4,49211.6,6.783,145.279,2,39354.7,4.555,76.351,250,239,True,ok,plateau
