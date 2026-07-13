@@ -1,0 +1,4 @@
+mode,stream_count,pods,throughput,p50,p99,knee_pods,knee_throughput,knee_p50,knee_p99,pod_mem_mb,pod_mem_p50_mb,saturated,status,reason
+stacked,100000,8,382727.89999999997,,,4,382727.89999999997,2.537,4.539,774,668,False,ok,ladder_exhausted
+stacked,500000,8,244203.8,,,8,244203.8,5.763,26.543,2925,2551,False,ok,ladder_exhausted
+stacked,1000000,8,56003.35,,,8,56003.35,13.919,1186.815,4939,3852,False,ok,ladder_exhausted

@@ -79,14 +79,21 @@ else
     # Default off = shared cores (existing behavior preserved).
     STATIC_CPU_FLAG=()
     if [ "${STATIC_CPU:-0}" = "1" ]; then
-      _SYSCFG="$(mktemp /tmp/ds-syscfg-XXXXXX.yaml)"
+      # NOTE: X's must be TRAILING — BSD/macOS mktemp doesn't substitute a
+      # template with a suffix ("ds-syscfg-XXXXXX.yaml" is taken literally, so a
+      # second run collides with "File exists" and the create never happens).
+      _SYSCFG="$(mktemp /tmp/ds-syscfg-XXXXXX)" || { echo "FATAL: mktemp for kubelet system config failed" >&2; exit 1; }
       printf 'kubeletConfig:\n  cpuManagerPolicy: static\n' > "$_SYSCFG"
       STATIC_CPU_FLAG=(--system-config-from-file "$_SYSCFG")
     fi
+    # Fail HARD if the create fails: continuing hands every later kubectl a
+    # stale kubeconfig from a previous same-name cluster (dead IP), and the
+    # harness's transient-error tolerance then burns a whole run against it.
     gcloud container clusters create "$CLUSTER" --zone "$ZONE" --project "$PROJECT" --num-nodes 1 \
       --machine-type "$SERVER_MACHINE" "${LSSD_FLAG[@]}" "${SPOT_SERVER_FLAG[@]}" "${STATIC_CPU_FLAG[@]}" \
       --node-labels=role=server --network benchmarking --subnetwork benchmarking \
-      --enable-ip-alias --release-channel regular
+      --enable-ip-alias --release-channel regular \
+      || { echo "FATAL: cluster create failed for $CLUSTER" >&2; exit 1; }
     # The client fleet is disposable + fault-tolerant (the bench tolerates pod
     # failures), so run it on Spot VMs by default (~60-80% cheaper). The SERVER
     # pool stays on-demand (it holds state). SPOT_CLIENTS=0 forces on-demand.

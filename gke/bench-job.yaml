@@ -59,6 +59,7 @@ spec:
               DS_BENCH_INSTANCE="$JOB_COMPLETION_INDEX"
               DS_BENCH_SHARDS="${PARALLELISM}"
               DS_BENCH_BARRIER_DIR="${BARRIER_DIR}"
+              DS_BENCH_BARRIER_TIMEOUT_SECS=3600
               ds-bench ${BENCH_CMD}
               > /out/${OUT_PREFIX}-${JOB_COMPLETION_INDEX}.json &&
               up=0;
