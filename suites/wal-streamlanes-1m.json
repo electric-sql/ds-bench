@@ -1,0 +1,51 @@
+{
+  "suite": "wal-streamlanes-1m",
+  "_doc": "Validate the --stream-lanes fix for the ~1M-stream writeback wall (wal-1m-diag: one shared data device -> checkpoint syncfs of ~200k dirty files = 60-74s per shard, append staging starved, 68k @1M). Topology 3x3 via SERVER_MANIFEST=gke/durable-streams-splitlane3x3-guaranteed.yaml: dev0 = data root + stream lane 0, dev1-2 = stream lanes 1-2, dev3-5 = WAL shards 0-2; args --stream-lanes 3 --wal-shards 3. Controls (from wal-1m-diag, 5 WAL lanes + 1 data lane, same image family/QoS): 500k = 252k, 1M = 68k. Success = 1M meaningfully above 68k (expect 150k+ if writeback capacity was the binding constraint); 500k should hold >= 250k (3 WAL lanes must not regress the commit path - WAL fsync was measured far from saturation). 100k anchors against the stacked 383k. Requires STATIC_CPU=1 SPLITLANE=1 GUARANTEED=1 SERVER_MANIFEST=gke/durable-streams-splitlane3x3-guaranteed.yaml SERVER_LOCAL_SSD_BLOCK=1 SPOT_SERVER=1 BARRIER_SETUP_TIMEOUT_SECS=3600 IMG_SERVER=...:streamlanes.",
+  "cluster": {
+    "server_machine": "c4d-standard-64-lssd",
+    "server_cpus": 8,
+    "client_machine": "n2d-standard-32",
+    "client_nodes": 3,
+    "cluster_name": "bench-cpubind",
+    "zone": "europe-west4-b",
+    "region": "europe-west4"
+  },
+  "saturation": {
+    "plateau_pct": 8,
+    "patience": 2,
+    "fleet_cpu": 2,
+    "connections": 256,
+    "repeats": 1,
+    "warmup_secs": 90,
+    "measure_secs": 30,
+    "setup_concurrency": 32,
+    "payload_bytes": 256
+  },
+  "modes": [
+    "wal"
+  ],
+  "server_configs": {
+    "wal": [
+      {
+        "label": "lanes3x3",
+        "args": "--wal-shards 3 --stream-lanes 3 --wal-checkpoint-syncfs on --wal-checkpoint-wal-bytes 1073741824 --wal-checkpoint-interval-ms 60000 --worker-threads 8 --wal-stats 3 --server-stats 3 --data-dir /data/wal/0"
+      }
+    ]
+  },
+  "stream_counts": [
+    100000,
+    500000,
+    1000000
+  ],
+  "pod_ladder": {
+    "100000": [
+      8
+    ],
+    "500000": [
+      8
+    ],
+    "1000000": [
+      8
+    ]
+  }
+}

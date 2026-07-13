@@ -98,6 +98,9 @@ deploy_server() {
   # every container, integer server CPU. On a STATIC_CPU=1 node pool the server
   # gets exclusive pinned cores (CPU-binding experiment).
   [ "${GUARANTEED:-0}" = "1" ] && server_manifest="gke/durable-streams-splitlane-guaranteed.yaml"
+  # SERVER_MANIFEST: explicit override for one-off topologies (e.g. the 3x3
+  # stream-lane/WAL-lane variant). Wins over all the flags above.
+  [ -n "${SERVER_MANIFEST:-}" ] && server_manifest="$SERVER_MANIFEST"
 
   if [ -z "$extra_args" ]; then
     envsubst "${MANIFEST_VARS} \${SERVER_CPU}" < "$server_manifest" | K apply -f -
