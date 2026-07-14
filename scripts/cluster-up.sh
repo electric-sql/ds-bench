@@ -45,20 +45,55 @@ else
     # 4th-gen Titanium "-lssd" machines bundle a fixed Local SSD (the count is set
     # by the machine type — gcloud rejects an explicit count). Older N2D-style
     # types let you stripe N×375 GB devices via LOCAL_SSD_COUNT.
-    case "$SERVER_MACHINE" in
-      *-lssd) LSSD_FLAG=(--ephemeral-storage-local-ssd) ;;
-      *)      LSSD_FLAG=(--ephemeral-storage-local-ssd "count=${LOCAL_SSD_COUNT:-1}") ;;
-    esac
+    #
+    # SERVER_LOCAL_SSD_BLOCK=1 (default OFF) switches the server pool to RAW-BLOCK
+    # local NVMe (--local-nvme-ssd-block) INSTEAD of ephemeral-storage. Rationale:
+    # --ephemeral-storage-local-ssd RAID0-stripes ALL local SSDs into ONE
+    # filesystem = ONE fsync barrier (single fsync lane), so per-shard fdatasync
+    # can't scale. Raw block keeps each physical NVMe device a separate /dev node,
+    # and gke/durable-streams-multilane.yaml (MULTILANE=1) mkfs+mounts one device
+    # per WAL shard dir = one independent fsync lane per shard. On 3rd/4th-gen
+    # (C3/C4/C4D "-lssd") the count is FIXED by the machine type, so the raw-block
+    # flag takes NO count (see MULTILANE_SETUP.md). Existing behavior is preserved
+    # when the env is unset.
+    if [ "${SERVER_LOCAL_SSD_BLOCK:-0}" = "1" ]; then
+      case "$SERVER_MACHINE" in
+        *-lssd) LSSD_FLAG=(--local-nvme-ssd-block) ;;
+        *)      LSSD_FLAG=(--local-nvme-ssd-block "count=${LOCAL_SSD_COUNT:-1}") ;;
+      esac
+    else
+      case "$SERVER_MACHINE" in
+        *-lssd) LSSD_FLAG=(--ephemeral-storage-local-ssd) ;;
+        *)      LSSD_FLAG=(--ephemeral-storage-local-ssd "count=${LOCAL_SSD_COUNT:-1}") ;;
+      esac
+    fi
     # The server pool holds state, so it is on-demand by DEFAULT (a Spot
     # preemption mid-run kills the stateful server and invalidates that cell).
     # SPOT_SERVER=1 opts the server node into Spot too (cheapest; accept that a
     # preemption forces a re-run of the affected cells — the suite is resumable).
     SPOT_SERVER_FLAG=()
     [ "${SPOT_SERVER:-0}" = "1" ] && SPOT_SERVER_FLAG=(--spot)
+    # STATIC_CPU=1: server pool kubelet runs cpuManagerPolicy=static, so a
+    # GUARANTEED pod (integer CPU, requests==limits) gets EXCLUSIVE pinned cores
+    # (true CPU binding; pairs with gke/durable-streams-splitlane-guaranteed.yaml).
+    # Default off = shared cores (existing behavior preserved).
+    STATIC_CPU_FLAG=()
+    if [ "${STATIC_CPU:-0}" = "1" ]; then
+      # NOTE: X's must be TRAILING — BSD/macOS mktemp doesn't substitute a
+      # template with a suffix ("ds-syscfg-XXXXXX.yaml" is taken literally, so a
+      # second run collides with "File exists" and the create never happens).
+      _SYSCFG="$(mktemp /tmp/ds-syscfg-XXXXXX)" || { echo "FATAL: mktemp for kubelet system config failed" >&2; exit 1; }
+      printf 'kubeletConfig:\n  cpuManagerPolicy: static\n' > "$_SYSCFG"
+      STATIC_CPU_FLAG=(--system-config-from-file "$_SYSCFG")
+    fi
+    # Fail HARD if the create fails: continuing hands every later kubectl a
+    # stale kubeconfig from a previous same-name cluster (dead IP), and the
+    # harness's transient-error tolerance then burns a whole run against it.
     gcloud container clusters create "$CLUSTER" --zone "$ZONE" --project "$PROJECT" --num-nodes 1 \
-      --machine-type "$SERVER_MACHINE" "${LSSD_FLAG[@]}" "${SPOT_SERVER_FLAG[@]}" \
+      --machine-type "$SERVER_MACHINE" "${LSSD_FLAG[@]}" "${SPOT_SERVER_FLAG[@]}" "${STATIC_CPU_FLAG[@]}" \
       --node-labels=role=server --network benchmarking --subnetwork benchmarking \
-      --enable-ip-alias --release-channel regular
+      --enable-ip-alias --release-channel regular \
+      || { echo "FATAL: cluster create failed for $CLUSTER" >&2; exit 1; }
     # The client fleet is disposable + fault-tolerant (the bench tolerates pod
     # failures), so run it on Spot VMs by default (~60-80% cheaper). The SERVER
     # pool stays on-demand (it holds state). SPOT_CLIENTS=0 forces on-demand.

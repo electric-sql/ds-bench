@@ -11,6 +11,69 @@ covers *how to run it*, the typical deployment we use, and the gotchas that bite
 
 ---
 
+## 0. Canonical suites — the maintained benchmark set
+
+These are THE benchmarks we maintain and rerun; prefer them over the historical
+suites (which remain for provenance). Each is one `scripts/bench suites/<x>.json
+run` away, self-tears-down on clean completion, and states its reference numbers
++ regression gate in its `_doc`.
+
+| suite | workload | systems / configs | env (beyond `DS_TARGET=remote`) |
+|---|---|---|---|
+| `canonical-write` | write saturation (10k/100k streams) | durable-streams `wal-ideal` (the WAL_TUNING.md ideal config) + `memory` | `STATIC_CPU=1 SPLITLANE=1 GUARANTEED=1 SERVER_LOCAL_SSD_BLOCK=1 SERVER_MANIFEST=gke/durable-streams-splitlane3x3-guaranteed.yaml SPOT_SERVER=1` |
+| `canonical-write-ursula` | write saturation (100/1k/10k) | ursula v0.2.0 (`ghcr.io/tonbo-io/ursula:v0.2.0`) memory + disk | `SPOT_SERVER=1` |
+| `canonical-reads-catchup` | historical replay reads | durable-streams wal + ursula | — |
+| `canonical-reads-sse` | SSE tail delivery vs connections | durable-streams wal + ursula | — |
+| `canonical-mixed-cal` | mixed-shape single-pod ceiling (anchor) | durable-streams wal | — |
+| `canonical-mixed-writes` | paced readers vs pinned writes (interference) | durable-streams wal | — |
+| `canonical-mixed-delivery` | SSE delivery under a write ladder | durable-streams wal + memory | — |
+
+SSE single-stream fan-out (subscriber ladder) is script-driven: `scripts/run-sse.sh`.
+Report structure + pre-publication caveats: `REPORT_TEMPLATE.md`. Historical
+suites and results were deleted (2026-07-14) — they live in git history; the
+2026-07-02 campaign's write numbers were later found inflated (see the
+template's physics-sanity caveat) and are superseded by the canonical references
+above.
+
+Reference numbers (c4d-standard-64-lssd, 2026-07-13): `wal-ideal` ≈ 385k @10k /
+374k @100k; `memory` ≈ 540k @10k / 512k @100k. **Regression gate: wal-ideal@100k
+< 250k, memory@100k < 400k, or a >30% drop from 10k→100k = the cliff is back —
+stop, diagnose (WAL_CKPT/SRV_STATS), fix before publishing numbers.**
+
+### The ideal configuration — invariants (DO NOT break these again)
+
+The 37× write-throughput recovery (10.4k → 383k @100k streams; see
+`durable-streams-rust/WAL_TUNING.md` for the full ladder) depends on ALL of:
+
+1. **Stream data files on local NVMe, never the boot PD.** On raw-block node
+   pools (`SERVER_LOCAL_SSD_BLOCK=1`) the base emptyDir/hostPath sits on the PD
+   boot disk — server args MUST route `--data-dir` onto a lane
+   (`--data-dir /data/wal/0`, the splitlane manifests mount device 0 there).
+   Getting this wrong mismeasures wal by 5–26× and looks exactly like a
+   "cardinality cliff".
+2. **WAL lanes and data lanes on separate devices.** Commit fdatasync vs
+   checkpoint writeback on one device queue costs 5×. The 3×3 split
+   (`--wal-shards 3 --stream-lanes 3` + `durable-streams-splitlane3x3-guaranteed.yaml`)
+   is the general-purpose layout; ≥500k streams is exactly where 1 data lane
+   collapses (syncfs 60–74 s) — do not "simplify" back to it.
+3. **Guaranteed QoS + static CPU manager** (`GUARANTEED=1` + `STATIC_CPU=1`):
+   exclusive pinned cores are +21–24% now that wal isn't fsync-bound.
+4. **Size-triggered checkpoints** (`--wal-checkpoint-wal-bytes 1073741824
+   --wal-checkpoint-interval-ms 60000`): reclaims the checkpoint's 7–11%; the
+   1 GiB budget bounds crash-replay.
+5. **memory arms MUST pass `--tier off`.** The manifests bake in `--tier s3`
+   (MinIO) and the server now REFUSES `--durability memory` + tier (non-durable
+   acks must not feed a "durable" cold tier). A memory config without
+   `--tier off` crash-loops.
+6. **Removed server flags — never pass them** (the server exits 2 on unknown
+   args): `--wal-checkpoint-syncfs` (syncfs is unconditional on Linux),
+   `--wal-fsync-parallel`, `--wal-meta-gate`, `--mem-meta-gate`,
+   `--meta-sweep-disable`, `--meta-sweep-stats`, `--tier local`,
+   `--tier-local-dir`.
+7. **`--stream-lanes` / `--wal-shards` are persisted on-disk layout choices** —
+   the server refuses a mismatch on an existing data dir. Fresh bench cells wipe
+   the dirs, so suites just need each config to be internally consistent.
+
 ## 1. What it does
 
 `ds-bench` is a single-node, server-agnostic benchmark harness for durable-stream
@@ -21,10 +84,9 @@ percentiles, and writes per-cell results.
 
 | Workload | Measures | Driver |
 |---|---|---|
-| **Write** (saturation) | append/s at saturation + tail latency + pod memory | `suites/run-{durable,ursula,s2,node}.json` |
-| **Sustained** | latency + server-memory stability over a long window | `suites/sustained.json` |
-| **Catch-up** | per-client replay latency + body size | `suites/catchup-{durable,ursula,s2}.json` |
-| **Reads** (`catchup` / `long-poll` / `sse`) | live-tail delivery latency vs connections | `suites/reads-{catchup,longpoll,sse-remote}.json` |
+| **Write** (saturation) | append/s at saturation + tail latency + pod memory | `suites/canonical-write.json`, `suites/canonical-write-ursula.json` |
+| **Reads** (catch-up / SSE tail) | replay + live delivery vs connections | `suites/canonical-reads-{catchup,sse}.json` |
+| **Mixed interference** | reads vs pinned writes; delivery under write load | `suites/canonical-mixed-{cal,writes,delivery}.json` |
 | **SSE fan-out** | per-event delivery latency + memory vs subscriber count | `scripts/run-sse.sh` |
 
 Systems under test: **durable-streams** (Rust; `wal` / `wal-tailcache` / `memory`
@@ -350,9 +412,12 @@ The client fleet is ~4× the server's cost, so optimize there. In descending imp
 | 8 vCPU | 100k | 43k | 5.0 ms | 526k | 1.2 ms |
 | 8 vCPU | 500k | 29k | 6.9 ms | 323k | 1.3 ms |
 
-- **wal does not scale with the CPU pin** at shards = cores (fsync-lane bound at
-  ~25–30 % CPU); the shard count is the parallel-fsync knob (`run-durable-tune`:
-  s16t4 ≈ 380k @ 200k streams). **memory scales with cores** at ~1–2 ms p50.
+- **wal does not scale with the CPU pin** at shards = cores (fsync-bound at
+  ~15–30 % CPU). Note: shard count is **not** the throughput knob either — a
+  controlled sweep (below, `results/wal-shard-sweep/`) shows s1→s24 flat within 5 %
+  (~72–75k @ 200k, 8 vCPU); the old `run-durable-tune` "s16t4 ≈ 380k" does not
+  reproduce. wal is bounded by the disk's `fdatasync`/s rate; the lever is
+  group-commit `batch_avg` (offered load). **memory scales with cores** at ~1–2 ms p50.
 - **Cardinality cliff:** 100k → 500k streams costs wal ~33 % and memory ~28–39 %
   in both pins — present in every build (registry/page-cache/fd physics, see
   `WRITE_BOTTLENECKS_1M.md` in the server crate), NOT coordination.
@@ -361,6 +426,133 @@ The client fleet is ~4× the server's cost, so optimize there. In descending imp
   remains the standard per-pod reference.
 - **Cost** (list, europe-west4, Spot): fleet 5–7×`n2d-standard-32` ≈ $2–3/hr ·
   server ≈ $0.5/hr · GKE ≈ $0.1/hr; the corrected 2-suite campaign ≈ $6–8.
+
+### Fleet config by bottleneck (telemetry-backed, use `--server-stats`)
+
+Add `--server-stats 3` to the server args to emit a `SRV_STATS` line every 3 s:
+`cpu_cores` (busy cores from `/proc/self/stat` utime+stime), `inflight` (appends
+in-flight), `svc_us` (mean service time), `durwait_us` (mean time blocked in
+`wait_durable_lsn`). This tells you which resource is the ceiling **on the actual
+NVMe box**, so you size the fleet to the bottleneck instead of guessing.
+
+- **memory is CPU-bound.** On NVMe at saturation: `cpu_cores≈3.4/4`, `inflight≈0`,
+  `durwait≈0`, `svc_us≈8–15`. It scales with cores → **`server_cpus` is the
+  throughput knob.** Give memory pins real CPU (8–16 vCPU) and drive with enough
+  fleet to keep the cores busy; don't waste money on high shard counts.
+- **wal (2026-07-13, SUPERSEDES the single-device analysis below): STORAGE
+  LAYOUT is the #1 lever — split stream data and WAL onto separate NVMe devices.**
+  The wal-decomp-lane0 + wal-splitlane suites (c4d-standard-64-lssd raw-block,
+  `SPLITLANE=1` = `gke/durable-streams-splitlane.yaml`: device 0 → stream files,
+  devices 1–5 → one WAL shard each, `--data-dir /data/wal/0 --wal-shards 5
+  --wal-checkpoint-syncfs on`) measured:
+
+  | config @100k streams | peak ops/s |
+  |---|---|
+  | original (streams on PD boot disk!) | 10.4k |
+  | everything on ONE shared NVMe lane | 46k |
+  | **split-lane + syncfs @3s** | **271.6k (flat vs 286k @10k)** |
+  | split-lane, checkpoint off | 306k |
+  | memory mode (ceiling) | 512k |
+
+  The old "wal is fsync-bound at ~1000 fdatasync/s" ceiling was DEVICE CONTENTION:
+  commit fdatasync and checkpoint writeback fighting one queue — on dedicated WAL
+  lanes the commit-fsync tax is ~zero (ckpt-off ≥ nofsync) and the cardinality
+  cliff disappears (−5% from 10k→100k streams vs −90% before). Mandates:
+  - **Benchmark wal ONLY on multi-device instances** (`c4d-standard-64-lssd`,
+    `SERVER_LOCAL_SSD_BLOCK=1`); a single-lane or PD-backed box mismeasures wal
+    by 5–26×. CRITICAL: the base `/data` (emptyDir) sits on the PD boot disk with
+    raw-block pools — stream files MUST be routed onto an NVMe lane
+    (`--data-dir /data/wal/0`), or the checkpoint hammers the PD.
+  - **`--wal-shards` = number of dedicated WAL lanes** (5 on a 6-device box, one
+    lane reserved for data). On a single shared device, shards remain a non-lever
+    (the sweep below stands for that topology).
+  - **`--wal-checkpoint-syncfs on`** always (one barrier per checkpoint instead of
+    O(N-touched) fdatasync; PR #4697).
+  - **CPU binding: +21–24% (wal-cpubind, 2026-07-13).** Exclusive pinned cores
+    (STATIC_CPU=1 node pool = kubelet cpuManagerPolicy=static, deploy with
+    GUARANTEED=1 = requests==limits everywhere + integer server CPU) measured
+    356k @10k / 328k @100k vs 286k/272k on shared cores, same layout/image/args.
+    Now that wal isn't fsync-bound, bind the server's cores for wal benches.
+  - **≥500k streams: add STREAM lanes (wal-streamlanes-1m, PR #4705).** On one
+    data lane the checkpoint's dirty-file writeback saturates the device
+    (syncfs 60-74s at 1M; 68k ops/s). 3 data lanes + 3 WAL lanes
+    (SERVER_MANIFEST=gke/durable-streams-splitlane3x3-guaranteed.yaml,
+    --stream-lanes 3 --wal-shards 3) → 374k/285k/212k @100k/500k/1M.
+    Split the 6 devices by cardinality: writes-per-file amplification means the
+    DATA side needs the lanes at high stream counts, not the WAL side.
+  - **Checkpoint size trigger ≈ free checkpointing (wal-sizetrigger, PR #4704).**
+    `--wal-checkpoint-wal-bytes 1073741824` (+60s fallback interval) hits the
+    checkpoint-off ceiling (303k vs 306k @100k) while bounding replay to ≤1 GiB
+    retained WAL per shard. Prefer it over the 3s timer for wal benches.
+- **wal on a SINGLE shared device is fsync-bound, CPU sits idle — and shard
+  count is NOT the lever there.**
+  (This corrects an earlier draft of this section that called `--wal-shards` the
+  knob and cited "s16 ≈ 380k"; a controlled sweep does not reproduce that.)
+  Controlled `--wal-shards` sweep on Titanium NVMe (`c4d-standard-16-lssd`, 8 vCPU
+  pin, 200k streams, 256 conns/pod; `results/wal-shard-sweep/`):
+
+  | shards | 1 | 4 | 8 | 16 | 24 |
+  |---|---|---|---|---|---|
+  | peak ops/s | 72k | **75k** | 73k | 73k | 71k |
+
+  All within 5 %. Live telemetry at every shard count: SRV_STATS `cpu_cores≈1.1–1.8/8`
+  (idle), `durwait_us ≈ 97–99 % of svc_us`; WAL_CONT `fsync/s≈900–1000`,
+  `batch_avg` 53→88. The ceiling is the disk's **durability-barrier rate**
+  (~1000 `fdatasync`/s) — one shared resource, not a per-shard lane. More shards
+  don't add it; at low load they *hurt* (s24 @1 pod = 34k vs s4 @1 pod = 49k:
+  offered load split across more committers → thinner group-commit batches). So:
+  - **Throughput = `fsync/s × batch_avg`.** `fsync/s` is a hardware constant of the
+    box's disk; the only software lever is `batch_avg`, which rises with offered
+    load (`connections`×pods) at the cost of latency (36 ms p50 at 3072 in-flight).
+    Tune `connections` up to your latency SLO — that is the wal throughput knob.
+  - **Keep `--wal-shards` small (2–4); do NOT tie it to cores.** The server default
+    is `= core count` (one committer OS thread per shard), which over-fragments
+    batches on high-core boxes for zero ceiling gain. `min(cores, 4)` is a better
+    default; only raise it if a shard sweep shows aggregate `fsync/s` still climbing.
+  - **`--wal-fsync-parallel` does NOT help — it regresses.** Controlled sweep at s4
+    (200k, 8 vCPU, NVMe; `results/wal-fanout-sweep/`): f1=75k, f2=73k, f4=75k,
+    **f8=67k** — small fanout is noise, ≥8 regresses (earlier: f16 = 66k→59k @100k,
+    −19 % on 2-vCPU virtiofs). Default serial (fanout=1). It parallelizes the
+    *checkpoint* per-stream fsync storm, which only steals more device budget from
+    the commit fsyncs — the opposite of what you want.
+  - **Don't pay for high `server_cpus`** — CPU is idle; 4–8 vCPU is plenty for a
+    fsync-bound wal server. Spend the budget on the fleet.
+
+Rule of thumb: **memory → raise `server_cpus`; wal → split-lane layout first
+(streams + WAL on separate NVMe devices, shards = WAL lanes, syncfs on); only on
+a single shared device fall back to: `server_cpus` low + shards small (2–4) +
+raise `connections` to your latency budget.**
+
+### Calibrating wal on a NEW cluster (don't port numbers — port this loop)
+
+The numbers above are properties of *this* cluster's disk, not universal. A
+different disk (network PD, a faster/slower NVMe) shifts `fsync/s` and therefore
+every derived number. Never copy shard/connection values across clusters — run this
+~20-min calibration and read the counters. `suites/wal-shard-sweep.json` IS the
+harness; point it at the new cluster and watch SRV_STATS/WAL_CONT (capture with a
+`kubectl -n ds-bench logs --since=6s deploy/durable-streams | grep -E 'SRV_STATS|WAL_'`
+poll loop).
+
+1. **Classify the bottleneck** from `--server-stats` (SRV_STATS) under load:
+   - `durwait_us ≈ svc_us` **and** `cpu_cores ≪ pin` → **fsync-bound** (usual wal) → step 2.
+   - `cpu_cores ≈ pin` → **CPU-bound** → raise vCPU pin / `--worker-threads`; shards may now help.
+   - `applock_us` large → **commit-path lock** (a code issue, not a knob).
+   - `inflight` low while the client offers more → **client/network** → add pods/connections.
+2. **Measure the disk's flush rate** from `--wal-stats` (WAL_CONT `fsync/s`). This is
+   your ceiling divisor — measure it per cluster (~1000 here; could be hundreds on a
+   PD). If `inner_wait_us`/`dirty_wait_us` are non-trivial the committer is lock-blocked,
+   capping you *below* the disk rate — shards won't fix that.
+3. **Tune shards to the measured `fsync/s`, not to cores.** Sweep {1,2,4,8}, watch
+   aggregate `fsync/s`: if one committer already saturates the disk → keep shards low;
+   if `fsync/s` keeps rising with shards → the commit path was serialized, add shards
+   until it plateaus, then stop. The plateau is the optimum.
+4. **Raise throughput via `batch_avg`** — increase `connections`/pods until `durwait_us`
+   (latency) hits your SLO. `fsync/s` is fixed by hardware, so this is the only lever.
+5. **Watch checkpoint contention** (WAL_CKPT `touched`/`fsync_us`) at high cardinality:
+   a large `fsync_us` fraction means the per-stream fdatasync storm is stealing device
+   budget from commits (the cliff). `--wal-fsync-parallel` does NOT help (f8/f16
+   regress — it just adds concurrent checkpoint fsyncs); the real fix is coalescing
+   the per-stream durability barrier to O(1) syscalls (`syncfs`/`sync_file_range`, open).
 
 **Older (pre-barrier) reference points are inflated** — treat the 2026-06-30
 "1.48M @ 200k / 1.15M @ 500k on 32 vCPU" numbers (`run-durable-pool2/FINDINGS.md`)
