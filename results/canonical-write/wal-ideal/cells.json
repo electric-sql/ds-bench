@@ -6,22 +6,22 @@
       "walk": [
         [
           4,
-          416986.55000000005,
-          2.369,
-          4.235
+          413018.9,
+          2.289,
+          5.223
         ],
         [
           8,
-          399101.1500000001,
-          4.999,
-          8.231
+          398629.65,
+          5.015,
+          8.287
         ]
       ],
       "pinned_pods": 8,
-      "throughput": 399101.1500000001,
+      "throughput": 398629.65,
       "p50": null,
       "p99": null,
-      "pod_mem_mb": 323,
+      "pod_mem_mb": 1572,
       "saturated": false,
       "status": "ok",
       "reason": "ladder_exhausted",
@@ -33,26 +33,26 @@
       "walk": [
         [
           4,
-          382296.4,
-          2.501,
-          4.563
+          385827.5,
+          2.457,
+          4.651
         ],
         [
           8,
-          364593.49999999994,
-          5.307,
-          8.647
+          363791.00000000006,
+          5.315,
+          8.831
         ]
       ],
       "pinned_pods": 8,
-      "throughput": 364593.49999999994,
+      "throughput": 363791.00000000006,
       "p50": null,
       "p99": null,
-      "pod_mem_mb": 777,
+      "pod_mem_mb": 775,
       "saturated": false,
       "status": "ok",
       "reason": "ladder_exhausted",
-      "pod_mem_p50_mb": 658
+      "pod_mem_p50_mb": 650
     }
   }
 }

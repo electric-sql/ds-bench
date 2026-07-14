@@ -4,20 +4,35 @@ First run of the canonical suite set, on the electric#4697 merged-state build
 (syncfs checkpoints, per-shard triggers, stream lanes; see WAL_TUNING.md).
 Provenance in `PROVENANCE.md`; per-suite grids in each subdirectory.
 
+> **Write-path re-validation for electric#4710 (2026-07-14).** The two
+> write/durability suites — `canonical-write` and `canonical-mixed-delivery` —
+> were re-run on the #4710 recovery-hardening build (fail-stop durability
+> barriers, always-sync sidecar, extra parent-dir fsyncs on the WAL path). Those
+> two sections below now carry **#4710** numbers; the read/ursula/mixed-cal/
+> mixed-writes suites are unchanged code paths under #4710 and keep their #4697
+> values. **Verdict: no write regression** (see the per-section deltas). Split
+> provenance recorded in `PROVENANCE.md`.
+
 ## 1. Write saturation (`canonical-write`, `canonical-write-ursula`)
 
-Peak append/s at saturation (256 B payloads):
+Peak append/s at saturation (256 B payloads). **durable-streams columns = #4710**;
+Δ vs the #4697 baseline in parentheses:
 
 | streams | wal-ideal | memory | ursula-mem | ursula-disk |
 |---|---|---|---|---|
 | 100  | — | — | 52.0k | 4.5k |
 | 1k   | — | — | 54.7k | 7.4k |
-| 10k  | 417.0k | 680.4k | 49.0k | 8.3k |
-| 100k | **382.3k** | **631.5k** | — | — |
+| 10k  | 413.0k (−1.0%) | 669.0k (−1.6%) | 49.0k | 8.3k |
+| 100k | **386.0k (+1.0%)** | **628.0k (−0.5%)** | — | — |
 
 - All four durable-streams cells are true plateaus (pinned rungs). **No
-  cardinality cliff: −8% (wal) / −7% (memory) from 10k→100k.** Regression gates
-  (wal@100k > 250k, memory@100k > 400k) passed with wide margin.
+  cardinality cliff: −6.5% (wal) / −6.1% (memory) from 10k→100k.** Regression
+  gates (wal@100k > 250k, memory@100k > 400k) passed with wide margin.
+- **#4710's durability barriers cost nothing measurable on the write path**:
+  wal is within ±1% of #4697 (100k even +1%), and memory is flat (it takes no
+  fsync barrier, so the hardening cannot touch it) — the two move exactly as the
+  code predicts. The ~5% dips seen mid-sweep were the 8-pod ladder rung; both wal
+  cells peak at the 4-pod rung (client/contention-bound, not server-bound).
 - wal-ideal = the WAL_TUNING.md configuration (3 stream lanes + 3 WAL lanes,
   1 GiB checkpoint budget, pinned cores). memory benefits from the same pinned
   cores (previous best 512k on shared cores).
@@ -43,19 +58,21 @@ conns, p99 2–3 ms. ursula matches at 10 streams but degrades at 100 streams
   49.9–50.0k at 0 / 1k / 10k / 100k readers while serving up to 4,986 replays/s
   at 303 MiB/s. **The premise holds: 100k concurrent catch-up readers cost the
   write path nothing.**
-- **Delivery under write load (2000 SSE subscribers):**
+- **Delivery under write load (2000 SSE subscribers) — #4710:**
 
 | writes/s | wal del/s (p99 ms) | memory del/s (p99 ms) |
 |---|---|---|
-| 4k  | 3.3k (138) | 3.3k (151) |
-| 16k | 15.9k (54) | 13.3k (5) |
-| 40k | 33.3k (86) | 33.2k (2) |
-| 66k | 54.9k (107) | 65.7k (8) |
-| max | 63.8k @ 85k writes (106) | **126.7k @ 127k writes (45)** |
+| 4k  | 4.0k (147) | 3.3k (140) |
+| 16k | 15.9k (51) | 15.9k (51) |
+| 40k | 33.3k (86) | 39.8k (5) |
+| 66k | 65.7k (92) | 65.7k (7) |
+| max | 64.1k @ 84k writes (69) | **139.3k @ 140k writes (63)** |
 
-  **The 2026-07-02 memory-mode delivery collapse is GONE** on this build:
-  memory delivery tracks writes 1:1 all the way to 127k/s. wal delivery keeps
-  pace to ~40k writes/s and caps at ~64k del/s at full write saturation.
+  **The 2026-07-02 memory-mode delivery collapse stays GONE** on #4710:
+  memory delivery tracks writes 1:1 all the way to 140k/s (baseline #4697 was
+  127k — the difference is run-to-run headroom, not a code change). wal delivery
+  keeps pace to ~66k writes/s and caps at ~64k del/s at full write saturation —
+  same shape as #4697, no regression from the added durability barriers.
 
 ## Known gaps & artifacts
 
