@@ -3,30 +3,30 @@
     "mode": "ursula-disk",
     "stream_count": 100,
     "pods": 4,
-    "throughput": 4275.12,
-    "p50": 6.627,
-    "p99": 84.607,
+    "throughput": 4289.88,
+    "p50": 6.667,
+    "p99": 84.799,
     "knee_pods": 4,
-    "knee_throughput": 4299.5,
-    "knee_p50": 6.607,
-    "knee_p99": 84.735,
-    "pod_mem_mb": 1311,
-    "pod_mem_p50_mb": 1133,
+    "knee_throughput": 4299.625,
+    "knee_p50": 6.687,
+    "knee_p99": 84.543,
+    "pod_mem_mb": 1306,
+    "pod_mem_p50_mb": 1147,
     "saturated": true,
     "status": "ok",
     "reason": "plateau",
     "walk": [
       [
         4,
-        4299.5,
-        6.607,
-        84.735
+        4299.625,
+        6.687,
+        84.543
       ],
       [
         8,
-        4541.5,
-        6.519,
-        84.415
+        4549.0,
+        6.443,
+        84.287
       ]
     ]
   },
@@ -34,30 +34,30 @@
     "mode": "ursula-memory",
     "stream_count": 100,
     "pods": 4,
-    "throughput": 49109.1,
-    "p50": 1.135,
-    "p99": 34.335,
+    "throughput": 48255.4,
+    "p50": 1.156,
+    "p99": 34.015,
     "knee_pods": 4,
-    "knee_throughput": 48446.875,
-    "knee_p50": 1.142,
-    "knee_p99": 34.943,
-    "pod_mem_mb": 3172,
-    "pod_mem_p50_mb": 2094,
+    "knee_throughput": 49425.75,
+    "knee_p50": 1.129,
+    "knee_p99": 34.079,
+    "pod_mem_mb": 3260,
+    "pod_mem_p50_mb": 2099,
     "saturated": true,
     "status": "ok",
     "reason": "plateau",
     "walk": [
       [
         4,
-        48446.875,
-        1.142,
-        34.943
+        49425.75,
+        1.129,
+        34.079
       ],
       [
         8,
-        51968.125,
+        51930.25,
         1.16,
-        34.431
+        34.175
       ]
     ]
   },
@@ -65,30 +65,30 @@
     "mode": "ursula-disk",
     "stream_count": 1000,
     "pods": 4,
-    "throughput": 7333.75,
-    "p50": 112.063,
-    "p99": 297.471,
+    "throughput": 7365.88,
+    "p50": 111.743,
+    "p99": 298.751,
     "knee_pods": 4,
-    "knee_throughput": 7395.5,
-    "knee_p50": 111.359,
-    "knee_p99": 298.495,
-    "pod_mem_mb": 1744,
-    "pod_mem_p50_mb": 1508,
+    "knee_throughput": 7379.5,
+    "knee_p50": 111.295,
+    "knee_p99": 297.727,
+    "pod_mem_mb": 1753,
+    "pod_mem_p50_mb": 1507,
     "saturated": true,
     "status": "ok",
     "reason": "plateau",
     "walk": [
       [
         4,
-        7395.5,
-        111.359,
-        298.495
-      ],
-      [
-        8,
-        7296.5,
+        7379.5,
         111.295,
-        303.103
+        297.727
+      ],
+      [
+        8,
+        7255.125,
+        111.359,
+        303.359
       ]
     ]
   },
@@ -96,30 +96,30 @@
     "mode": "ursula-memory",
     "stream_count": 1000,
     "pods": 4,
-    "throughput": 54660.2,
-    "p50": 10.975,
-    "p99": 63.199,
+    "throughput": 54879.9,
+    "p50": 10.903,
+    "p99": 63.391,
     "knee_pods": 4,
-    "knee_throughput": 54418.5,
-    "knee_p50": 10.975,
-    "knee_p99": 62.943,
-    "pod_mem_mb": 2320,
-    "pod_mem_p50_mb": 1746,
+    "knee_throughput": 55158.0,
+    "knee_p50": 10.807,
+    "knee_p99": 62.911,
+    "pod_mem_mb": 2302,
+    "pod_mem_p50_mb": 1737,
     "saturated": true,
     "status": "ok",
     "reason": "plateau",
     "walk": [
       [
         4,
-        54418.5,
-        10.975,
-        62.943
+        55158.0,
+        10.807,
+        62.911
       ],
       [
         8,
-        54198.0,
-        11.087,
-        64.415
+        54632.0,
+        10.983,
+        63.839
       ]
     ]
   },
@@ -127,30 +127,30 @@
     "mode": "ursula-disk",
     "stream_count": 10000,
     "pods": 8,
-    "throughput": 8207.0,
-    "p50": 1404.927,
-    "p99": 1901.567,
+    "throughput": 8245.88,
+    "p50": 1403.903,
+    "p99": 1904.639,
     "knee_pods": 8,
-    "knee_throughput": 8261.0,
-    "knee_p50": 1402.879,
-    "knee_p99": 1905.663,
-    "pod_mem_mb": 2610,
-    "pod_mem_p50_mb": 2334,
+    "knee_throughput": 8277.875,
+    "knee_p50": 1401.855,
+    "knee_p99": 1899.519,
+    "pod_mem_mb": 2689,
+    "pod_mem_p50_mb": 2330,
     "saturated": true,
     "status": "ok",
     "reason": "plateau",
     "walk": [
       [
         8,
-        8261.0,
-        1402.879,
-        1905.663
+        8277.875,
+        1401.855,
+        1899.519
       ],
       [
         16,
-        8240.75,
-        1398.783,
-        2019.327
+        8244.125,
+        1394.687,
+        2092.031
       ]
     ]
   },
@@ -158,30 +158,30 @@
     "mode": "ursula-memory",
     "stream_count": 10000,
     "pods": 8,
-    "throughput": 48672.5,
-    "p50": 203.391,
-    "p99": 304.639,
+    "throughput": 49004.8,
+    "p50": 204.671,
+    "p99": 291.583,
     "knee_pods": 8,
-    "knee_throughput": 49027.5,
-    "knee_p50": 203.007,
-    "knee_p99": 296.447,
-    "pod_mem_mb": 3430,
-    "pod_mem_p50_mb": 2936,
+    "knee_throughput": 49849.75,
+    "knee_p50": 202.879,
+    "knee_p99": 286.975,
+    "pod_mem_mb": 3534,
+    "pod_mem_p50_mb": 3056,
     "saturated": true,
     "status": "ok",
     "reason": "plateau",
     "walk": [
       [
         8,
-        49027.5,
-        203.007,
-        296.447
+        49849.75,
+        202.879,
+        286.975
       ],
       [
         16,
-        48271.0,
-        203.519,
-        342.527
+        49674.75,
+        201.471,
+        302.847
       ]
     ]
   }
