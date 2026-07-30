@@ -1,4 +1,6 @@
 # ds-bench — a benchmarking system for durable streams
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Felectric-sql%2Fds-bench.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Felectric-sql%2Fds-bench?ref=badge_shield)
+
 
 A reproducible, single-node benchmark harness for durable-stream servers: declarative workload suites, a Kubernetes client fleet, and exact cross-fleet HDR-percentile merging, runnable on a local kind cluster or on GKE. Workloads are server-agnostic and run against any supported implementation.
 
@@ -91,3 +93,7 @@ Extend the harness to replicated and other deployment topologies; the current wo
 ## Acknowledgements
 
 The benchmark methodology is based on ursula's published benchmark ([ursula.tonbo.io/benchmark](https://ursula.tonbo.io/benchmark)); `ds-bench` is derived from its `ursula-bench` (Apache-2.0).
+
+
+## License
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Felectric-sql%2Fds-bench.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Felectric-sql%2Fds-bench?ref=badge_large)
